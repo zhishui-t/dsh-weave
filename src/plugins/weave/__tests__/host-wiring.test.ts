@@ -37,7 +37,7 @@ import * as weavePlugin from '../index'
 
 const GOOD_TEAM = `schema_version: "1"
 team_id: alpha-squad
-name: 阿尔法小队
+name: 阿尔法团队
 default: true
 
 roles:

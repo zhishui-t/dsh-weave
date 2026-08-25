@@ -7,7 +7,7 @@
  * 1. 构建产物必须是 DSH ModuleLoader bundle；
  * 2. 客户端注册到 sidebar.footer.action，而不是 settings.section；
  * 3. 左侧动作可打开全屏 Dashboard；
- * 4. Dashboard 内部左侧导航可切换 7 个页面；
+ * 4. Dashboard 内部左侧导航可切换 8 个页面；
  * 5. 关闭按钮能关闭界面。
  *
  * 运行：
@@ -81,10 +81,62 @@ describe('dsh-weave Web 客户端产物契约', () => {
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
-    expect(exported.inject).toEqual(['slots'])
+    expect(exported.inject).toEqual(['slots', 'connection'])
     expect(exported.apply).toBeTypeOf('function')
   })
 })
+
+const SEP = String.fromCharCode(92)
+
+type RpcCall = { endpoint: string; payload: unknown }
+
+function makeClientContext() {
+  const calls: RpcCall[] = []
+  let component: WeaveActionComponent | undefined
+  const ctx = {
+    effect(execute: () => unknown) {
+      execute()
+    },
+    get(service: string) {
+      if (service !== 'connection') throw new Error(`unexpected service: ${service}`)
+      return {
+        rpc: {
+          async call(_channel: string, endpoint: string, payload: unknown) {
+            calls.push({ endpoint, payload })
+            if (endpoint === 'snapshot') {
+              return {
+                ok: true,
+                value: {
+                  teams: [],
+                  executors: [{ id: 'zcode' }, { id: 'spawn' }],
+                  zcodeCapabilities: {
+                    models: [{ value: ['provider-id', 'deepseek-v4-flash'].join(SEP), name: 'deepseek › deepseek-v4-flash' }],
+                    currentModel: ['provider-id', 'deepseek-v4-flash'].join(SEP),
+                    modes: [{ value: 'plan' }, { value: 'build' }, { value: 'yolo' }],
+                    currentMode: 'build',
+                    thoughtLevels: [{ value: 'off' }, { value: 'high' }, { value: 'max' }],
+                    currentThoughtLevel: 'max',
+                  },
+                },
+              }
+            }
+            return { ok: true, value: { team_id: 'my-squad', name: '我的团队', roles: 1 } }
+          },
+        },
+      }
+    },
+    slots: {
+      inject(_slot: string, register: () => unknown) {
+        register()
+      },
+      register(_def: { id?: string }, registered: ComponentType) {
+        component = registered
+        return () => undefined
+      },
+    },
+  }
+  return { calls, ctx, get component() { return component } }
+}
 
 describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
   it('sidebar.footer.action 渲染 Weave 入口，点击打开完整控制台', async () => {
@@ -98,9 +150,24 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     let registeredSlot = ''
     let registeredDef: { id?: string } | undefined
     let registeredComponent: WeaveActionComponent | undefined
+    const calls: RpcCall[] = []
     const ctx = {
       effect(execute: () => unknown) {
         execute()
+      },
+      get(service: string) {
+        if (service !== 'connection') throw new Error(`unexpected service: ${service}`)
+        return {
+          rpc: {
+            async call(_channel: string, endpoint: string, payload: unknown) {
+              calls.push({ endpoint, payload })
+              if (endpoint === 'snapshot') {
+                return { ok: true, value: { teams: [], executors: [{ id: 'zcode' }, { id: 'spawn' }] } }
+              }
+              return { ok: true, value: { team_id: 'my-squad', name: '我的团队', roles: 1 } }
+            },
+          },
+        }
       },
       slots: {
         inject(slot: string, register: () => unknown) {
@@ -153,7 +220,48 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     }
   })
 
-  it('Dashboard 内部导航可切换 7 个页面，关闭按钮可退出', async () => {
+  it('团队页可通过 RPC 创建团队', async () => {
+    const moduleRequire = (id: string) => {
+      if (id === 'react') return React
+      if (id === 'react-dom') return ReactDOM
+      throw new Error(`unexpected client dependency: ${id}`)
+    }
+    const exported = getCapturedBundle().factory(moduleRequire)
+    const fixture = makeClientContext()
+    exported.apply(fixture.ctx as never)
+
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+ fireEvent.click(screen.getByTestId('nav-teams'))
+
+    const page = await screen.findByTestId('page-teams')
+    await waitFor(() => {
+      expect((page.querySelector('select') as HTMLSelectElement).value).toBe('zcode')
+    })
+    expect(screen.getByTestId('model-select').textContent).toContain('deepseek-v4-flash')
+
+    const inputs = Array.from(page.querySelectorAll('input')).filter((input) => input.type !== 'hidden')
+    fireEvent.change(inputs[0]!, { target: { value: 'My Squad' } })
+    fireEvent.change(inputs[1]!, { target: { value: '我的团队' } })
+    fireEvent.change(inputs[2]!, { target: { value: 'provider-id' } })
+    fireEvent.change(inputs[3]!, { target: { value: 'deepseek-v4-flash' } })
+    fireEvent.click(screen.getByText('创建团队'))
+
+    await waitFor(() => {
+      expect(fixture.calls.some((call) => call.endpoint === 'team/import')).toBe(true)
+    })
+    const imported = fixture.calls.find((call) => call.endpoint === 'team/import')
+    expect(imported?.payload).toMatchObject({
+      overwrite: true,
+      config: {
+        team_id: 'my-squad',
+        roles: [{ executor: 'zcode', provider: 'provider-id', model: 'deepseek-v4-flash' }],
+      },
+    })
+    await screen.findByText('已保存：my-squad')
+  })
+
+  it('Dashboard 内部导航可切换 8 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
       if (id === 'react-dom') return ReactDOM
@@ -162,9 +270,24 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     const exported = getCapturedBundle().factory(moduleRequire)
 
     let component: WeaveActionComponent | undefined
+    const calls: RpcCall[] = []
     const ctx = {
       effect(execute: () => unknown) {
         execute()
+      },
+      get(service: string) {
+        if (service !== 'connection') throw new Error(`unexpected service: ${service}`)
+        return {
+          rpc: {
+            async call(_channel: string, endpoint: string, payload: unknown) {
+              calls.push({ endpoint, payload })
+              if (endpoint === 'snapshot') {
+                return { ok: true, value: { teams: [], executors: [{ id: 'zcode' }, { id: 'spawn' }] } }
+              }
+              return { ok: true, value: { team_id: 'my-squad', name: '我的团队', roles: 1 } }
+            },
+          },
+        }
       },
       slots: {
         inject(_slot: string, register: () => unknown) {
@@ -182,7 +305,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings']) {
+    for (const route of ['teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings']) {
       fireEvent.click(screen.getByTestId(`nav-${route}`))
       expect(screen.getByTestId(`page-${route}`)).toBeTruthy()
       expect(screen.getByTestId(`nav-${route}`).getAttribute('data-active')).toBe('true')

@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
@@ -238,6 +241,7 @@ export class AcpSessionProvider {
   readonly #sessions = new Map<string, SessionRecord>()
   readonly #prompts = new Map<string, Promise<unknown>>()
   readonly #runs = new Map<string, RunController>()
+  #sessionCatalog?: AcpSessionNewResponse
 
   constructor(
     config: AcpSessionProviderConfig,
@@ -355,6 +359,22 @@ export class AcpSessionProvider {
         configOptions: sessionResponse.configOptions,
       } : undefined,
     }
+  }
+
+  /**
+   * 读取一次 session/new 返回的 modes/configOptions。
+   * ACP 的 lazy session 不会创建后端会话，因此该调用只用于能力发现。
+   */
+  async describeSession(cwd?: string): Promise<AcpSessionNewResponse | undefined> {
+    if (this.#sessionCatalog) return this.#sessionCatalog
+    const targetCwd = cwd ?? this.#configuredCwd ?? process.cwd()
+    const connection = await this.#acquireConnection(targetCwd)
+    const response = await connection.conn.newSession({
+      cwd: targetCwd,
+      mcpServers: [],
+    }) as AcpSessionNewResponse
+    this.#sessionCatalog = response
+    return response
   }
 
   async dispose(): Promise<void> {
@@ -529,14 +549,59 @@ export interface AcpProviderRegistryContext {
  * - WEAVE_ZCODE_NODE：可选，运行 ZCode 的 Node 可执行文件
  * - WEAVE_ZCODE_ACP_DEBUG：可选，设为 1 开启桥接诊断
  */
+function firstExisting(paths: Array<string | undefined>): string | undefined {
+  return paths.find((path): path is string => typeof path === 'string' && path !== '' && existsSync(path))
+}
+
+function discoverZcodeCli(env: NodeJS.ProcessEnv): string | undefined {
+  const appDir = env.ZCODE_WINDOWS_APP_INSTALL_DIR ?? 'D:/Program Files/ZCode'
+  return firstExisting([
+    env.WEAVE_ZCODE_BIN,
+    env.ZCODE_BIN,
+    join(appDir, 'resources', 'glm', 'zcode.cjs'),
+    'D:/Program Files/ZCode/resources/glm/zcode.cjs',
+    'C:/Program Files/ZCode/resources/glm/zcode.cjs',
+  ])
+}
+
+function discoverZcodeNode(env: NodeJS.ProcessEnv): string | undefined {
+  const explicit = env.WEAVE_ZCODE_NODE ?? env.ZCODE_NODE
+  if (explicit) return explicit
+
+  const major = Number(process.versions.node.split('.')[0])
+  if (Number.isFinite(major) && major >= 22) return process.execPath
+
+  return firstExisting([
+    'D:/code/nodejs/node.exe',
+    'C:/Program Files/nodejs/node.exe',
+  ])
+}
+
+function discoverAcpServer(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require.resolve('zcode-acp-server/package.json') as string
+    const server = join(pkg.slice(0, -'package.json'.length), 'dist', 'index.js')
+    return existsSync(server) ? server : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 构造 ZCode ACP Provider 配置。显式环境变量优先；否则自动发现本地安装的
+ * zcode-acp-server 与 ZCode CLI，避免要求用户手工配置。
+ */
 export function zcodeAcpProviderConfigFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): AcpSessionProviderConfig | undefined {
-  const serverPath = env.WEAVE_ZCODE_ACP_SERVER
-  const zcodeBin = env.WEAVE_ZCODE_BIN
+  const serverPath = env.WEAVE_ZCODE_ACP_SERVER ?? discoverAcpServer()
+  const zcodeBin = discoverZcodeCli(env)
   if (!serverPath || !zcodeBin) return undefined
 
-  const zcodeNode = env.WEAVE_ZCODE_NODE
+  const zcodeNode = discoverZcodeNode(env)
+  if (!zcodeNode) return undefined
+
   const debug = env.WEAVE_ZCODE_ACP_DEBUG === '1'
   return {
     name: 'zcode',
@@ -547,7 +612,7 @@ export function zcodeAcpProviderConfigFromEnvironment(
         Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       ),
       ZCODE_BIN: zcodeBin,
-      ...(zcodeNode ? { ZCODE_NODE: zcodeNode } : {}),
+      ZCODE_NODE: zcodeNode,
       ...(debug ? { ZCODE_ACP_DEBUG: '1' } : {}),
     },
     permission: 'reject',
@@ -608,6 +673,11 @@ export class ZcodeAcpExecutorProvider {
 
   supports(executor: string): boolean {
     return this.#executorIds.has(executor)
+  }
+
+  /** 转发底层 ACP session/new 能力目录。 */
+  describeSession(cwd?: string): Promise<AcpSessionNewResponse | undefined> {
+    return this.#provider.describeSession(cwd)
   }
 
   async start(request: ExecutorStartRequest): Promise<ExecutorRun> {

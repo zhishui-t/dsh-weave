@@ -18,16 +18,32 @@ interface SlotsService {
   register(def: SlotDefinition, component: unknown): () => void
 }
 
+interface ConnectionRpc {
+  call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<{
+    ok: boolean
+    value?: unknown
+    error?: { code: string; message: string }
+  }>
+}
+
+interface ConnectionHandle {
+  rpc: ConnectionRpc
+}
+
 interface ClientContext {
   effect(execute: () => unknown, label?: string): unknown
+  get(service: 'connection'): ConnectionHandle
   slots: SlotsService
 }
+
+type RpcCaller = (endpoint: string, payload?: unknown) => Promise<unknown>
 
 const PLUGIN_ID = '@deepseek-ai/dsh-plugin-weave'
 const STYLE_ID = 'dsh-weave-client-style'
 
 type Route =
   | 'overview'
+  | 'teams'
   | 'tasks'
   | 'knowledge'
   | 'executors'
@@ -37,6 +53,7 @@ type Route =
 
 const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
   { key: 'overview', label: '总览', desc: '任务、知识与执行器的整体运行状态。' },
+  { key: 'teams', label: '团队', desc: '查看团队并创建新的协作团队。' },
   { key: 'tasks', label: '任务中心', desc: '任务 DAG、依赖状态与快速取消入口。' },
   { key: 'knowledge', label: '知识库', desc: '知识导入、候选审核与注入管理。' },
   { key: 'executors', label: '执行器', desc: 'DSH Subagent / Codex / Claude Code / ACP 状态。' },
@@ -80,12 +97,36 @@ function ensureStyle(): void {
 .weave-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px 12px 10px;background:var(--dsw-alias-bg-layer-2)}
 .weave-card b{display:block;margin-bottom:4px;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:550;line-height:20px}
 .weave-card span{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.weave-layout{display:grid;grid-template-columns:minmax(300px,420px) minmax(260px,1fr);gap:20px;align-items:start}
+@media (max-width:900px){.weave-layout{grid-template-columns:1fr}}
+.weave-form,.weave-team-list{display:grid;gap:12px;align-content:start;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-layer-2)}
+.weave-field{display:grid;gap:5px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.weave-field input,.weave-field select,.weave-field textarea{box-sizing:border-box;width:100%;min-height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;padding:7px 9px;outline:none}
+.weave-field textarea{resize:vertical}
+.weave-button{border:0;border-radius:10px;background:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));color:var(--dsw-specific-menu);font:inherit;font-weight:550;height:34px;padding:0 14px;cursor:pointer}
+.weave-button:hover{filter:brightness(1.08)}
+.weave-button:disabled{opacity:.55;cursor:not-allowed}
+.weave-button-secondary{background:transparent;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
 `
   document.head.appendChild(style)
 }
 
-function createApp(React: any, createPortal?: (node: any, container: Element) => any): any {
-  const { useState } = React
+function createApp(React: any, createPortal?: (node: any, container: Element) => any, callRpc?: RpcCaller): any {
+  const { useState, useCallback, useEffect } = React
+
+  type TeamSummary = Record<string, unknown>
+  type SelectOption = { value: string; name?: string }
+
+  type TeamForm = {
+    teamId: string
+    name: string
+    executor: string
+    provider: string
+    model: string
+    thoughtLevel: string
+    mode: string
+    personality: string
+  }
 
   const PageCard = ({ title, body }: { title: string; body: string }) =>
     React.createElement(
@@ -103,6 +144,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ['知识库', '管理 candidate 审核、active 知识和导入任务。'],
         ['执行器', '检查 spawn / fork / Codex / Claude / ACP 可用性。'],
       ],
+      teams: [['团队管理', '创建团队、绑定执行器与模型路由。']],
       tasks: [
         ['DAG 视图', '展示任务依赖层级与当前状态。'],
         ['快速操作', '支持取消可取消任务并刷新视图。'],
@@ -133,6 +175,257 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         { className: 'weave-grid' },
         ...(cards[def.key] ?? []).map(([title, body]) =>
           React.createElement(PageCard, { key: title, title, body }),
+        ),
+      ),
+    )
+  }
+
+  function TeamsPage() {
+    const [teams, setTeams] = useState([] as TeamSummary[])
+    const [executors, setExecutors] = useState([] as string[])
+    const [models, setModels] = useState([] as SelectOption[])
+    const [modes, setModes] = useState([] as string[])
+    const [thoughtLevels, setThoughtLevels] = useState([] as string[])
+    const [modelValue, setModelValue] = useState('')
+    const [status, setStatus] = useState('正在加载...')
+    const [busy, setBusy] = useState(false)
+    const [form, setForm] = useState({
+      teamId: '',
+      name: '',
+      executor: '',
+      provider: '',
+      model: '',
+      thoughtLevel: '',
+      mode: '',
+      personality: '你是可靠的协作执行角色，输出可验证结果。',
+    } as TeamForm)
+
+    const refresh = useCallback(async () => {
+      if (!callRpc) {
+        setStatus('连接服务不可用')
+        return
+      }
+      try {
+        const separator = String.fromCharCode(92)
+        const data = await callRpc('snapshot') as {
+          teams?: Array<Record<string, unknown>>
+          executors?: Array<{ id: string }>
+          zcodeCapabilities?: {
+            models?: SelectOption[]
+            currentModel?: string
+            modes?: Array<{ value: string }>
+            currentMode?: string
+            thoughtLevels?: Array<{ value: string }>
+            currentThoughtLevel?: string
+          }
+        }
+        const nextExecutors = (data.executors ?? []).map((item) => item.id)
+        const capabilities = data.zcodeCapabilities
+        const nextModels = capabilities?.models ?? []
+        const nextModes = (capabilities?.modes ?? []).map((option) => option.value)
+        const nextThoughts = (capabilities?.thoughtLevels ?? []).map((option) => option.value)
+        const selectedModel = capabilities?.currentModel ?? nextModels[0]?.value ?? ''
+        setTeams(data.teams ?? [])
+        setExecutors(nextExecutors)
+        setModels(nextModels)
+        setModes(nextModes)
+        setThoughtLevels(nextThoughts)
+        setModelValue(selectedModel)
+        setForm((current: TeamForm) => {
+          let provider = current.provider
+          let model = current.model
+          if (!provider && !model && selectedModel) {
+            const index = selectedModel.lastIndexOf(separator)
+            provider = index >= 0 ? selectedModel.slice(0, index) : ''
+            model = index >= 0 ? selectedModel.slice(index + 1) : selectedModel
+          }
+          return {
+            ...current,
+            provider,
+            model,
+            executor: current.executor || (nextExecutors.includes('zcode') ? 'zcode' : nextExecutors[0] ?? ''),
+            mode: current.mode || capabilities?.currentMode || '',
+            thoughtLevel: current.thoughtLevel || capabilities?.currentThoughtLevel || '',
+          }
+        })
+        setStatus('')
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error))
+      }
+    }, [])
+
+    useEffect(() => {
+      void refresh()
+    }, [refresh])
+
+    const update = (key: keyof typeof form) => (event: { target: { value: string } }) => {
+      setForm((current: TeamForm) => ({ ...current, [key]: event.target.value }))
+    }
+
+    const submit = async (event: { preventDefault(): void }) => {
+      event.preventDefault()
+      if (!callRpc || busy) return
+      setBusy(true)
+      setStatus('正在保存...')
+      try {
+        const teamId = (form.teamId || form.name || 'squad').trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9._-]+/g, '-')
+          .replace(/^-+|-+$/g, '') || 'squad'
+        const stages = ['prepare', 'implement', 'review']
+        const role: Record<string, unknown> = {
+          id: 'member',
+          name: form.name || '成员',
+          bias: 'dev',
+          executor: form.executor,
+          stages,
+          max_concurrent_tasks: 1,
+          personality: form.personality,
+        }
+        if (form.provider) role.provider = form.provider
+        if (form.model) role.model = form.model
+        if (form.thoughtLevel) role.thought_level = form.thoughtLevel
+        if (form.mode) role.mode = form.mode
+
+        const config = {
+          schema_version: '1',
+          team_id: teamId,
+          name: form.name || teamId,
+          default: false,
+          roles: [role],
+          task_decomposition: {
+            matchers: [],
+            default_difficulty: 'hard',
+            dag_templates: Object.fromEntries(['easy', 'medium', 'hard', 'critical'].map((level) => [level, stages])),
+          },
+          knowledge_injection: {
+            max_entries: 3,
+            max_chars_per_entry: 2000,
+            max_total_chars: 6000,
+            priority: 'freshness_first',
+          },
+          feedback: {
+            feedback_timeout_seconds: 1800,
+            max_revisions: 2,
+            reopen_window_seconds: 86400,
+          },
+          executor_limits: {
+            [form.executor || 'spawn']: { max_concurrent: 1, max_per_hour: 20 },
+          },
+        }
+        await callRpc('team/import', { overwrite: true, config })
+        setForm((current: TeamForm) => ({ ...current, teamId: '', name: '' }))
+        await refresh()
+        setStatus(`已保存：${teamId}`)
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    const updateModel = (event: { target: { value: string } }) => {
+      const value = event.target.value
+      const separator = String.fromCharCode(92)
+      const index = value.lastIndexOf(separator)
+      setModelValue(value)
+      setForm((current: TeamForm) => ({
+        ...current,
+        provider: index >= 0 ? value.slice(0, index) : '',
+        model: index >= 0 ? value.slice(index + 1) : value,
+      }))
+    }
+
+    const field = (label: string, key: keyof typeof form, placeholder = '', type = 'text') =>
+      React.createElement(
+        'label',
+        { className: 'weave-field' },
+        React.createElement('span', null, label),
+        type === 'textarea'
+          ? React.createElement('textarea', { value: form[key], onChange: update(key), rows: 3 })
+          : React.createElement('input', { type, value: form[key], onChange: update(key), placeholder }),
+      )
+
+    const select = (label: string, key: keyof typeof form, options: string[]) =>
+      React.createElement(
+        'label',
+        { className: 'weave-field' },
+        React.createElement('span', null, label),
+        React.createElement(
+          'select',
+          { value: form[key], onChange: update(key) },
+          React.createElement('option', { value: '' }, '默认'),
+          ...options.map((value) => React.createElement('option', { key: value, value }, value)),
+        ),
+      )
+
+    return React.createElement(
+      'section',
+      { className: 'weave-page', 'data-testid': 'page-teams' },
+      React.createElement('h1', null, '团队'),
+      React.createElement('p', { className: 'weave-note' }, status || '创建后会写入 ~/.dsh/teams 并通过完整校验。'),
+      React.createElement(
+        'div',
+        { className: 'weave-layout' },
+        React.createElement(
+          'form',
+          { className: 'weave-form', onSubmit: submit },
+          field('团队 ID', 'teamId', 'my-squad'),
+          field('名称', 'name', '我的团队'),
+          React.createElement(
+            'label',
+            { className: 'weave-field' },
+            React.createElement('span', null, '执行器'),
+            React.createElement(
+              'select',
+              { value: form.executor, onChange: update('executor') },
+              ...(executors.length ? executors.map((value: string) => React.createElement('option', { key: value, value }, value)) : [React.createElement('option', { key: 'empty', value: '' }, '加载中')]),
+            ),
+          ),
+          React.createElement(
+            'label',
+            { className: 'weave-field' },
+            React.createElement('span', null, '模型（ZCode 能力目录）'),
+            React.createElement(
+              'select',
+              { 'data-testid': 'model-select', value: modelValue, onChange: updateModel },
+              ...(models.length
+                ? models.map((option: SelectOption) => React.createElement(
+                  'option',
+                  { key: option.value, value: option.value },
+                  option.name ?? option.value,
+                ))
+                : [React.createElement('option', { key: 'empty', value: '' }, '加载中')]),
+            ),
+          ),
+          field('Provider 覆盖', 'provider', '一般由模型选择自动填入'),
+          field('Model 覆盖', 'model', '一般由模型选择自动填入'),
+          select('思考深度', 'thoughtLevel', thoughtLevels.length ? thoughtLevels : ['off', 'high', 'max']),
+          select('模式', 'mode', modes.length ? modes : ['plan', 'build', 'edit', 'yolo', 'auto']),
+          field('角色提示词', 'personality', '', 'textarea'),
+          React.createElement(
+            'button',
+            { className: 'weave-button', type: 'submit', disabled: busy },
+            busy ? '保存中' : '创建团队',
+          ),
+        ),
+        React.createElement(
+          'div',
+          { className: 'weave-team-list' },
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => void refresh() },
+            '刷新',
+          ),
+          ...teams.map((team: TeamSummary) => React.createElement(
+            'article',
+            { className: 'weave-card', key: String(team.team_id) },
+            React.createElement('b', null, `${String(team.name)}${team.default ? '（默认）' : ''}`),
+            React.createElement('span', null, Array.isArray(team.roles)
+              ? team.roles.map((role: Record<string, unknown>) => `${(role as Record<string, unknown>).id}/${(role as Record<string, unknown>).executor}`).join(', ')
+              : ''),
+          )),
+          teams.length === 0 ? React.createElement('article', { className: 'weave-card' }, React.createElement('b', null, '暂无可用团队'), React.createElement('span', null, '请先创建一个团队。')) : null,
         ),
       ),
     )
@@ -196,7 +489,11 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               '×',
             ),
           ),
-          React.createElement('div', { className: 'weave-content' }, React.createElement(Page, { route })),
+          React.createElement(
+            'div',
+            { className: 'weave-content' },
+            route === 'teams' ? React.createElement(TeamsPage) : React.createElement(Page, { route }),
+          ),
         ),
       ),
     )
@@ -245,9 +542,17 @@ moduleLoader.load({
     ensureStyle()
     const React = moduleRequire('react')
     const ReactDOM = moduleRequire('react-dom') as { createPortal: (node: any, container: Element) => any }
-    const { WeaveSidebarAction } = createApp(React, ReactDOM.createPortal)
-
+    let callRpc: RpcCaller | undefined
     const localApply = (ctx: ClientContext): void => {
+      const connection = ctx.get('connection')
+      callRpc = async (endpoint, payload) => {
+        const result = await connection.rpc.call('/dsh-weave', endpoint, payload)
+        if (!result.ok) throw new Error(`${result.error?.code ?? 'rpc-error'}: ${result.error?.message ?? 'RPC failed'}`)
+        return result.value
+      }
+      const app = createApp(React, ReactDOM.createPortal, callRpc)
+      const registered = app.WeaveSidebarAction
+
       ctx.effect(
         () =>
           ctx.slots.inject('sidebar.footer.action', () =>
@@ -258,7 +563,7 @@ moduleLoader.load({
                 order: 80,
                 label: () => 'Weave',
               },
-              WeaveSidebarAction,
+              registered,
             ),
           ),
         'dsh-weave sidebar action',
@@ -267,7 +572,7 @@ moduleLoader.load({
 
     const module = { exports: {} as Record<string, unknown> }
     module.exports.apply = localApply
-    module.exports.inject = ['slots']
+    module.exports.inject = ['slots', 'connection']
     return module.exports
   },
 })

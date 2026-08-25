@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -356,7 +356,35 @@ export class TeamManager {
     return teams
   }
 
-  /* ----------------------------- 会话绑定（ME-4） ----------------------------- */
+  /**
+   * 校验并持久化团队 YAML。用于 Web/CLI 导入：先完整解析与语义校验，
+   * 再落盘，避免把不可用团队写入调度目录。
+   */
+  importTeam(raw: string, options: { overwrite?: boolean } = {}): TeamConfig {
+    const team = this.validateTeam(this.parseTeam(raw, 'inline'))
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(team.team_id)) {
+      throw new WeaveError('invalid_team', `team_id 含非法字符: ${team.team_id}`, { teamId: team.team_id })
+    }
+
+    const file = this.teamFile(team.team_id)
+    if (!options.overwrite && existsSync(file)) {
+      throw new WeaveError('conflict', `团队已存在: ${team.team_id}`, { teamId: team.team_id })
+    }
+
+    try {
+      mkdirSync(this.teamsDir, { recursive: true })
+      // 保留原始 YAML（含 schema_version 与注释）；parse/validate 已确认其结构安全。
+      writeFileSync(file, raw, { encoding: 'utf8', flag: 'w' })
+    } catch (error) {
+      throw new WeaveError('configuration_error', `团队配置写入失败: ${file}`, {
+        teamId: team.team_id,
+        cause: String(error),
+      })
+    }
+    return team
+  }
+
+    /* ----------------------------- 会话绑定（ME-4） ----------------------------- */
 
   async #ensureBindings(): Promise<void> {
     if (!this.persistence) {

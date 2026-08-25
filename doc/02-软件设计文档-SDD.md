@@ -127,7 +127,7 @@
 # ~/.dsh/teams/{team_id}.yaml
 schema_version: "1"
 team_id: alpha-squad
-name: 阿尔法小队
+name: 阿尔法团队
 default: true
 
 roles:
@@ -147,9 +147,9 @@ roles:
     stages: [implement, test, integrate, execute, deploy]
     max_concurrent_tasks: 2
     # 可选模型路由覆盖；仅对支持 DSH AgentOptions 的执行器保证生效。
-    provider: deepseek-official
-    model: deepseek-v4-flash-vision-exp
-    thought_level: max                 # ACP/ZCode 思考深度（可选）
+    provider: 80600797-559a-47b9-9360-78f03230ae5c
+    model: deepseek-v4-flash
+    thought_level: max                 # ZCode 可选值：off / high / max
     mode: yolo                         # ACP/ZCode 模式（可选）
     personality: |
       你追求代码质量和性能。

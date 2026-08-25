@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,7 @@ import {
 
 const GOOD_TEAM = `schema_version: "1"
 team_id: alpha-squad
-name: 阿尔法小队
+name: 阿尔法团队
 default: true
 
 roles:
@@ -304,5 +304,32 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
     const error = await mgr.selectTeam('s1').catch((e) => e)
     expect(error).toBeInstanceOf(WeaveError)
     expect((error as WeaveError).code).toBe('invalid_team')
+  })
+})
+
+describe('TeamManager importTeam（Web 创建团队）', () => {
+  it('校验通过后写入 YAML，并可重新加载', () => {
+    const mgr = manager(['codex', 'zcode'])
+    const team = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: imported'))
+    expect(team.team_id).toBe('imported')
+    expect(mgr.loadTeam('imported').team_id).toBe('imported')
+  })
+
+  it('已存在默认拒绝，overwrite=true 允许更新', () => {
+    const mgr = manager(['codex', 'zcode'])
+    const yaml = GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: imported')
+    mgr.importTeam(yaml)
+    expectCode(() => mgr.importTeam(yaml), 'conflict')
+    expect(mgr.importTeam(yaml, { overwrite: true }).team_id).toBe('imported')
+  })
+
+  it('校验失败不落盘；路径非法直接拒绝', () => {
+    const mgr = manager(['codex'])
+    expectCode(() => mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: bad')), 'executor_unavailable')
+    expect(existsSync(join(dir, 'bad.yaml'))).toBe(false)
+    expectCode(
+      () => manager(['codex', 'zcode']).importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: ../bad')),
+      'invalid_team',
+    )
   })
 })

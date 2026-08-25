@@ -92,6 +92,25 @@ ctx.registry.delete(weavePlugin)       // 卸载
 `WeaveService` 在 `ctx.weave` 上提供 `version()` / `describe()` / `loadedAt`，后续模块
 （ExecutorRegistry / TaskStateMachine / Persistence 等）以方法或子服务挂载于此。
 
+## 5. Web 控制台与团队管理
+
+DSH Web 左侧底部点击 **Weave** 打开控制台。控制台中的 **团队** 页面会通过
+`/dsh-weave` Connection RPC 读取已注册执行器和团队，并可直接创建一个团队。
+
+- ZCode Provider 会在插件加载时自动发现：
+  - `zcode-acp-server` 来自本包依赖；
+  - ZCode CLI 默认探测 Windows 安装目录，也可用 `WEAVE_ZCODE_BIN` 显式指定；
+  - 运行 ZCode 的 Node 默认使用当前 Node（需 >=22），也可用 `WEAVE_ZCODE_NODE` 指定。
+- 创建团队时可填写 ZCode 的 Provider UUID 与模型 ID，例如：
+
+```text
+provider: 80600797-559a-47b9-9360-78f03230ae5c
+model: deepseek-v4-flash
+thought_level: max
+```
+
+团队文件写入 `~/.dsh/teams/<team_id>.yaml`；保存前会做完整结构和执行器校验。
+
 ## 5. 构建说明
 
 - 开发/测试：`tsconfig.json`（bundler 解析 + noEmit），vitest 直接跑 TS 源码。
@@ -100,7 +119,7 @@ ctx.registry.delete(weavePlugin)       // 卸载
 - `package.json` 的 `exports`：`"." → dist/plugins/weave/index.(js|d.ts)`（正式包入口），
   `"./src/*" → ./src/*`（开发期源码直载）。
 
-## 6. 与评审第 1 轮（HI-1 / E7）的对应
+## 7. 与评审第 1 轮（HI-1 / E7）的对应
 
 - E7：仓库无 package.json / src / tsconfig / vitest / eslint → 本脚手架补齐，且 `pnpm vitest run` 已可执行。
 - HI-1：DSH 插件交付形态未定义 → 定义为 npm 包 `@deepseek-ai/dsh-plugin-weave`（源码

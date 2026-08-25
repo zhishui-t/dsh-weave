@@ -1,6 +1,8 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import { registerWeaveRpc } from './rpc.js'
+import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
@@ -56,6 +58,11 @@ export function apply(ctx: Context): void {
     try {
       service.executorProviders = createDefaultExecutorProviderRegistry(ctx)
       const deps = createDefaultCliDeps(ctx)
+      const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
+      registerWeaveRpc(ctx, deps, async () => {
+        if (!zcodeProvider) return undefined
+        return await zcodeProvider.describeSession(process.cwd())
+      })
       const bundle = registerWeaveHost(ctx, deps)
       ctx.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
     } catch (error) {

@@ -18,7 +18,7 @@ import { MockSubagentsContext } from './fixtures/mock-subagents'
 
 const GOOD_TEAM = `schema_version: "1"
 team_id: alpha-squad
-name: 阿尔法小队
+name: 阿尔法团队
 default: true
 
 roles:
@@ -233,7 +233,7 @@ describe('WeaveMcp：团队与执行器', () => {
     const { mcp } = await newEnv()
     const { teams } = await mcp.teamList()
     expect(teams).toHaveLength(1)
-    expect(teams[0]).toMatchObject({ team_id: 'alpha-squad', name: '阿尔法小队', default: true })
+    expect(teams[0]).toMatchObject({ team_id: 'alpha-squad', name: '阿尔法团队', default: true })
     expect(teams[0]!.roles).toEqual(['designer', 'coder', 'reviewer'])
   })
 

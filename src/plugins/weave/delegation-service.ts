@@ -112,7 +112,7 @@ export interface RoleConfig {
   provider?: string
   /** 可选模型 id 覆盖（如 deepseek-v4-flash-vision-exp）；缺省继承父会话模型。 */
   model?: string
-  /** ACP 思考深度 / thought level；例如 max、high、low、enabled、disabled。 */
+  /** ACP 思考深度 / thought level；ZCode 当前支持 off、high、max。 */
   thought_level?: string
   /** ACP/agent 模式；例如 code、architect、yolo。 */
   mode?: string
