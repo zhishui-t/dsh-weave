@@ -1,6 +1,8 @@
 import { Readable, Writable } from 'node:stream'
 
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
+import type { ExecutorProviderMetadata, ExecutorRun, ExecutorSessionConfig, ExecutorStartRequest } from '../executors/executor-provider.js'
+import type { DelegationRunLike } from '../delegation-service.js'
 
 export type AcpExecutorEventType =
   | 'status'
@@ -19,6 +21,70 @@ export interface AcpExecutorEvent {
   name?: string
   data?: unknown
   at: number
+}
+
+export interface AcpAgentInfo {
+  name?: string
+  title?: string
+  version?: string
+}
+
+export interface AcpAgentCapabilities {
+  loadSession?: boolean
+  promptCapabilities?: {
+    image?: boolean
+    audio?: boolean
+    embeddedContext?: boolean
+  }
+  mcpCapabilities?: {
+    http?: boolean
+    sse?: boolean
+  }
+  sessionCapabilities?: {
+    list?: unknown
+    resume?: unknown
+    fork?: unknown
+  }
+  _meta?: unknown
+}
+
+export interface AcpAuthMethod {
+  id?: string
+  name?: string
+  description?: string
+}
+
+export interface AcpInitializeResponse {
+  protocolVersion?: number | string
+  agentInfo?: AcpAgentInfo
+  agentCapabilities?: AcpAgentCapabilities
+  authMethods?: AcpAuthMethod[]
+  _meta?: unknown
+}
+
+export interface AcpSelectOption {
+  value: string
+  name?: string
+}
+
+export interface AcpConfigOption {
+  id: string
+  name?: string
+  category?: string
+  type?: string
+  currentValue?: string
+  options?: AcpSelectOption[]
+}
+
+export interface AcpModeState {
+  currentModeId?: string
+  availableModes?: Array<{ id: string; name?: string }>
+}
+
+export interface AcpSessionNewResponse {
+  sessionId: string
+  modes?: AcpModeState
+  configOptions?: AcpConfigOption[]
 }
 
 export interface AcpSessionProviderConfig {
@@ -55,8 +121,8 @@ export interface AcpSessionConnection {
   process: SpawnedProcess
   dead: boolean
   sessions: Set<string>
+  initializeResponse?: AcpInitializeResponse
   handleSessionUpdate?(update: AcpSessionUpdate): void
-  /** 测试夹具可额外记录调用。 */
   cwd?: string
   newSession?: AcpConnectionLike['newSession']
 }
@@ -70,11 +136,11 @@ interface AcpSessionUpdate {
   toolCallId?: string
 }
 
-/** 依赖注入连接的最小形态，便于测试与替换真实 SDK 连接。 */
 export interface AcpSessionFactoryConnection {
   key: string
   cwd?: string
   sessions: Set<string>
+  initializeResponse?: AcpInitializeResponse
   initialize(params: unknown): Promise<unknown>
   newSession(params: { cwd: string; mcpServers: unknown[] }): Promise<{ sessionId: string }>
   loadSession?(params: { sessionId: string; cwd: string; mcpServers: unknown[] }): Promise<unknown>
@@ -105,6 +171,38 @@ interface RunController {
   output: Array<{ type: 'text'; text: string }>
 }
 
+export interface AcpSessionStartRequest {
+  executor?: string
+  sessionKey: string
+  prompt: Array<{ type: string; text?: string }>
+  parent?: unknown
+  signal: AbortSignal
+  weave?: StartOptions
+}
+
+export interface AcpSessionRun extends Omit<DelegationRunLike, 'result'> {
+  id: string
+  localAgent: undefined
+  result: Promise<{
+    output: Array<{ type: string; text?: string }>
+    stopReason: 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal'
+    applied?: {
+      model?: { requested?: unknown; effective?: unknown; supported: boolean }
+      thinking?: { requested?: unknown; effective?: unknown; supported: boolean }
+      mode?: { requested?: unknown; effective?: unknown; supported: boolean }
+      tools?: { requested?: unknown; effective?: unknown; supported: boolean; fallback?: boolean }
+    }
+  }>
+  dispose(): Promise<void>
+  readOutput(): AcpExecutorEvent[]
+  onEvent(listener: (event: AcpExecutorEvent) => void): () => void
+  initializeResponse?: AcpInitializeResponse
+  sessionResponse?: AcpSessionNewResponse
+  configOptions?: AcpConfigOption[]
+  providerMetadata?: ExecutorProviderMetadata
+  sessionConfig?: ExecutorSessionConfig
+}
+
 async function disposeProcess(process: SpawnedProcess, eofGraceMs: number): Promise<void> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), eofGraceMs)
@@ -124,11 +222,6 @@ function normalizeAcpStopReason(reason: string): 'completed' | 'aborted' | 'erro
   return 'error'
 }
 
-/**
- * 长连接 ACP 执行器 Provider。
- * 与 stock dsh-subagent-acp 不同：按 sessionKey 复用会话，支持模型/思考深度
- * 扩展，并暴露实时 session/update 事件；run.dispose 只取消当前 prompt。
- */
 export class AcpSessionProvider {
   readonly name: string
   readonly capabilities = { outputSchema: false, depthLimit: false, toolFilter: false, persona: false }
@@ -161,19 +254,7 @@ export class AcpSessionProvider {
     this.#connect = connect
   }
 
-  async start(request: {
-    parent?: unknown
-    signal: AbortSignal
-    prompt: Array<{ type: string; text?: string }>
-    weave?: StartOptions
-  }): Promise<{
-    id: string
-    localAgent: undefined
-    result: Promise<{ output: Array<{ type: string; text?: string }>; stopReason: string }>
-    dispose(): Promise<void>
-    readOutput(): AcpExecutorEvent[]
-    onEvent(listener: (event: AcpExecutorEvent) => void): () => void
-  }> {
+  async start(request: AcpSessionStartRequest): Promise<AcpSessionRun> {
     if (request.signal.aborted) throw new Error(`${this.name}: aborted before ACP session started`)
 
     const weave = request.weave ?? {}
@@ -181,17 +262,20 @@ export class AcpSessionProvider {
     const cwd = this.#configuredCwd ?? parent?.session?.header?.cwd
     if (!cwd) throw new Error(`${this.name}: cwd is required`)
 
-    const sessionKey = weave.sessionKey ?? `${cwd}`
+    const sessionKey = request.sessionKey
     const connection = await this.#acquireConnection(cwd)
     let sessionId = weave.resumeSessionId ?? this.#sessions.get(sessionKey)?.sessionId
+    let sessionResponse: AcpSessionNewResponse | undefined
     const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
 
     if (sessionId === undefined || !knownInConnection) {
       if (sessionId !== undefined && connection.conn.loadSession) {
-        await connection.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+        const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+        sessionResponse = loaded as AcpSessionNewResponse
       } else {
         const created = await connection.conn.newSession({ cwd, mcpServers: [] })
         sessionId = created.sessionId
+        sessionResponse = created
       }
       this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
     }
@@ -199,25 +283,25 @@ export class AcpSessionProvider {
     const runId = `acp-${sessionId}`
     const controller = this.#startRunController(runId)
 
-    if (weave.model) {
-      const modelValue = weave.modelProvider
-        ? weave.modelProvider + String.fromCharCode(92) + weave.model
-        : weave.model
+    if (weave.modelProvider !== undefined || weave.model !== undefined) {
+      const providerId = weave.modelProvider
+      const modelId = weave.model
+      if (!modelId) throw new Error(`${this.name}: model is required`)
+      const modelValue = providerId ? [providerId, modelId].join(String.fromCharCode(92)) : modelId
       await connection.conn.extMethod('session/setModel', { sessionId, modelId: modelValue })
       this.#emit(controller, { type: 'status', text: `model=${modelValue}` })
     }
 
-    if (weave.thoughtLevel) {
-      await connection.conn.extMethod('session/setThoughtLevel', {
-        sessionId,
-        thoughtLevel: weave.thoughtLevel,
-      })
-      this.#emit(controller, { type: 'status', text: `thought=${weave.thoughtLevel}` })
+    if (weave.thoughtLevel !== undefined) {
+      const thoughtLevel = weave.thoughtLevel
+      await connection.conn.extMethod('session/setThoughtLevel', { sessionId, thoughtLevel })
+      this.#emit(controller, { type: 'status', text: `thought=${thoughtLevel}` })
     }
 
-    if (weave.mode) {
-      await connection.conn.extMethod('session/setMode', { sessionId, mode: weave.mode })
-      this.#emit(controller, { type: 'status', text: `mode=${weave.mode}` })
+    if (weave.mode !== undefined) {
+      const mode = weave.mode
+      await connection.conn.extMethod('session/setMode', { sessionId, mode })
+      this.#emit(controller, { type: 'status', text: `mode=${mode}` })
     }
 
     const previous = this.#prompts.get(sessionKey) ?? Promise.resolve()
@@ -257,6 +341,19 @@ export class AcpSessionProvider {
         controller.listeners.add(listener)
         return () => controller.listeners.delete(listener)
       },
+      initializeResponse: connection.initializeResponse,
+      ...(sessionResponse !== undefined ? { sessionResponse } : {}),
+      ...(sessionResponse?.configOptions !== undefined ? { configOptions: sessionResponse.configOptions } : {}),
+      providerMetadata: connection.initializeResponse ? {
+        protocolVersion: connection.initializeResponse.protocolVersion,
+        agentInfo: connection.initializeResponse.agentInfo,
+        agentCapabilities: connection.initializeResponse.agentCapabilities,
+        authMethods: connection.initializeResponse.authMethods,
+      } : undefined,
+      sessionConfig: sessionResponse ? {
+        modes: sessionResponse.modes,
+        configOptions: sessionResponse.configOptions,
+      } : undefined,
     }
   }
 
@@ -279,17 +376,24 @@ export class AcpSessionProvider {
       controller.events.push(full)
       for (const listener of controller.listeners) listener(full)
     }
-    const outputText = update.sessionUpdate === 'agent_message_chunk'
-      ? update.content?.type === 'text' ? update.content.text : undefined
-      : undefined
-    if (typeof outputText === 'string') {
-      controller.output.push({ type: 'text', text: outputText })
-      push({ type: 'output', text: outputText })
-    } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
+
+    if (update.sessionUpdate === 'agent_message_chunk') {
+      const outputText = update.content?.type === 'text' ? update.content.text : undefined
+      if (typeof outputText === 'string') {
+        controller.output.push({ type: 'text', text: outputText })
+        push({ type: 'output', text: outputText })
+      }
+      return
+    }
+    if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
       push({ type: 'reasoning', text: update.content.text })
-    } else if (update.sessionUpdate === 'tool_call') {
+      return
+    }
+    if (update.sessionUpdate === 'tool_call') {
       push({ type: 'tool_call', name: update.title, data: update })
-    } else if (update.sessionUpdate === 'tool_call_update') {
+      return
+    }
+    if (update.sessionUpdate === 'tool_call_update') {
       push({ type: 'tool_result', name: update.toolCallId, data: update })
     }
   }
@@ -298,11 +402,18 @@ export class AcpSessionProvider {
     const key = `${this.#command}:${this.#args.join(' ')}:${cwd}`
     const existing = this.#connections.get(key)
     if (existing && !existing.dead) return existing
+
     if (this.#connect) {
-      const factoryConnection = await this.#connect(cwd, key)
+      const factory = await this.#connect(cwd, key)
+      const initializeResponse = factory.initializeResponse ??
+        await factory.initialize({
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: { fs: { readTextFile: true, writeTextFile: false } },
+        }) as AcpInitializeResponse
       const connection: AcpSessionConnection = {
-        ...factoryConnection,
-        conn: factoryConnection,
+        ...factory,
+        conn: factory,
+        initializeResponse,
         process: {
           done: new Promise(() => undefined),
           waitForExit: async () => undefined,
@@ -311,9 +422,8 @@ export class AcpSessionProvider {
         dead: false,
         handleSessionUpdate: (update) => this.#handleSessionUpdate(connection, update),
       }
+      factory.handleSessionUpdate = connection.handleSessionUpdate
       this.#connections.set(key, connection)
-      // 让测试/工厂持有的同一连接对象也能触发 Provider 事件路由。
-      factoryConnection.handleSessionUpdate = connection.handleSessionUpdate
       return connection
     }
 
@@ -327,10 +437,19 @@ export class AcpSessionProvider {
     if (!child.stdin || !child.stdout) throw new Error(`${this.name}: ACP stdin/stdout streams are required`)
 
     const permission = this.#permission
-    const connection: AcpSessionConnection = { key, conn: undefined as unknown as AcpConnectionLike, process: child, dead: false, sessions: new Set(), handleSessionUpdate: (update) => this.#handleSessionUpdate(connection, update) }
+    const connection: AcpSessionConnection = {
+      key,
+      conn: undefined as unknown as AcpConnectionLike,
+      process: child,
+      dead: false,
+      sessions: new Set(),
+      handleSessionUpdate: (update) => this.#handleSessionUpdate(connection, update),
+    }
 
     const client = {
-      requestPermission(params: { options: Array<{ kind?: string; optionId?: string | number }> }) {
+      requestPermission(params: {
+        options: Array<{ kind?: string; optionId?: string | number }>
+      }) {
         if (permission !== 'allow') return { outcome: { outcome: 'cancelled' } }
         const option =
           params.options.find((item) => item.kind === 'allow_once') ??
@@ -346,20 +465,20 @@ export class AcpSessionProvider {
     }
 
     const conn = new ClientSideConnection(
-      () => client as any,
+      () => client as never,
       ndJsonStream(
         Writable.toWeb(child.stdin as Parameters<typeof Writable.toWeb>[0]) as never,
         Readable.toWeb(child.stdout as Parameters<typeof Readable.toWeb>[0]) as never,
-    ),
+      ),
     )
     connection.conn = conn
     this.#connections.set(key, connection)
     conn.signal.addEventListener('abort', () => { connection.dead = true }, { once: true })
 
-    await conn.initialize({
+    connection.initializeResponse = await conn.initialize({
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: false } },
-    })
+    }) as AcpInitializeResponse
     return connection
   }
 
@@ -414,9 +533,8 @@ export function zcodeAcpProviderConfigFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): AcpSessionProviderConfig | undefined {
   const serverPath = env.WEAVE_ZCODE_ACP_SERVER
-  if (!serverPath) return undefined
   const zcodeBin = env.WEAVE_ZCODE_BIN
-  if (!zcodeBin) return undefined
+  if (!serverPath || !zcodeBin) return undefined
 
   const zcodeNode = env.WEAVE_ZCODE_NODE
   const debug = env.WEAVE_ZCODE_ACP_DEBUG === '1'
@@ -428,7 +546,7 @@ export function zcodeAcpProviderConfigFromEnvironment(
       ...Object.fromEntries(
         Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       ),
-      ...(zcodeBin ? { ZCODE_BIN: zcodeBin } : {}),
+      ZCODE_BIN: zcodeBin,
       ...(zcodeNode ? { ZCODE_NODE: zcodeNode } : {}),
       ...(debug ? { ZCODE_ACP_DEBUG: '1' } : {}),
     },
@@ -455,8 +573,7 @@ export interface ZcodeAcpExecutorProviderOptions {
 }
 
 /**
- * 把长连接 ACP Session Provider 适配成 Weave 统一 ExecutorProvider。
- * ZCode 通过 ACP 扩展支持模型、思考深度、模式和实时输出。
+ * 把长连接 ACP Session Provider 适配成统一 ExecutorProvider。
  */
 export class ZcodeAcpExecutorProvider {
   readonly #provider: AcpSessionProvider
@@ -493,30 +610,36 @@ export class ZcodeAcpExecutorProvider {
     return this.#executorIds.has(executor)
   }
 
-  async start(request: import('../executors/executor-provider.js').ExecutorStartRequest): Promise<
-    import('../executors/executor-provider.js').ExecutorRun
-  > {
+  async start(request: ExecutorStartRequest): Promise<ExecutorRun> {
+    const weave = request.runtime?.model
+      ? {
+          sessionKey: request.sessionKey,
+          ...(request.resumeSessionId !== undefined ? { resumeSessionId: request.resumeSessionId } : {}),
+          ...(request.runtime.model.provider !== undefined ? { modelProvider: request.runtime.model.provider } : {}),
+          ...(request.runtime.model.id !== undefined ? { model: request.runtime.model.id } : {}),
+          ...(request.runtime?.thoughtLevel !== undefined ? { thoughtLevel: request.runtime.thoughtLevel } : {}),
+          ...(request.runtime?.mode !== undefined ? { mode: request.runtime.mode } : {}),
+        }
+      : {
+          sessionKey: request.sessionKey,
+          ...(request.resumeSessionId !== undefined ? { resumeSessionId: request.resumeSessionId } : {}),
+          ...(request.runtime?.thoughtLevel !== undefined ? { thoughtLevel: request.runtime.thoughtLevel } : {}),
+          ...(request.runtime?.mode !== undefined ? { mode: request.runtime.mode } : {}),
+        }
+
     const run = await this.#provider.start({
+      sessionKey: request.sessionKey,
       parent: request.parent,
       signal: request.signal,
       prompt: request.prompt.map((block) => ({
         type: 'text' as const,
         ...(typeof block.text === 'string' ? { text: block.text } : {}),
       })) as Array<{ type: 'text'; text: string }>,
-      weave: {
-        sessionKey: request.sessionKey,
-        ...(request.resumeSessionId !== undefined ? { resumeSessionId: request.resumeSessionId } : {}),
-        ...(request.runtime?.model?.provider !== undefined
-          ? { modelProvider: request.runtime.model.provider }
-          : {}),
-        ...(request.runtime?.model?.id !== undefined ? { model: request.runtime.model.id } : {}),
-        ...(request.runtime?.thoughtLevel !== undefined ? { thoughtLevel: request.runtime.thoughtLevel } : {}),
-        ...(request.runtime?.mode !== undefined ? { mode: request.runtime.mode } : {}),
-      },
+      weave,
     })
 
     const sessionId = run.id.startsWith('acp-') ? run.id.slice(4) : run.id
-    const decorate = (event: import('../acp/acp-session-provider.js').AcpExecutorEvent) => ({
+    const decorate = (event: AcpExecutorEvent) => ({
       ...event,
       taskId: request.executor,
       executor: request.executor,
@@ -548,16 +671,25 @@ export class ZcodeAcpExecutorProvider {
       },
     }
 
+    const init = run.initializeResponse
     return {
       ...run,
       providerId: this.id,
       sessionId,
       result: run.result.then((result) => ({ ...result, applied })),
       applied,
-      readOutput: () => run.readOutput?.().map(decorate) ?? [],
-      onEvent: (listener) => run.onEvent
-        ? run.onEvent((event) => listener(decorate(event)))
-        : () => undefined,
+      readOutput: () => run.readOutput().map(decorate),
+      onEvent: (listener) => run.onEvent((event) => listener(decorate(event))),
+      providerMetadata: init ? {
+        protocolVersion: init.protocolVersion,
+        agentInfo: init.agentInfo,
+        agentCapabilities: init.agentCapabilities,
+        authMethods: init.authMethods,
+      } : undefined,
+      sessionConfig: run.sessionResponse ? {
+        modes: run.sessionResponse.modes,
+        configOptions: run.sessionResponse.configOptions,
+      } : undefined,
     }
   }
 }

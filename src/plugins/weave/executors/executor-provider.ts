@@ -80,10 +80,43 @@ export interface ExecutorEvent {
   at: number
 }
 
+export interface ExecutorProviderMetadata {
+  protocolVersion?: number | string
+  agentInfo?: unknown
+  agentCapabilities?: unknown
+  authMethods?: unknown[]
+}
+
+export interface ExecutorSessionMode {
+  id: string
+  name?: string
+}
+
+export interface ExecutorSessionConfigOption {
+  id: string
+  name?: string
+  category?: string
+  type?: string
+  currentValue?: string
+  options?: Array<{ value: string; name?: string }>
+}
+
+export interface ExecutorSessionConfig {
+  modes?: {
+    currentModeId?: string
+    availableModes?: ExecutorSessionMode[]
+  }
+  configOptions?: ExecutorSessionConfigOption[]
+}
+
 export interface ExecutorRun extends Omit<DelegationRunLike, 'result'> {
   providerId: string
   sessionId?: string
   result: Promise<ExecutorResult>
+  /** Provider 初始化返回；不同执行器结构可能不同。 */
+  providerMetadata?: ExecutorProviderMetadata
+  /** 会话创建/恢复时返回的可用模式与配置项。 */
+  sessionConfig?: ExecutorSessionConfig
   applied?: ExecutorResult['applied']
   /** Provider 应至少支持事件缓冲快照；不支持实时流的实现可省略。 */
   readOutput?(): ExecutorEvent[]

@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
+const ACP_MODEL_SEPARATOR = String.fromCharCode(92)
+
 import {
   AcpSessionProvider,
   type AcpSessionProviderConfig,
   type AcpSessionFactoryConnection,
+  type AcpConfigOption,
 } from '../acp/acp-session-provider'
 
 function makeFixtures() {
@@ -35,12 +38,50 @@ function makeFixtures() {
     const connection: AcpSessionFactoryConnection = {
       key,
       cwd,
-      initialize: vi.fn().mockResolvedValue({}),
+      initialize: vi.fn().mockResolvedValue({
+        protocolVersion: 1,
+        agentInfo: { name: 'zcode-acp-server', title: 'ZCode', version: '0.11.9' },
+        agentCapabilities: { loadSession: true },
+        authMethods: [{ id: 'zcode-credentials', name: 'ZCode built-in credentials' }],
+      }),
       newSession: vi.fn().mockImplementation(async () => {
         sessionSequence += 1
         const sessionId = `acp-session-${sessionSequence}`
         connection.sessions.add(sessionId)
-        return { sessionId }
+        return {
+          sessionId,
+          modes: {
+            currentModeId: 'yolo',
+            availableModes: [
+              { id: 'plan', name: 'Plan' },
+              { id: 'build', name: 'Build' },
+              { id: 'yolo', name: 'Yolo' },
+            ],
+          },
+          configOptions: [
+            {
+              id: 'model',
+              category: 'model',
+              currentValue: 'provider-id' + ACP_MODEL_SEPARATOR + 'deepseek-v4-flash',
+              options: [
+                { value: 'provider-id' + ACP_MODEL_SEPARATOR + 'deepseek-v4-flash', name: 'deepseek › deepseek-v4-flash' },
+                { value: 'provider-id' + ACP_MODEL_SEPARATOR + 'DeepSeek-V4-Pro', name: 'deepseek › DeepSeek-V4-Pro' },
+              ],
+            },
+            {
+              id: 'mode',
+              category: 'mode',
+              currentValue: 'yolo',
+              options: [{ value: 'plan' }, { value: 'build' }, { value: 'yolo' }],
+            },
+            {
+              id: 'thought',
+              category: 'thought_level',
+              currentValue: 'max',
+              options: [{ value: 'off' }, { value: 'high' }, { value: 'max' }],
+            },
+          ],
+        }
       }),
       loadSession: vi.fn(),
       prompt: vi.fn().mockImplementation(async (params: { sessionId: string }) => {
@@ -79,9 +120,9 @@ describe('AcpSessionProvider', () => {
     const run = await provider.start({
       parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
       signal: new AbortController().signal,
+      sessionKey: 'team:coder:weave:v1',
       prompt: [{ type: 'text', text: 'hello' }],
       weave: {
-        sessionKey: 'team:coder:weave:v1',
         modelProvider: 'provider-id',
         model: 'deepseek-v4-flash-vision-exp',
         thoughtLevel: 'max',
@@ -89,6 +130,20 @@ describe('AcpSessionProvider', () => {
     })
 
     const output = await run.result
+    expect(run.providerMetadata?.agentInfo).toEqual({
+      name: 'zcode-acp-server',
+      title: 'ZCode',
+      version: '0.11.9',
+    })
+    expect(run.providerMetadata?.agentCapabilities).toEqual({ loadSession: true })
+    expect(run.sessionConfig?.modes?.currentModeId).toBe('yolo')
+    const configOptions: AcpConfigOption[] = run.sessionConfig?.configOptions ?? []
+    expect(configOptions.map((option) => option.id)).toEqual(['model', 'mode', 'thought'])
+    expect(configOptions[0]?.options?.map((option) => option.value)).toEqual([
+      'provider-id' + ACP_MODEL_SEPARATOR + 'deepseek-v4-flash',
+      'provider-id' + ACP_MODEL_SEPARATOR + 'DeepSeek-V4-Pro',
+    ])
+    expect(configOptions[2]?.currentValue).toBe('max')
     expect(output.stopReason).toBe('completed')
     expect(run.id).toBe('acp-acp-session-1')
     expect(run.readOutput().map((event) => [event.type, event.text])).toEqual([
@@ -107,11 +162,11 @@ describe('AcpSessionProvider', () => {
       prompt: [{ type: 'text', text: 'continue' }],
     }
 
-    const first = await provider.start({ ...request, weave: { sessionKey: 'role-project-version' } })
+    const first = await provider.start({ ...request, sessionKey: 'role-project-version' })
     await first.result
-    const second = await provider.start({ ...request, weave: { sessionKey: 'role-project-version' } })
+    const second = await provider.start({ ...request, sessionKey: 'role-project-version' })
     await second.result
-    const third = await provider.start({ ...request, weave: { sessionKey: 'isolated' } })
+    const third = await provider.start({ ...request, sessionKey: 'isolated' })
     await third.result
 
     expect(connections).toHaveLength(1)
