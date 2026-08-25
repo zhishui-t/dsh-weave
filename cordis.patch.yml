@@ -1,0 +1,5 @@
+# dsh-weave bundle patch — mounts the dsh-weave plugin into the DSH profile.
+# Install via: dsh plugin --profile web add <this package>
+- insert:
+    - id: dsh-weave
+      name: '@deepseek-ai/dsh-plugin-weave'
