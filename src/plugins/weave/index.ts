@@ -51,25 +51,30 @@ export function apply(ctx: Context): void {
   // 插件标识固定为 dsh-weave；业务服务仍以 ctx.weave 暴露。
   const service = new WeaveService(ctx, 'weave')
 
-  // 真实 DSH 宿主接入：存在 ctx.subagents 时自动组装默认依赖并注册 MCP 工具 + /weave 命令。
-  // 通过 reflect.get 检测服务，避免在未声明 inject 的裸 Context 中抛错。
-  const subagents = ctx.reflect.get('subagents', false)
-  if (subagents) {
+  // 真实 DSH 宿主接入：等待宿主服务就绪后一次性注册真实依赖。
+  // 执行器列表来自 ctx.subagents 当前实际注册项；ZCode ACP 只是可选附加源。
+  ctx.inject(['subagents', 'commands', 'tools', 'connection'], (scoped) => {
+    const runtime = scoped as Context
+
     try {
-      service.executorProviders = createDefaultExecutorProviderRegistry(ctx)
-      const deps = createDefaultCliDeps(ctx)
+      service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
+    } catch (error) {
+      console.warn('[dsh-weave] executor provider registration failed:', error)
+    }
+
+    try {
+      const deps = createDefaultCliDeps(runtime)
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
-      registerWeaveRpc(ctx, deps, async () => {
+      registerWeaveRpc(runtime, deps, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
       })
-      const bundle = registerWeaveHost(ctx, deps)
-      ctx.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
+      const bundle = registerWeaveHost(runtime, deps)
+      runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
     } catch (error) {
-      // 自动接线失败不阻断插件加载；宿主仍可手动调用 registerWeaveHost。
       console.warn('[dsh-weave] automatic host wiring failed:', error)
     }
-  }
+  })
 }
 
 /* ---------- 宿主接线（P0-PLUGIN-WIRE / t37） ---------- */

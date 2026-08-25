@@ -182,7 +182,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   function TeamsPage() {
     const [teams, setTeams] = useState([] as TeamSummary[])
-    const [executors, setExecutors] = useState([] as string[])
+    const [executors, setExecutors] = useState([] as Array<{ id: string; kind?: string }>)
     const [models, setModels] = useState([] as SelectOption[])
     const [modes, setModes] = useState([] as string[])
     const [thoughtLevels, setThoughtLevels] = useState([] as string[])
@@ -209,7 +209,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         const separator = String.fromCharCode(92)
         const data = await callRpc('snapshot') as {
           teams?: Array<Record<string, unknown>>
-          executors?: Array<{ id: string }>
+          executors?: Array<{ id: string; kind?: string }>
           zcodeCapabilities?: {
             models?: SelectOption[]
             currentModel?: string
@@ -219,7 +219,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             currentThoughtLevel?: string
           }
         }
-        const nextExecutors = (data.executors ?? []).map((item) => item.id)
+        const nextExecutors = data.executors ?? []
         const capabilities = data.zcodeCapabilities
         const nextModels = capabilities?.models ?? []
         const nextModes = (capabilities?.modes ?? []).map((option) => option.value)
@@ -243,7 +243,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             ...current,
             provider,
             model,
-            executor: current.executor || (nextExecutors.includes('zcode') ? 'zcode' : nextExecutors[0] ?? ''),
+            executor: current.executor || nextExecutors[0]?.id || '',
             mode: current.mode || capabilities?.currentMode || '',
             thoughtLevel: current.thoughtLevel || capabilities?.currentThoughtLevel || '',
           }
@@ -379,29 +379,38 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             React.createElement(
               'select',
               { value: form.executor, onChange: update('executor') },
-              ...(executors.length ? executors.map((value: string) => React.createElement('option', { key: value, value }, value)) : [React.createElement('option', { key: 'empty', value: '' }, '加载中')]),
-            ),
-          ),
-          React.createElement(
-            'label',
-            { className: 'weave-field' },
-            React.createElement('span', null, '模型（ZCode 能力目录）'),
-            React.createElement(
-              'select',
-              { 'data-testid': 'model-select', value: modelValue, onChange: updateModel },
-              ...(models.length
-                ? models.map((option: SelectOption) => React.createElement(
+              ...(executors.length
+                ? executors.map((executor: { id: string; kind?: string }) => React.createElement(
                   'option',
-                  { key: option.value, value: option.value },
-                  option.name ?? option.value,
+                  { key: executor.id, value: executor.id },
+                  executor.kind ? `${executor.id} · ${executor.kind}` : executor.id,
                 ))
-                : [React.createElement('option', { key: 'empty', value: '' }, '加载中')]),
+                : [React.createElement('option', { key: 'empty', value: '' }, '未发现执行器')]),
             ),
           ),
-          field('Provider 覆盖', 'provider', '一般由模型选择自动填入'),
-          field('Model 覆盖', 'model', '一般由模型选择自动填入'),
-          select('思考深度', 'thoughtLevel', thoughtLevels.length ? thoughtLevels : ['off', 'high', 'max']),
-          select('模式', 'mode', modes.length ? modes : ['plan', 'build', 'edit', 'yolo', 'auto']),
+          ...(form.executor === 'zcode' ? [
+            React.createElement(
+              'label',
+              { className: 'weave-field' },
+              React.createElement('span', null, 'ZCode 模型目录'),
+              React.createElement(
+                'select',
+                { 'data-testid': 'model-select', value: modelValue, onChange: updateModel },
+                ...(models.length
+                  ? models.map((option: SelectOption) => React.createElement(
+                    'option',
+                    { key: option.value, value: option.value },
+                    option.name ?? option.value,
+                  ))
+                  : [React.createElement('option', { key: 'loading', value: '' }, '加载能力目录')]),
+              ),
+            ),
+            select('思考深度', 'thoughtLevel', thoughtLevels.length ? thoughtLevels : ['off', 'high', 'max']),
+            select('模式', 'mode', modes.length ? modes : ['plan', 'build', 'edit', 'yolo', 'auto']),
+          ] : [
+            field('Provider 覆盖', 'provider', '可选；由执行器决定是否支持'),
+            field('Model 覆盖', 'model', '可选；由执行器决定是否支持'),
+          ]),
           field('角色提示词', 'personality', '', 'textarea'),
           React.createElement(
             'button',
@@ -546,7 +555,7 @@ moduleLoader.load({
     const localApply = (ctx: ClientContext): void => {
       const connection = ctx.get('connection')
       callRpc = async (endpoint, payload) => {
-        const result = await connection.rpc.call('/dsh-weave', endpoint, payload)
+        const result = await connection.rpc.call('/dsh-weave', endpoint, payload ?? {})
         if (!result.ok) throw new Error(`${result.error?.code ?? 'rpc-error'}: ${result.error?.message ?? 'RPC failed'}`)
         return result.value
       }

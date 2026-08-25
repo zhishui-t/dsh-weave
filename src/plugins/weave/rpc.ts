@@ -62,10 +62,12 @@ function objectPayload(payload: unknown): Record<string, unknown> {
 export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
 
 export function createWeaveRpcHandler(
-  deps: Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'>,
+  deps: Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> | (() => Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'>),
   zcodeCatalog?: ZcodeCatalog,
 ) {
-  return async (endpoint: string, payload: unknown, _signal?: AbortSignal): Promise<RpcResult<unknown>> => {
+  return async (endpoint: string, rawPayload: unknown, _signal?: AbortSignal): Promise<RpcResult<unknown>> => {
+    const payload = rawPayload ?? {}
+    const resolvedDeps = typeof deps === 'function' ? deps() : deps
     try {
       if (endpoint === 'snapshot') {
         let zcodeSessionConfig: ExecutorSessionConfig | undefined
@@ -89,7 +91,7 @@ export function createWeaveRpcHandler(
             thoughtLevels: thoughtOption?.options ?? [],
             currentThoughtLevel: thoughtOption?.currentValue,
           },
-          teams: deps.teamManager.listTeams().map((team) => ({
+          teams: resolvedDeps.teamManager.listTeams().map((team) => ({
             team_id: team.team_id,
             name: team.name,
             default: team.default,
@@ -103,7 +105,7 @@ export function createWeaveRpcHandler(
               mode: role.mode,
             })),
           })),
-          executors: deps.executorRegistry.list().map((executor) => ({
+          executors: resolvedDeps.executorRegistry.list().map((executor) => ({
             id: executor.id,
             kind: executor.kind,
             capabilities: executor.capabilities,
@@ -120,7 +122,7 @@ export function createWeaveRpcHandler(
         if (yaml.trim() === '') {
           throw new WeaveError('invalid_argument', 'team/import 需要 yaml 文本或 config 对象')
         }
-        const team = deps.teamManager.importTeam(yaml, { overwrite: input.overwrite === true })
+        const team = resolvedDeps.teamManager.importTeam(yaml, { overwrite: input.overwrite === true })
         return success({ team_id: team.team_id, name: team.name, roles: team.roles.length })
       }
 
@@ -132,7 +134,10 @@ export function createWeaveRpcHandler(
 }
 
 /** Connection 是 Web 可选服务；headless 插件加载时自动降级为仅 MCP/CLI。 */
-export function registerWeaveRpc(context: Context, deps: CliMcpDeps, zcodeCatalog?: ZcodeCatalog): boolean {
+export function registerWeaveRpc(
+  context: Context,
+  deps: Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> | (() => Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'>),
+  zcodeCatalog?: ZcodeCatalog): boolean {
   const runtime = context as Context & {
     inject?(services: string[], callback: (scoped: Context & { connection?: { rpc?: HostConnectionRpc } }) => unknown): unknown
     connection?: { rpc?: HostConnectionRpc }
