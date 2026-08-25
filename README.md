@@ -60,7 +60,7 @@ Vitest 只收集 `src/plugins/weave/__tests__/**/*.test.ts`（见 `vitest.config
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
-import * as weavePlugin from './src/plugins/weave/index.js'  // { name: 'weave', inject, apply }
+import * as weavePlugin from './src/plugins/weave/index.js'  // { name: 'dsh-weave', inject, apply }
 
 const ctx = new Context()
 await ctx.plugin(weavePlugin as any)   // or: ctx.plugin(weavePlugin) with proper typing
@@ -74,7 +74,7 @@ ctx.registry.delete(weavePlugin)       // 卸载
 在 cordis 配置文件中以包名声明：
 
 ```yaml
-- id: weave
+- id: dsh-weave
   name: '@deepseek-ai/dsh-plugin-weave'
 ```
 
@@ -85,7 +85,7 @@ ctx.registry.delete(weavePlugin)       // 卸载
 
 `src/plugins/weave/index.ts` 导出（与 cordis-plugin-loader 兼容）：
 
-- `name` — 插件名 `'weave'`（内部标识不带 `dsh`；外部包名为 `@deepseek-ai/dsh-plugin-weave`）；业务服务以 `ctx.weave` 暴露。
+- `name` — 插件 identifier `'dsh-weave'`；外部包名 `@deepseek-ai/dsh-plugin-weave`；业务服务以 `ctx.weave` 暴露。
 - `inject` — 服务依赖声明；P0 暂无强依赖（`{}`），后续按需声明。
 - `apply(ctx, config)` — 注册 `WeaveService`（继承 cordis `Service`，随插件 fiber 自动注册/析构）。
 

@@ -330,7 +330,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(weave.mcp).toBeDefined()
     expect(weave.cli).toBeDefined()
     const weaveMod = weavePlugin as { name: string; apply: unknown }
-    expect(weaveMod.name).toBe('weave')
+    expect(weaveMod.name).toBe('dsh-weave')
     expect(weaveMod.apply).toBeTypeOf('function')
   })
 })
