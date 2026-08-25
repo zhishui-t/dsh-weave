@@ -50,33 +50,41 @@ function ensureStyle(): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
-.weave-sidebar-action{width:100%;height:36px;border:1px solid var(--theme-border,#333);border-radius:10px;background:transparent;color:var(--theme-text,#ddd);font:inherit;font-size:13px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer}
-.weave-sidebar-action:hover{border-color:#4a9eff;color:#4a9eff}
-.weave-overlay{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.62);backdrop-filter:blur(3px);display:flex}
-.weave-shell{width:min(1280px,calc(100vw - 48px));height:min(860px,calc(100vh - 48px));background:#101418;color:#e6e8eb;border:1px solid #2a2f36;border-radius:16px;overflow:hidden;display:flex;box-shadow:0 24px 80px rgba(0,0,0,.55)}
-.weave-side{width:216px;flex:0 0 216px;border-right:1px solid #23282f;padding:18px 12px;display:flex;flex-direction:column;gap:14px;background:#0c1013}
-.weave-brand{font-size:18px;font-weight:700;padding:0 10px}
-.weave-brand small{display:block;margin-top:2px;color:#7d8590;font-size:11px;font-weight:500}
+.weave-action-layer{position:relative;width:calc(100% + 4px);height:42px;margin:8px -2px 0;display:flex;flex:none}
+.weave-action-layer.weave-action-rail{width:36px;height:36px;margin:0}
+.weave-action-button{box-sizing:border-box;width:100%;height:42px;border:0;border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;margin:0;padding:0 10px 0 8px;overflow:hidden}
+.weave-action-rail .weave-action-button{width:36px;height:36px;border-radius:50%;justify-content:center;gap:0;padding:0}
+.weave-action-button:hover,.weave-action-button[data-open="true"]{background:var(--dsw-alias-interactive-bg-hover)}
+.weave-action-mark{width:16px;height:16px;border:1.5px solid currentColor;border-radius:5px;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:750;line-height:1}
+.weave-action-rail .weave-action-mark{width:18px;height:18px;font-size:10px}
+.weave-action-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.weave-action-state{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums;flex:none}
+.weave-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur);display:flex;align-items:center;justify-content:center}
+.weave-shell{width:min(1280px,calc(100vw - 48px));height:min(860px,calc(100vh - 48px));background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-inverted);border-radius:24px;overflow:hidden;display:flex;box-shadow:var(--dsw-shadow-lv3)}
+.weave-side{width:216px;flex:0 0 216px;border-right:1px solid var(--dsw-alias-border-l2);padding:22px 12px 12px;display:flex;flex-direction:column;gap:18px;background:var(--dsw-alias-bg-layer-2)}
+.weave-brand{color:var(--dsw-alias-label-primary);font-size:16px;font-weight:600;line-height:24px;padding:0 12px}
+.weave-brand small{display:block;margin-top:2px;color:var(--dsw-alias-label-caption);font-size:11px;font-weight:450;line-height:16px}
 .weave-nav{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
-.weave-nav-item{width:100%;text-align:left;border:0;background:transparent;color:#b8bec6;border-radius:9px;padding:9px 12px;font:inherit;font-size:13px;cursor:pointer}
-.weave-nav-item:hover{background:#161b21;color:#e6e8eb}
-.weave-nav-item[data-active="true"]{background:#182430;color:#63a8ff;font-weight:650}
+.weave-nav-item{width:100%;height:40px;text-align:left;border:0;background:transparent;color:var(--dsw-alias-label-primary);border-radius:12px;padding:9px 16px 9px 12px;font:inherit;font-size:14px;line-height:22px;cursor:pointer}
+.weave-nav-item:hover{background:var(--dsw-specific-sidebar-nav-item-hover)}
+.weave-nav-item[data-active="true"]{background:var(--dsw-specific-sidebar-nav-item-active);font-weight:550}
 .weave-main{flex:1;min-width:0;display:flex;flex-direction:column}
-.weave-header{height:58px;border-bottom:1px solid #23282f;display:flex;align-items:center;justify-content:space-between;padding:0 20px}
-.weave-title{font-size:17px;font-weight:700}
-.weave-close{border:1px solid #2a2f36;background:transparent;color:#b8bec6;width:30px;height:30px;border-radius:8px;cursor:pointer}
-.weave-content{flex:1;overflow:auto;padding:22px}
-.weave-page h1{margin:0 0 6px;font-size:20px}
-.weave-note{margin:0 0 18px;color:#8b949e;font-size:13px}
-.weave-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
-.weave-card{border:1px solid #242a31;border-radius:12px;padding:16px;background:#12171d}
-.weave-card b{display:block;margin-bottom:5px}
-.weave-card span{color:#98a2ad;font-size:12px;line-height:1.5}
+.weave-header{height:54px;border-bottom:1px solid var(--dsw-alias-border-l2);display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px 20px}
+.weave-title{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:550;line-height:22px}
+.weave-close{border:0;background:transparent;color:var(--dsw-alias-label-primary);width:28px;height:28px;border-radius:50%;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:16px}
+.weave-close:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.weave-content{flex:1;min-height:0;overflow-y:auto;padding:0 24px 24px;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}
+.weave-page h1{margin:20px 0 6px;color:var(--dsw-alias-label-primary);font-size:20px;line-height:28px}
+.weave-note{margin:0 0 20px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}
+.weave-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.weave-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px 12px 10px;background:var(--dsw-alias-bg-layer-2)}
+.weave-card b{display:block;margin-bottom:4px;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:550;line-height:20px}
+.weave-card span{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 `
   document.head.appendChild(style)
 }
 
-function createApp(React: any): any {
+function createApp(React: any, createPortal?: (node: any, container: Element) => any): any {
   const { useState } = React
 
   const PageCard = ({ title, body }: { title: string; body: string }) =>
@@ -132,7 +140,7 @@ function createApp(React: any): any {
 
   function WeaveDashboard({ onClose }: { onClose: () => void }) {
     const [route, setRoute] = useState('overview')
-    return React.createElement(
+    const content = React.createElement(
       'div',
       { className: 'weave-overlay', 'data-testid': 'weave-overlay' },
       React.createElement(
@@ -192,22 +200,29 @@ function createApp(React: any): any {
         ),
       ),
     )
+    return createPortal ? createPortal(content, document.body) : content
   }
 
-  function WeaveSidebarAction() {
+  function WeaveSidebarAction({ wide }: { wide?: boolean }) {
     const [open, setOpen] = useState(false)
     return React.createElement(
-      React.Fragment,
-      null,
+      'div',
+      { className: wide ? 'weave-action-layer' : 'weave-action-layer weave-action-rail' },
       React.createElement(
         'button',
         {
           type: 'button',
-          className: 'weave-sidebar-action',
+          className: 'weave-action-button',
           'data-testid': 'weave-open',
-          onClick: () => setOpen(true),
+          'data-open': open ? 'true' : undefined,
+          'aria-expanded': open,
+          onClick: () => setOpen((value: boolean) => !value),
         },
-        'Weave',
+        React.createElement('span', { className: 'weave-action-mark', 'aria-hidden': true }, 'W'),
+        wide ? React.createElement('span', { className: 'weave-action-label' }, 'Weave') : null,
+        wide && open
+          ? React.createElement('span', { className: 'weave-action-state' }, 'ON')
+          : null,
       ),
       open ? React.createElement(WeaveDashboard, { onClose: () => setOpen(false) }) : null,
     )
@@ -229,7 +244,8 @@ moduleLoader.load({
   factory: (moduleRequire: (id: string) => unknown) => {
     ensureStyle()
     const React = moduleRequire('react')
-    const { WeaveSidebarAction } = createApp(React)
+    const ReactDOM = moduleRequire('react-dom') as { createPortal: (node: any, container: Element) => any }
+    const { WeaveSidebarAction } = createApp(React, ReactDOM.createPortal)
 
     const localApply = (ctx: ClientContext): void => {
       ctx.effect(

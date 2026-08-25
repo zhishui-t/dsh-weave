@@ -18,6 +18,9 @@ import { resolve } from 'node:path'
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import React, { createElement, type ComponentType } from 'react'
+import ReactDOM from 'react-dom'
+
+type WeaveActionComponent = ComponentType<{ wide?: boolean }>
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 type ClientExports = {
@@ -74,6 +77,7 @@ describe('dsh-weave Web 客户端产物契约', () => {
 
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
+      if (id === 'react-dom') return ReactDOM
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
@@ -86,13 +90,14 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
   it('sidebar.footer.action 渲染 Weave 入口，点击打开完整控制台', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
+      if (id === 'react-dom') return ReactDOM
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
 
     let registeredSlot = ''
     let registeredDef: { id?: string } | undefined
-    let registeredComponent: ComponentType | undefined
+    let registeredComponent: WeaveActionComponent | undefined
     const ctx = {
       effect(execute: () => unknown) {
         execute()
@@ -116,7 +121,21 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     expect(registeredDef!.id).toBe('@deepseek-ai/dsh-plugin-weave')
     expect(registeredComponent).toBeTypeOf('function')
 
-    render(createElement(registeredComponent!))
+    // 宽侧栏：完整按钮。
+    const wide = render(createElement(registeredComponent!, { wide: true }))
+    const openButton = screen.getByTestId('weave-open')
+    expect(openButton.textContent).toContain('Weave')
+    expect(openButton.closest('.weave-action-layer')?.classList.contains('weave-action-rail')).toBe(false)
+    wide.unmount()
+
+    // 窄侧栏：圆形 rail 按钮，不渲染长文案。
+    const rail = render(createElement(registeredComponent!, {}))
+    const railButton = screen.getByTestId('weave-open')
+    expect(railButton.closest('.weave-action-layer')?.classList.contains('weave-action-rail')).toBe(true)
+    expect(railButton.querySelector('.weave-action-label')).toBeNull()
+    rail.unmount()
+
+    render(createElement(registeredComponent!, { wide: true }))
 
     expect(screen.getByTestId('weave-open')).toBeTruthy()
     expect(screen.queryByTestId('weave-dashboard')).toBeNull()
@@ -137,11 +156,12 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
   it('Dashboard 内部导航可切换 7 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
+      if (id === 'react-dom') return ReactDOM
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
 
-    let component: ComponentType | undefined
+    let component: WeaveActionComponent | undefined
     const ctx = {
       effect(execute: () => unknown) {
         execute()
