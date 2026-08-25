@@ -359,4 +359,117 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(o2.stopReason).toBe('completed')
     expect(limiter.status('spawn').active).toBe(0)
   })
+
+  it('角色模型路由：provider/model/max_tokens 透传为 agentOptions；缺省不传', async () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    await service.executeTask(
+      BASE_TASK,
+      { ...BASE_ROLE, provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp', max_tokens: 4096 },
+      BASE_TEAM,
+      BASE_CONTEXT,
+      new AbortController().signal,
+    )
+    expect(ctx.started[0]!.request.agentOptions).toEqual({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash-vision-exp',
+      maxTokens: 4096,
+    })
+
+    const plainCtx = new MockSubagentsContext()
+    const plainService = makeService({ mock: plainCtx }).service
+    await plainService.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    expect(plainCtx.started[0]!.request.agentOptions).toBeUndefined()
+  })
+
+  it('实时执行事件：订阅 localAgent session/event 并透出 output/tool 事件', async () => {
+    const listeners = new Set<(session: unknown, event: unknown) => void>()
+    const localAgent = {
+      id: 'child-session-1',
+      ctx: {
+        on: (event: string, listener: (session: unknown, data: unknown) => void) => {
+          if (event !== 'session/event') return () => undefined
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      },
+    }
+    let resolveResult: (value: any) => void = () => {}
+    const result = new Promise<any>((resolve) => { resolveResult = resolve })
+    const delegationCtx = {
+      subagents: {
+        start: async () => ({
+          id: 'run-live',
+          localAgent,
+          result,
+          dispose: async () => undefined,
+        }),
+      },
+    }
+    const registry = new ExecutorRegistry()
+    registry.load({ subagents: { list: () => ['spawn'] } } as never)
+    const events: any[] = []
+    const service = new DelegationService(delegationCtx as never, {
+      executorRegistry: registry,
+      sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
+      processLimiter: new ProcessLimiter(),
+      knowledgeEngine: makeKnowledge([]),
+      onExecutorEvent: (event) => events.push(event),
+    })
+    const pending = service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+
+    // 等 start 返回并完成订阅。
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    for (const listener of listeners) {
+      listener(localAgent, { type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '实时' } } })
+      listener(localAgent, { type: 'tool/call', data: { name: 'bash', arguments: '{"cmd":"ls"}' } })
+    }
+    resolveResult({ output: [{ type: 'text', text: 'done' }], stopReason: 'completed' })
+    const output = await pending
+
+    expect(output.stopReason).toBe('completed')
+    expect(events.map((event) => [event.type, event.text])).toEqual([
+      ['status', 'started'],
+      ['status', 'streaming'],
+      ['output', '实时'],
+      ['tool_call', '{"cmd":"ls"}'],
+      ['status', 'completed'],
+    ])
+    expect(events.find((event) => event.type === 'tool_call')?.name).toBe('bash')
+    expect(events.find((event) => event.type === 'output')?.text).toBe('实时')
+    expect(events.find((event) => event.type === 'tool_call')?.name).toBe('bash')
+    expect(listeners.size).toBe(0)
+  })
+
+  it('远端执行器无 localAgent：发出 stream_unavailable 状态且不影响结果', async () => {
+    const delegationCtx = {
+      subagents: {
+        start: async () => ({
+          id: 'run-remote',
+          localAgent: undefined,
+          result: Promise.resolve({ output: [], stopReason: 'completed' }),
+          dispose: async () => undefined,
+        }),
+      },
+    }
+    const registry = new ExecutorRegistry()
+    registry.load({ subagents: { list: () => ['codex'] } } as never)
+    const events: any[] = []
+    const service = new DelegationService(delegationCtx as never, {
+      executorRegistry: registry,
+      sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
+      processLimiter: new ProcessLimiter(),
+      knowledgeEngine: makeKnowledge([]),
+      onExecutorEvent: (event) => events.push(event),
+    })
+    const output = await service.executeTask(
+      { ...BASE_TASK, executor: 'codex' },
+      { ...BASE_ROLE, executor: 'codex' },
+      BASE_TEAM,
+      BASE_CONTEXT,
+      new AbortController().signal,
+    )
+    expect(output.stopReason).toBe('completed')
+    expect(events.some((event) => event.type === 'status' && event.text === 'stream_unavailable')).toBe(true)
+  })
 })

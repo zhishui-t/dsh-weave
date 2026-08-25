@@ -56,12 +56,20 @@ export interface SubagentResultLike {
   stopReason: SubagentStopReasonLike;
 }
 
+export interface SubagentAgentOptionsLike {
+  provider?: string;
+  model?: string;
+  maxTokens?: number;
+}
+
 export interface SubagentStartRequestLike {
   label?: string;
   prompt: ContentBlockLike[];
   /** 委托父 Agent（真实环境必填；mock 仅记录不解析）。 */
   parent: unknown;
   signal: AbortSignal;
+  /** DSH 官方模型路由覆盖（provider/model/maxTokens）。 */
+  agentOptions?: SubagentAgentOptionsLike;
   outputSchema?: unknown;
   maxDepth?: number;
   toolFilter?: unknown;

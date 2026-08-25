@@ -21,6 +21,10 @@ roles:
     executor: zcode
     stages: [implement, test, integrate, execute, deploy]
     max_concurrent_tasks: 2
+    # 可选模型路由覆盖；仅对支持 DSH AgentOptions 的执行器保证生效。
+    provider: deepseek-official
+    model: deepseek-v4-flash-vision-exp
+    max_tokens: 4096
     personality: |
       你追求代码质量和性能。
 

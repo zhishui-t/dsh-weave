@@ -146,6 +146,10 @@ roles:
     executor: zcode
     stages: [implement, test, integrate, execute, deploy]
     max_concurrent_tasks: 2
+    # 可选模型路由覆盖；仅对支持 DSH AgentOptions 的执行器保证生效。
+    provider: deepseek-official
+    model: deepseek-v4-flash-vision-exp
+    max_tokens: 4096
     personality: |
       你追求代码质量和性能。
 
@@ -201,7 +205,7 @@ executor_limits:                      # ME-6：执行器级硬限制（键 = rol
 | 2 | 角色 `id` 唯一 | 校验失败 |
 | 3 | `executor` 已注册（DSH 子代理 / Codex / Claude Code / ACP provider） | 校验失败 |
 | 4 | ~~非 P0 自定义 CLI 命令存在于 PATH~~（LO-7：非 P0 行为，从 P0 团队校验移除；P0 仅校验 1-3、5-8 项） | 不适用（非 P0） |
-| 5 | `max_concurrent_tasks > 0` | 校验失败 |
+| 5 | `max_concurrent_tasks > 0`；可选 `provider` / `model` 非空；可选 `max_tokens` 为正整数 | 校验失败 |
 | 6 | 每角色 `stages` 非空；每模板阶段至少绑定一个角色（2.2.7，HI-4） | 校验失败 |
 | 7 | `dag_templates[default_difficulty]` 存在；`pattern` 为合法正则（HI-4） | 校验失败 |
 | 8 | `executor_limits` 的 `max_concurrent > 0`、`max_per_hour > 0`（ME-6） | 校验失败 |

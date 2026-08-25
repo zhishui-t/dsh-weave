@@ -66,9 +66,24 @@ export interface DelegationRunLike {
 }
 
 /** 执行委托所需的最小 ctx 视面（真实 cordis Context 结构化满足；测试注入 mock）。 */
+export interface ExecutorAgentOptions {
+  provider?: string
+  model?: string
+  maxTokens?: number
+}
+
 export interface DelegationContext {
   subagents: {
-    start(name: string, request: { label?: string; prompt: ContentBlockLike[]; parent: unknown; signal: AbortSignal }): Promise<DelegationRunLike>
+    start(
+      name: string,
+      request: {
+        label?: string
+        prompt: ContentBlockLike[]
+        parent: unknown
+        signal: AbortSignal
+        agentOptions?: ExecutorAgentOptions
+      },
+    ): Promise<DelegationRunLike>
   }
 }
 
@@ -81,6 +96,12 @@ export interface RoleConfig {
   stages: string[]
   max_concurrent_tasks: number
   personality: string
+  /** 可选 LLM provider 覆盖（如 deepseek-official）；缺省继承父会话路由。 */
+  provider?: string
+  /** 可选模型 id 覆盖（如 deepseek-v4-flash-vision-exp）；缺省继承父会话模型。 */
+  model?: string
+  /** 可选单次输出 token 上限；缺省由 DSH / provider 决定。 */
+  max_tokens?: number
 }
 
 /** TDD 2.3 知识注入限额（团队级唯一来源，ME-2）。 */
@@ -199,6 +220,20 @@ export function formatKnowledgeSection(
   return lines.length ? lines.join('\n') : '（无）'
 }
 
+export type ExecutorRunEventType = 'status' | 'output' | 'reasoning' | 'tool_call' | 'tool_result'
+
+export interface ExecutorRunEvent {
+  taskId: string
+  executor: string
+  runId: string
+  sessionId?: string
+  type: ExecutorRunEventType
+  /** 增量文本 / 状态描述 / 工具名或结果摘要。 */
+  text?: string
+  name?: string
+  data?: unknown
+}
+
 export interface DelegationServiceOptions {
   executorRegistry: ExecutorRegistry
   sessionTracker: SessionTracker
@@ -208,6 +243,25 @@ export interface DelegationServiceOptions {
   timeoutMs?: number
   /** 可注入时钟（测试用）。 */
   now?: () => number
+  /**
+   * 执行器运行事件回调：有 localAgent 的执行器可实时输出 token、
+   * reasoning、工具调用与状态。远端执行器若不返回 localAgent，则无法流式。
+   */
+  onExecutorEvent?: (event: ExecutorRunEvent) => void
+  /** 每个 run 保留的实时事件数量（轮询/诊断用；默认 200）。 */
+  executorEventBufferSize?: number
+}
+
+export interface ExecutorRunSnapshot {
+  runId: string
+  taskId: string
+  executor: string
+  sessionId?: string
+  startedAt: number
+  updatedAt: number
+  /** running / completed / failed / timeout / cancelled。 */
+  state: 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled'
+  events: ExecutorRunEvent[]
 }
 
 export class DelegationService {
@@ -218,6 +272,9 @@ export class DelegationService {
   readonly #knowledgeEngine: KnowledgeEngineLike
   readonly #timeoutMs: number
   readonly #now: () => number
+  readonly #onExecutorEvent?: (event: ExecutorRunEvent) => void
+  readonly #executorEventBufferSize: number
+  readonly #executorRuns = new Map<string, ExecutorRunSnapshot>()
 
   constructor(ctx: DelegationContext, options: DelegationServiceOptions) {
     this.#ctx = ctx
@@ -227,6 +284,179 @@ export class DelegationService {
     this.#knowledgeEngine = options.knowledgeEngine
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_DELEGATION_TIMEOUT_MS
     this.#now = options.now ?? Date.now
+    this.#onExecutorEvent = options.onExecutorEvent
+    this.#executorEventBufferSize = Math.max(1, options.executorEventBufferSize ?? 200)
+  }
+
+  /** 按 runId 查询实时事件快照（最新事件在末尾）。 */
+  getExecutorRun(runId: string): ExecutorRunSnapshot | undefined {
+    const run = this.#executorRuns.get(runId)
+    if (!run) return undefined
+    return { ...run, events: [...run.events] }
+  }
+
+  /** 查询全部执行器运行快照（新启动的在前）。 */
+  listExecutorRuns(): ExecutorRunSnapshot[] {
+    return [...this.#executorRuns.values()]
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .map((run) => ({ ...run, events: [...run.events] }))
+  }
+
+  #recordExecutorEvent(event: ExecutorRunEvent): void {
+    const existing = this.#executorRuns.get(event.runId)
+    const now = this.#now()
+    if (!existing) {
+      this.#executorRuns.set(event.runId, {
+        runId: event.runId,
+        taskId: event.taskId,
+        executor: event.executor,
+        ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+        startedAt: now,
+        updatedAt: now,
+        state: 'running',
+        events: [event],
+      })
+      return
+    }
+    existing.updatedAt = now
+    if (event.sessionId !== undefined) existing.sessionId = event.sessionId
+    existing.events.push(event)
+    if (existing.events.length > this.#executorEventBufferSize) {
+      existing.events.splice(0, existing.events.length - this.#executorEventBufferSize)
+    }
+  }
+
+  #emitExecutorEvent(event: ExecutorRunEvent): void {
+    try {
+      this.#recordExecutorEvent(event)
+      this.#onExecutorEvent?.(event)
+    } catch {
+      // 输出观察者不得影响委托主链路。
+    }
+  }
+
+  #finishExecutorRun(
+    runId: string,
+    state: ExecutorRunSnapshot['state'],
+    text?: string,
+    data?: unknown,
+  ): void {
+    const run = this.#executorRuns.get(runId)
+    if (!run) return
+    run.state = state
+    run.updatedAt = this.#now()
+    const event: ExecutorRunEvent = {
+      taskId: run.taskId,
+      executor: run.executor,
+      runId,
+      ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
+      type: 'status',
+      ...(text !== undefined ? { text } : {}),
+      ...(data !== undefined ? { data } : {}),
+    }
+    run.events.push(event)
+    if (run.events.length > this.#executorEventBufferSize) {
+      run.events.splice(0, run.events.length - this.#executorEventBufferSize)
+    }
+    try {
+      this.#onExecutorEvent?.(event)
+    } catch {
+      // 观察者异常不影响委托结果。
+    }
+  }
+
+  #buildAgentOptions(role: RoleConfig): ExecutorAgentOptions | undefined {
+    const options: ExecutorAgentOptions = {}
+    if (role.provider !== undefined && role.provider !== '') options.provider = role.provider
+    if (role.model !== undefined && role.model !== '') options.model = role.model
+    if (role.max_tokens !== undefined) {
+      if (!Number.isInteger(role.max_tokens) || role.max_tokens <= 0) {
+        throw new WeaveError('configuration_error', `角色 ${role.id} 的 max_tokens 必须为正整数`, {
+          role: role.id,
+          maxTokens: role.max_tokens,
+        })
+      }
+      options.maxTokens = role.max_tokens
+    }
+    return Object.keys(options).length > 0 ? options : undefined
+  }
+
+  #subscribeRunEvents(taskId: string, executor: string, run: DelegationRunLike): () => void {
+    const agent = run.localAgent as
+      | {
+          id?: string
+          ctx?: { on?: (event: string, listener: (session: unknown, event: unknown) => void) => (() => void) | undefined }
+        }
+      | undefined
+
+    if (!agent?.ctx?.on || typeof agent.ctx.on !== 'function') {
+      this.#emitExecutorEvent({
+        taskId,
+        executor,
+        runId: run.id,
+        type: 'status',
+        text: 'stream_unavailable',
+      })
+      return () => undefined
+    }
+
+    try {
+      const unsubscribe = agent.ctx.on('session/event', (session, rawEvent) => {
+        const event = rawEvent as { type?: string; data?: any }
+        const base = {
+          taskId,
+          executor,
+          runId: run.id,
+          sessionId: agent.id ?? (session as { id?: string } | undefined)?.id,
+        }
+        if (event.type === 'assistant/chunk') {
+          const chunk = event.data?.chunk
+          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+            this.#emitExecutorEvent({ ...base, type: 'output', text: chunk.text })
+          } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+            this.#emitExecutorEvent({ ...base, type: 'reasoning', text: chunk.text })
+          }
+          return
+        }
+        if (event.type === 'assistant/message') {
+          const text = (event.data?.message?.content ?? [])
+            .map((block: any) => (typeof block?.text === 'string' ? block.text : ''))
+            .join('')
+          if (text) this.#emitExecutorEvent({ ...base, type: 'output', text })
+          return
+        }
+        if (event.type === 'tool/call') {
+          this.#emitExecutorEvent({
+            ...base,
+            type: 'tool_call',
+            name: event.data?.name,
+            text: event.data?.arguments,
+            data: event.data,
+          })
+          return
+        }
+        if (event.type === 'tool/result') {
+          this.#emitExecutorEvent({
+            ...base,
+            type: 'tool_result',
+            name: event.data?.callId,
+            data: event.data,
+          })
+        }
+      })
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      return unsubscribe ?? (() => undefined)
+    } catch (error) {
+      this.#emitExecutorEvent({
+        taskId,
+        executor,
+        runId: run.id,
+        type: 'status',
+        text: 'stream_unavailable',
+        data: String(error),
+      })
+      return () => undefined
+    }
   }
 
   /**
@@ -275,18 +505,29 @@ export class DelegationService {
       const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection)
 
       const startedAt = this.#now()
+      const agentOptions = this.#buildAgentOptions(role)
       const run = await this.#ctx.subagents.start(executor, {
         prompt: [{ type: 'text', text: prompt }],
         parent: context.parentAgent,
         signal: cancelSignal,
+        ...(agentOptions ? { agentOptions } : {}),
       })
 
+      this.#emitExecutorEvent({ taskId: task.id, executor, runId: run.id, type: 'status', text: 'started' })
+      const unsubscribe = this.#subscribeRunEvents(task.id, executor, run)
+
       // timeout 竞速：Weave 自计时（应用层 timeout，TDD 2.4.3）
-      const outcome = await this.#awaitResultWithTimeout(run, context.timeoutMs ?? this.#timeoutMs)
+      let outcome: { kind: 'result'; result: DelegationResultLike } | { kind: 'timeout' }
+      try {
+        outcome = await this.#awaitResultWithTimeout(run, context.timeoutMs ?? this.#timeoutMs)
+      } finally {
+        unsubscribe()
+      }
       const durationMs = Math.max(0, this.#now() - startedAt)
 
       if (outcome.kind === 'timeout') {
         await run.dispose()
+        this.#finishExecutorRun(run.id, 'timeout', 'Weave 委托超时，已终止运行')
         return {
           id: run.id,
           output: [],
@@ -297,10 +538,22 @@ export class DelegationService {
         }
       }
 
-      return this.mapResult(run, outcome.result, durationMs)
+      const mapped = this.mapResult(run, outcome.result, durationMs)
+      this.#finishExecutorRun(
+        run.id,
+        mapped.stopReason === 'completed'
+          ? 'completed'
+          : mapped.stopReason === 'aborted'
+            ? 'cancelled'
+            : 'failed',
+        mapped.weave?.errorType ?? mapped.stopReason,
+        mapped,
+      )
+      return mapped
     } catch (error) {
       // 取消处理：取消发生在 start 前/排队中 → 返回 aborted（CANCELLED，不计熔断）
       if (cancelSignal.aborted) {
+        if (this.#executorRuns.has(task.id)) this.#finishExecutorRun(task.id, 'cancelled', 'cancelled before start')
         return {
           id: task.id,
           output: [],

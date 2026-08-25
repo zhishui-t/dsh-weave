@@ -62,6 +62,12 @@ export interface RoleConfig {
   stages: string[]
   max_concurrent_tasks: number
   personality: string
+  /** 可选 LLM provider 覆盖；缺省继承父会话。 */
+  provider?: string
+  /** 可选模型 id 覆盖；缺省继承父会话。 */
+  model?: string
+  /** 可选单次输出 token 上限。 */
+  max_tokens?: number
 }
 
 export interface TeamConfig {
@@ -178,6 +184,9 @@ export class TeamManager {
           stages: asStringArray(r.stages, `roles[${index}].stages`),
           max_concurrent_tasks: Number(r.max_concurrent_tasks),
           personality: typeof r.personality === 'string' ? r.personality : '',
+          ...(typeof r.provider === 'string' && r.provider !== '' ? { provider: r.provider } : {}),
+          ...(typeof r.model === 'string' && r.model !== '' ? { model: r.model } : {}),
+          ...(r.max_tokens !== undefined && r.max_tokens !== null ? { max_tokens: Number(r.max_tokens) } : {}),
         }
       }),
       task_decomposition: {
@@ -237,6 +246,18 @@ export class TeamManager {
         })
       }
       asStringArray(role.stages, `roles[${role.id}].stages`)
+      if (role.provider !== undefined && role.provider.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 provider 不能为空`, { role: role.id })
+      }
+      if (role.model !== undefined && role.model.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 model 不能为空`, { role: role.id })
+      }
+      if (role.max_tokens !== undefined && (!Number.isInteger(role.max_tokens) || role.max_tokens <= 0)) {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 max_tokens 必须 > 0`, {
+          role: role.id,
+          maxTokens: role.max_tokens,
+        })
+      }
       if (!lookup.get(role.executor)) {
         throw new WeaveError('executor_unavailable', `角色 ${role.id} 的执行器未注册: ${role.executor}`, {
           role: role.id,

@@ -819,6 +819,12 @@ interface RoleConfig {
   stages: string[]
   max_concurrent_tasks: number
   personality: string
+  /** 可选 LLM provider 覆盖；缺省继承父会话路由。 */
+  provider?: string
+  /** 可选模型 id 覆盖；缺省继承父会话模型。 */
+  model?: string
+  /** 可选单次输出 token 上限。 */
+  max_tokens?: number
 }
 
 interface ExecutorLimit {
@@ -948,6 +954,34 @@ type SubagentTaskOutput = {
 
 **与 §1.1.2 的层级关系（ME-8）**：上表值域是 `tasks.error_type` 的持久化值域（DSH stopReason 或 Weave 应用层类别）；§1.1.2 是 Weave 对外错误码（接口响应/`WeaveError.code`）。交集项（`execution_failed`/`timeout`/`executor_unavailable`/`permission_denied`）同名同义；`aborted`/`error`/`max-tokens`/`refusal` 仅存于本表（对外以任务终态表达）；`unavailable` 已归并为 `executor_unavailable`；`cancelled` 不再作为错误码。
 
+---
+
+### 2.4.4 执行器模型路由与实时事件
+
+`RoleConfig` 支持可选路由覆盖：`provider`、`model`、`max_tokens`。委托时转换为 DSH 官方字段并传入唯一执行出口：
+
+```typescript
+ctx.subagents.start(role.executor, {
+  prompt,
+  parent,
+  signal,
+  agentOptions: {
+    provider: role.provider,
+    model: role.model,
+    maxTokens: role.max_tokens,
+  },
+})
+```
+
+约束：
+
+- 三个字段均可选；全部缺省时不得发送空 `agentOptions`；
+- `provider` / `model` 缺省时继承父会话路由；
+- 该路由由 DSH `resolveChildAgentOptions` 消费，对 DSH in-process 执行器（如 `spawn` / `fork`）生效；
+- 外部 CLI 执行器是否消费模型取决于其 provider 实现；stock Codex / Claude Code provider 当前不读取该字段。
+
+`DelegationService` 支持可选 `onExecutorEvent`，并保留按 `runId` 查询的事件环形缓冲。事件类型为 `status | output | reasoning | tool_call | tool_result`。有 `run.localAgent` 时订阅其 scoped context 的 `session/event`；`assistant/chunk(text-delta)` 映射为 `output`，reasoning delta 映射为 `reasoning`；无 `localAgent` 的执行器发 `status:text=stream_unavailable`。观察者异常不得影响委托主链路。
+---
 ---
 
 ### 2.5 导入记录模型
