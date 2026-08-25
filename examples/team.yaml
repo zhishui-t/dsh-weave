@@ -1,0 +1,68 @@
+# Weave 团队配置样例（P0-TEAM-003，TDD §2.3 + 第 3 轮修订 HI-4/ME-6）
+# 放置路径：~/.dsh/teams/{team_id}.yaml
+schema_version: "1"
+team_id: alpha-squad
+name: 阿尔法小队
+default: true
+
+roles:
+  - id: designer
+    name: 方案设计师
+    bias: design
+    executor: codex
+    stages: [prepare, design]        # HI-4：该角色可执行的 DAG 阶段名
+    max_concurrent_tasks: 1
+    personality: |
+      你是方案设计师，注重简洁性和可扩展性。
+
+  - id: coder
+    name: 核心开发
+    bias: dev
+    executor: zcode
+    stages: [implement, test, integrate, execute, deploy]
+    max_concurrent_tasks: 2
+    personality: |
+      你追求代码质量和性能。
+
+  - id: reviewer
+    name: 代码审核
+    bias: review
+    executor: codex
+    stages: [review]
+    max_concurrent_tasks: 2
+    personality: |
+      你是严格的审核员，会给出建设性建议。
+
+task_decomposition:
+  matchers:
+    - pattern: "重构|核心|关键|安全"
+      difficulty: critical
+    - pattern: "新增|实现|集成"
+      difficulty: medium
+    - pattern: "修复|调整"
+      difficulty: easy
+  default_difficulty: hard            # HI-4：matcher 未命中兜底难度
+  dag_templates:
+    easy: ["execute"]
+    medium: ["design", "implement", "test"]
+    hard: ["design", "implement", "review", "test", "integrate"]
+    critical: ["prepare", "design", "implement", "review", "test", "deploy"]
+
+knowledge_injection:
+  max_entries: 5
+  max_chars_per_entry: 500
+  max_total_chars: 2500
+  priority: freshness_first
+
+feedback:
+  feedback_timeout_seconds: 1800
+  max_revisions: 5
+  reopen_window_seconds: 86400
+
+executor_limits:                      # ME-6：执行器级硬限制（键 = role.executor provider 名）
+  codex:
+    max_concurrent: 2
+    max_per_hour: 20
+  zcode:
+    max_concurrent: 2
+    max_per_hour: 20

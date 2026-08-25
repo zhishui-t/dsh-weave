@@ -1,0 +1,3 @@
+# pnpm 11：允许必要依赖的构建脚本（esbuild 为 vitest/vite 的运行时依赖）。
+allowBuilds:
+  esbuild: true
