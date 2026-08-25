@@ -360,12 +360,12 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(limiter.status('spawn').active).toBe(0)
   })
 
-  it('角色模型路由：provider/model/max_tokens 透传为 agentOptions；缺省不传', async () => {
+  it('角色模型路由：provider/model 透传为 agentOptions；缺省不传', async () => {
     const ctx = new MockSubagentsContext()
     const { service } = makeService({ mock: ctx })
     await service.executeTask(
       BASE_TASK,
-      { ...BASE_ROLE, provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp', max_tokens: 4096 },
+      { ...BASE_ROLE, provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' },
       BASE_TEAM,
       BASE_CONTEXT,
       new AbortController().signal,
@@ -373,7 +373,6 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(ctx.started[0]!.request.agentOptions).toEqual({
       provider: 'deepseek-official',
       model: 'deepseek-v4-flash-vision-exp',
-      maxTokens: 4096,
     })
 
     const plainCtx = new MockSubagentsContext()

@@ -823,8 +823,6 @@ interface RoleConfig {
   provider?: string
   /** 可选模型 id 覆盖；缺省继承父会话模型。 */
   model?: string
-  /** 可选单次输出 token 上限。 */
-  max_tokens?: number
 }
 
 interface ExecutorLimit {
@@ -958,7 +956,7 @@ type SubagentTaskOutput = {
 
 ### 2.4.4 执行器模型路由与实时事件
 
-`RoleConfig` 支持可选路由覆盖：`provider`、`model`、`max_tokens`。委托时转换为 DSH 官方字段并传入唯一执行出口：
+`RoleConfig` 支持可选运行时覆盖：`provider`、`model`、`thought_level`、`mode`。委托时转换为 DSH 官方字段并传入唯一执行出口：
 
 ```typescript
 ctx.subagents.start(role.executor, {
@@ -968,7 +966,6 @@ ctx.subagents.start(role.executor, {
   agentOptions: {
     provider: role.provider,
     model: role.model,
-    maxTokens: role.max_tokens,
   },
 })
 ```
@@ -979,6 +976,8 @@ ctx.subagents.start(role.executor, {
 - `provider` / `model` 缺省时继承父会话路由；
 - 该路由由 DSH `resolveChildAgentOptions` 消费，对 DSH in-process 执行器（如 `spawn` / `fork`）生效；
 - 外部 CLI 执行器是否消费模型取决于其 provider 实现；stock Codex / Claude Code provider 当前不读取该字段。
+
+`DelegationService` 通过 `ExecutorProviderRegistry` 抽象具体执行器。Provider 必须声明 capabilities（实时输出、会话复用、模型选择、思考深度、模式、工具管理），Registry 按 executor id / supports() 解析。ZCode ACP Provider 是参考实现；DSH 原生子代理由 fallback Provider 包装。
 
 `DelegationService` 支持可选 `onExecutorEvent`，并保留按 `runId` 查询的事件环形缓冲。事件类型为 `status | output | reasoning | tool_call | tool_result`。有 `run.localAgent` 时订阅其 scoped context 的 `session/event`；`assistant/chunk(text-delta)` 映射为 `output`，reasoning delta 映射为 `reasoning`；无 `localAgent` 的执行器发 `status:text=stream_unavailable`。观察者异常不得影响委托主链路。
 ---

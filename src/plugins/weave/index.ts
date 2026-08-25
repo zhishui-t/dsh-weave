@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
-import { createDefaultCliDeps, registerWeaveHost } from './host-wiring.js'
+import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
 export const WEAVE_VERSION = '0.2.0'
@@ -28,6 +29,7 @@ export class WeaveService extends Service {
    */
   mcp?: WeaveMcp
   cli?: WeaveCli
+  executorProviders?: ExecutorProviderRegistry
 
   version(): string {
     return WEAVE_VERSION
@@ -45,13 +47,14 @@ export class WeaveService extends Service {
  */
 export function apply(ctx: Context): void {
   // 插件标识固定为 dsh-weave；业务服务仍以 ctx.weave 暴露。
-  new WeaveService(ctx, 'weave')
+  const service = new WeaveService(ctx, 'weave')
 
   // 真实 DSH 宿主接入：存在 ctx.subagents 时自动组装默认依赖并注册 MCP 工具 + /weave 命令。
   // 通过 reflect.get 检测服务，避免在未声明 inject 的裸 Context 中抛错。
   const subagents = ctx.reflect.get('subagents', false)
   if (subagents) {
     try {
+      service.executorProviders = createDefaultExecutorProviderRegistry(ctx)
       const deps = createDefaultCliDeps(ctx)
       const bundle = registerWeaveHost(ctx, deps)
       ctx.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
@@ -73,6 +76,24 @@ export {
   buildDefaultWeaveCli,
   SLASH_COMMAND_NAME,
 } from './host-wiring.js'
+export {
+  ExecutorProviderRegistry,
+  type ExecutorCapabilities,
+  type ExecutorEvent,
+  type ExecutorProvider,
+  type ExecutorResult,
+  type ExecutorRun,
+  type ExecutorRuntimeOptions,
+  type ExecutorStartRequest,
+} from './executors/executor-provider.js'
+export {
+  AcpSessionProvider,
+  ZcodeAcpExecutorProvider,
+  registerAcpSessionProvider,
+  zcodeAcpProviderConfigFromEnvironment,
+  type AcpExecutorEvent,
+  type AcpSessionProviderConfig,
+} from './acp/acp-session-provider.js'
 export type {
   HostToolDefinition,
   HostToolRuntime,

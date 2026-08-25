@@ -3,6 +3,7 @@ import type { SessionTracker } from './session-tracker.js'
 import type { ProcessLimiter } from './safety/process-limiter.js'
 import type { TaskRecord } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
+import type { ExecutorProviderRegistry, ExecutorRuntimeOptions } from './executors/executor-provider.js'
 
 /**
  * P0-DELEG-007 —— DelegationService：基于 `ctx.subagents.start` 的统一委托执行。
@@ -58,18 +59,29 @@ export interface DelegationResultLike {
   stopReason: SubagentStopReason
 }
 
+export interface DelegationRunEventLike {
+  type?: string
+  text?: string
+  name?: string
+  data?: unknown
+  sessionId?: string
+}
+
 export interface DelegationRunLike {
   id: string
   localAgent?: unknown
   result: Promise<DelegationResultLike>
   dispose(): Promise<void>
+  /** 自定义 Provider 的实时事件订阅（优先于 readOutput 轮询）。 */
+  onEvent?(listener: (event: DelegationRunEventLike) => void): () => void
+  /** 自定义 Provider 的实时事件快照（兜底轮询）。 */
+  readOutput?(): DelegationRunEventLike[]
 }
 
 /** 执行委托所需的最小 ctx 视面（真实 cordis Context 结构化满足；测试注入 mock）。 */
 export interface ExecutorAgentOptions {
   provider?: string
   model?: string
-  maxTokens?: number
 }
 
 export interface DelegationContext {
@@ -100,8 +112,10 @@ export interface RoleConfig {
   provider?: string
   /** 可选模型 id 覆盖（如 deepseek-v4-flash-vision-exp）；缺省继承父会话模型。 */
   model?: string
-  /** 可选单次输出 token 上限；缺省由 DSH / provider 决定。 */
-  max_tokens?: number
+  /** ACP 思考深度 / thought level；例如 max、high、low、enabled、disabled。 */
+  thought_level?: string
+  /** ACP/agent 模式；例如 code、architect、yolo。 */
+  mode?: string
 }
 
 /** TDD 2.3 知识注入限额（团队级唯一来源，ME-2）。 */
@@ -149,6 +163,8 @@ export interface TaskContext {
   outputRequirements?: string
   /** 委托超时 ms（覆盖构造默认值）。 */
   timeoutMs?: number
+  /** 本次委托的运行时覆盖；优先于角色默认配置。 */
+  runtime?: ExecutorRuntimeOptions
 }
 
 export interface StopReasonMapping {
@@ -250,6 +266,8 @@ export interface DelegationServiceOptions {
   onExecutorEvent?: (event: ExecutorRunEvent) => void
   /** 每个 run 保留的实时事件数量（轮询/诊断用；默认 200）。 */
   executorEventBufferSize?: number
+  /** 统一执行器 Provider 注册表；存在时优先走 Provider 抽象。 */
+  executorProviders?: ExecutorProviderRegistry
 }
 
 export interface ExecutorRunSnapshot {
@@ -274,6 +292,7 @@ export class DelegationService {
   readonly #now: () => number
   readonly #onExecutorEvent?: (event: ExecutorRunEvent) => void
   readonly #executorEventBufferSize: number
+  readonly #executorProviders?: ExecutorProviderRegistry
   readonly #executorRuns = new Map<string, ExecutorRunSnapshot>()
 
   constructor(ctx: DelegationContext, options: DelegationServiceOptions) {
@@ -286,6 +305,7 @@ export class DelegationService {
     this.#now = options.now ?? Date.now
     this.#onExecutorEvent = options.onExecutorEvent
     this.#executorEventBufferSize = Math.max(1, options.executorEventBufferSize ?? 200)
+    this.#executorProviders = options.executorProviders
   }
 
   /** 按 runId 查询实时事件快照（最新事件在末尾）。 */
@@ -365,23 +385,86 @@ export class DelegationService {
     }
   }
 
-  #buildAgentOptions(role: RoleConfig): ExecutorAgentOptions | undefined {
-    const options: ExecutorAgentOptions = {}
-    if (role.provider !== undefined && role.provider !== '') options.provider = role.provider
-    if (role.model !== undefined && role.model !== '') options.model = role.model
-    if (role.max_tokens !== undefined) {
-      if (!Number.isInteger(role.max_tokens) || role.max_tokens <= 0) {
-        throw new WeaveError('configuration_error', `角色 ${role.id} 的 max_tokens 必须为正整数`, {
-          role: role.id,
-          maxTokens: role.max_tokens,
-        })
-      }
-      options.maxTokens = role.max_tokens
+  #resolveRuntime(role: RoleConfig, context: TaskContext): Required<Pick<ExecutorRuntimeOptions,'tools'>> & ExecutorRuntimeOptions {
+    const requested = context.runtime ?? {}
+    const modelProvider = requested.model?.provider ?? role.provider
+    const modelId = requested.model?.id ?? role.model
+
+    return {
+      ...requested,
+      model:
+        modelProvider !== undefined || modelId !== undefined
+          ? {
+              ...(modelProvider !== undefined ? { provider: modelProvider } : {}),
+              ...(modelId !== undefined ? { id: modelId } : {}),
+            }
+          : undefined,
+      thoughtLevel: requested.thoughtLevel ?? role.thought_level,
+      mode: requested.mode ?? role.mode,
+      tools: {
+        management: 'external',
+        permission: 'reject',
+        ...requested.tools,
+      },
     }
+  }
+
+  #buildAgentOptions(runtime: ExecutorRuntimeOptions): ExecutorAgentOptions | undefined {
+    const options: ExecutorAgentOptions = {}
+    if (runtime.model?.provider !== undefined) options.provider = runtime.model.provider
+    if (runtime.model?.id !== undefined) options.model = runtime.model.id
     return Object.keys(options).length > 0 ? options : undefined
   }
 
   #subscribeRunEvents(taskId: string, executor: string, run: DelegationRunLike): () => void {
+    // 自定义 ACP Provider 直接暴露实时事件流。
+    if (typeof run.onEvent === 'function') {
+      const unsubscribe = run.onEvent((event) => {
+        const type = (event.type ?? 'status') as ExecutorRunEventType
+        this.#emitExecutorEvent({
+          taskId,
+          executor,
+          runId: run.id,
+          type,
+          ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+          ...(event.text !== undefined ? { text: event.text } : {}),
+          ...(event.name !== undefined ? { name: event.name } : {}),
+          ...(event.data !== undefined ? { data: event.data } : {}),
+        })
+      })
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      return unsubscribe
+    }
+
+    // 兜底：仅提供事件快照的 Provider 用短间隔轮询。
+    if (typeof run.readOutput === 'function') {
+      let cursor = 0
+      const timer = setInterval(() => {
+        try {
+          const events = run.readOutput?.() ?? []
+          while (cursor < events.length) {
+            const event = events[cursor]!
+            cursor += 1
+            const type = (event.type ?? 'status') as ExecutorRunEventType
+            this.#emitExecutorEvent({
+              taskId,
+              executor,
+              runId: run.id,
+              type,
+              ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+              ...(event.text !== undefined ? { text: event.text } : {}),
+              ...(event.name !== undefined ? { name: event.name } : {}),
+              ...(event.data !== undefined ? { data: event.data } : {}),
+            })
+          }
+        } catch {
+          // 快照失败不阻断委托。
+        }
+      }, 250)
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      return () => clearInterval(timer)
+    }
+
     const agent = run.localAgent as
       | {
           id?: string
@@ -505,13 +588,39 @@ export class DelegationService {
       const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection)
 
       const startedAt = this.#now()
-      const agentOptions = this.#buildAgentOptions(role)
-      const run = await this.#ctx.subagents.start(executor, {
-        prompt: [{ type: 'text', text: prompt }],
-        parent: context.parentAgent,
-        signal: cancelSignal,
-        ...(agentOptions ? { agentOptions } : {}),
-      })
+      const runtime = this.#resolveRuntime(role, context)
+      const provider = this.#executorProviders?.resolve(executor)
+
+      let run: DelegationRunLike
+      if (provider) {
+        run = await provider.start({
+          executor,
+          sessionKey: `${team.team_id}:${role.id}:${task.project_id}:${task.version}`,
+          prompt: [{ type: 'text', text: prompt }],
+          parent: context.parentAgent,
+          signal: cancelSignal,
+          runtime,
+        }) as DelegationRunLike
+      } else {
+        const agentOptions = this.#buildAgentOptions(runtime)
+        const weave = executorInfo.kind === 'acp'
+          ? {
+              sessionKey: `${team.team_id}:${role.id}:${task.project_id}:${task.version}`,
+              ...(runtime.model?.provider !== undefined ? { modelProvider: runtime.model.provider } : {}),
+              ...(runtime.model?.id !== undefined ? { model: runtime.model.id } : {}),
+              ...(runtime.thoughtLevel !== undefined ? { thoughtLevel: runtime.thoughtLevel } : {}),
+              ...(runtime.mode !== undefined ? { mode: runtime.mode } : {}),
+              ...(runtime.tools !== undefined ? { tools: runtime.tools } : {}),
+            }
+          : undefined
+        run = await this.#ctx.subagents.start(executor, {
+          prompt: [{ type: 'text', text: prompt }],
+          parent: context.parentAgent,
+          signal: cancelSignal,
+          ...(agentOptions ? { agentOptions } : {}),
+          ...(weave ? { weave } : {}),
+        })
+      }
 
       this.#emitExecutorEvent({ taskId: task.id, executor, runId: run.id, type: 'status', text: 'started' })
       const unsubscribe = this.#subscribeRunEvents(task.id, executor, run)

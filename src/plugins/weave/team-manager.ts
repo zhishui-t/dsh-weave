@@ -66,8 +66,10 @@ export interface RoleConfig {
   provider?: string
   /** 可选模型 id 覆盖；缺省继承父会话。 */
   model?: string
-  /** 可选单次输出 token 上限。 */
-  max_tokens?: number
+  /** ACP 思考深度 / thought level；例如 max、high、low。 */
+  thought_level?: string
+  /** ACP/agent 模式；例如 code、architect、build。 */
+  mode?: string
 }
 
 export interface TeamConfig {
@@ -186,7 +188,8 @@ export class TeamManager {
           personality: typeof r.personality === 'string' ? r.personality : '',
           ...(typeof r.provider === 'string' && r.provider !== '' ? { provider: r.provider } : {}),
           ...(typeof r.model === 'string' && r.model !== '' ? { model: r.model } : {}),
-          ...(r.max_tokens !== undefined && r.max_tokens !== null ? { max_tokens: Number(r.max_tokens) } : {}),
+          ...(typeof r.thought_level === 'string' && r.thought_level !== '' ? { thought_level: r.thought_level } : {}),
+          ...(typeof r.mode === 'string' && r.mode !== '' ? { mode: r.mode } : {}),
         }
       }),
       task_decomposition: {
@@ -252,11 +255,11 @@ export class TeamManager {
       if (role.model !== undefined && role.model.trim() === '') {
         throw new WeaveError('invalid_team', `角色 ${role.id} 的 model 不能为空`, { role: role.id })
       }
-      if (role.max_tokens !== undefined && (!Number.isInteger(role.max_tokens) || role.max_tokens <= 0)) {
-        throw new WeaveError('invalid_team', `角色 ${role.id} 的 max_tokens 必须 > 0`, {
-          role: role.id,
-          maxTokens: role.max_tokens,
-        })
+      if (role.thought_level !== undefined && role.thought_level.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 thought_level 不能为空`, { role: role.id })
+      }
+      if (role.mode !== undefined && role.mode.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 mode 不能为空`, { role: role.id })
       }
       if (!lookup.get(role.executor)) {
         throw new WeaveError('executor_unavailable', `角色 ${role.id} 的执行器未注册: ${role.executor}`, {

@@ -13,6 +13,9 @@ import { KnowledgeStore } from './knowledge-model.js'
 import { openPersistence } from './persistence/persistence.js'
 import { SessionTracker } from './session-tracker.js'
 import { TeamManager } from './team-manager.js'
+import { ExecutorProviderRegistry } from './executors/executor-provider.js'
+import { DshSubagentExecutorProvider } from './executors/dsh-subagent-executor-provider.js'
+import { AcpSessionProvider, ZcodeAcpExecutorProvider, zcodeAcpProviderConfigFromEnvironment, type AcpSessionProviderConfig } from './acp/acp-session-provider.js'
 
 /**
  * P0-PLUGIN-WIRE —— DSH 宿主接线模块（t37）。
@@ -424,6 +427,55 @@ export function createDefaultCliDeps(ctx: Context): CliMcpDeps {
     knowledgeStore: kstore,
     circuitBreaker: new CircuitBreaker(),
   }
+}
+
+export interface CreateDefaultExecutorProviderRegistryOptions {
+  /** 显式覆盖 ZCode ACP 配置；缺省读取 WEAVE_ZCODE_* 环境变量。 */
+  zcode?: AcpSessionProviderConfig
+  /** 是否包含 DSH 原生子代理 fallback；默认 true。 */
+  includeDsh?: boolean
+}
+
+/**
+ * 创建统一执行器 Provider 注册表：
+ * - 若配置了 ZCode ACP，则注册支持实时输出 / 模型 / 思考深度 / 模式的 Provider；
+ * - 注册 DSH 原生子代理作为 fallback。
+ * 解析顺序按注册顺序：ZCode 优先于通用 DSH fallback。
+ */
+export function createDefaultExecutorProviderRegistry(
+  ctx: Context,
+  options: CreateDefaultExecutorProviderRegistryOptions = {},
+): ExecutorProviderRegistry {
+  const registry = new ExecutorProviderRegistry()
+  const runtimeCtx = ctx as Context & {
+    subprocess?: {
+      spawn(spec: {
+        argv: string[]
+        cwd?: string
+        env?: Record<string, string>
+        stdio: { stdin: 'pipe'; stdout: 'pipe'; stderr: 'inherit' | 'ignore' | 'pipe' }
+        graceMs?: number
+      }): unknown
+    }
+  }
+  const zcodeConfig = options.zcode ?? zcodeAcpProviderConfigFromEnvironment(process.env)
+  const subagents = ctx.reflect.get('subagents', false) as
+    | { registerProvider?(provider: unknown): () => void }
+    | undefined
+  const subprocess = runtimeCtx.subprocess
+
+  if (zcodeConfig && subprocess) {
+    const acp = new AcpSessionProvider(zcodeConfig, (spec) => subprocess.spawn(spec) as never)
+    // 同时注册到 ctx.subagents，保证 ExecutorRegistry / 执行器列表可以发现 zcode。
+    subagents?.registerProvider?.(acp)
+    registry.register(new ZcodeAcpExecutorProvider(acp))
+  }
+
+  if (options.includeDsh !== false && subagents) {
+    registry.register(new DshSubagentExecutorProvider(subagents as unknown as ConstructorParameters<typeof DshSubagentExecutorProvider>[0]))
+  }
+
+  return registry
 }
 
 /** 便捷入口：默认 deps → { mcp, cli }（与 registerWeaveHost 同用途，跳过工具/命令注册）。 */

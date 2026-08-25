@@ -59,7 +59,6 @@ export interface SubagentResultLike {
 export interface SubagentAgentOptionsLike {
   provider?: string;
   model?: string;
-  maxTokens?: number;
 }
 
 export interface SubagentStartRequestLike {
@@ -68,7 +67,7 @@ export interface SubagentStartRequestLike {
   /** 委托父 Agent（真实环境必填；mock 仅记录不解析）。 */
   parent: unknown;
   signal: AbortSignal;
-  /** DSH 官方模型路由覆盖（provider/model/maxTokens）。 */
+  /** DSH 官方模型路由覆盖（provider/model）。 */
   agentOptions?: SubagentAgentOptionsLike;
   outputSchema?: unknown;
   maxDepth?: number;

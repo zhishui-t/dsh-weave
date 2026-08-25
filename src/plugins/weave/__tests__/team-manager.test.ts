@@ -161,24 +161,18 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('角色 provider/model/max_tokens 可选配置解析并校验通过', () => {
+  it('角色 provider/model 可选配置解析并校验通过', () => {
     const teamYaml = GOOD_TEAM.replace(
       '    personality: 你追求代码质量。',
-      '    personality: 你追求代码质量。\n    provider: deepseek-official\n    model: deepseek-v4-flash-vision-exp\n    max_tokens: 4096',
+      '    personality: 你追求代码质量。\n    provider: deepseek-official\n    model: deepseek-v4-flash-vision-exp\n    thought_level: max',
     )
     const team = manager(['codex', 'zcode']).parseTeam(teamYaml, 'fixture')
     expect(team.roles[1]).toMatchObject({
       provider: 'deepseek-official',
       model: 'deepseek-v4-flash-vision-exp',
-      max_tokens: 4096,
+      thought_level: 'max',
     })
     manager(['codex', 'zcode']).validateTeam(team)
-  })
-
-  it('角色 max_tokens 非法 → invalid_team', () => {
-    const team = manager(['codex', 'zcode']).parseTeam(GOOD_TEAM, 'fixture')
-    team.roles[0]!.max_tokens = 0
-    expectCode(() => manager(['codex', 'zcode']).validateTeam(team), 'invalid_team')
   })
 
   it('executor 未注册 → executor_unavailable（含 details）', () => {
