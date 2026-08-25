@@ -1,13 +1,16 @@
 /// <reference lib="dom" />
 
 /**
- * dsh-weave client plugin — 在 DSH Web 设置页注册一个可见的 Weave 界面入口。
+ * dsh-weave client plugin — DSH Web ModuleLoader bundle。
  *
- * 参考 DSH 客户端插件模式（dsh-super-injector / dsh-agent-teams）：
- * - package.json 的 dsh.client.platform = "web"
- * - client 入口导出 { inject: ["slots"], apply }
- * - apply 通过 ctx.slots.inject("settings.section", ...) 注册设置页
+ * 这个文件不是 ESM 模块，而是 DSH Web 的客户端 ModuleLoader 脚本：
+ * window.__ModuleLoader__.load({ id, factory })。
+ * factory 返回 { apply, inject }，由 DSH client runtime 按 slots 加载。
  */
+
+interface Window {
+  __ModuleLoader__?: { load(value: unknown): void }
+}
 
 const inject = ['slots']
 
@@ -93,4 +96,14 @@ function apply(ctx: ClientContext): void {
   )
 }
 
-export { apply, inject }
+const bundle = {
+  id: '@deepseek-ai/dsh-plugin-weave',
+  factory: (_require: unknown) => {
+    const module = { exports: {} as { apply?: typeof apply; inject?: string[] } }
+    module.exports.apply = apply
+    module.exports.inject = inject
+    return module.exports
+  },
+}
+
+window.__ModuleLoader__!.load(bundle)
