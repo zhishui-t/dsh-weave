@@ -1,6 +1,6 @@
-import type { KnowledgeInjectionLimits } from './delegation-service'
-import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta, type Visibility } from './knowledge-model'
-import { WeaveError } from './state/weave-error'
+import type { KnowledgeInjectionLimits } from './delegation-service.js'
+import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta, type Visibility } from './knowledge-model.js'
+import { WeaveError } from './state/weave-error.js'
 
 /**
  * P0-KINJECT-013 —— KnowledgeEngine：知识检索、排序与注入（TDD 1.5.7 + 2.2.6 + F-12）。
