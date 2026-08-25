@@ -9,7 +9,7 @@ const plugin = weavePlugin as unknown as Plugin
 
 describe('P0-BOOTSTRAP｜weave 插件加载冒烟测试', () => {
   it('导出 cordis 插件入口元数据（name/inject/apply）', () => {
-    expect(weavePlugin.name).toBe('dsh-weave')
+    expect(weavePlugin.name).toBe('weave')
     expect(weavePlugin.apply).toBeTypeOf('function')
     expect(weavePlugin.inject).toEqual({})
   })

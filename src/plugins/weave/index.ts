@@ -4,8 +4,8 @@ import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
 export const WEAVE_VERSION = '0.2.0'
 
-/** cordis 插件元数据：插件 identifier。业务服务仍以 ctx.weave 暴露（见 apply 中的服务名）。 */
-export const name = 'dsh-weave'
+/** cordis 插件元数据：内部插件名；外部包名为 @deepseek-ai/dsh-plugin-weave，内部不带 dsh 前缀。 */
+export const name = 'weave'
 
 /** 插件声明的服务依赖；P0 阶段无强依赖，后续按需声明（如需要 sqlite/scope 时）。 */
 export const inject = {}
@@ -33,7 +33,7 @@ export class WeaveService extends Service {
   }
 
   describe(): string {
-    return `dsh-weave v${WEAVE_VERSION} (loaded at ${new Date(this.loadedAt).toISOString()})`
+    return `weave v${WEAVE_VERSION} (loaded at ${new Date(this.loadedAt).toISOString()})`
   }
 }
 
@@ -44,7 +44,7 @@ export class WeaveService extends Service {
  * 本入口保持零依赖（裸 Context 可加载，等 t37 契约）。
  */
 export function apply(ctx: Context): void {
-  // 插件 identifier 为 dsh-weave；业务服务仍使用 ctx.weave 保持兼容。
+  // 内部插件名为 weave；外部包名保持 @deepseek-ai/dsh-plugin-weave。
   new WeaveService(ctx, 'weave')
 }
 
