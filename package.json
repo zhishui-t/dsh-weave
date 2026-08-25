@@ -36,7 +36,9 @@
     "test:persistence": "vitest run src/plugins/weave/__tests__/persistence.test.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:client-ui": "pnpm build && pnpm vitest run src/plugins/weave/__tests__/client-bundle.ui.test.tsx",
+    "test:ui": "pnpm vitest run src/plugins/weave/__tests__/dashboard.test.tsx src/plugins/weave/__tests__/dag-panel.test.tsx src/plugins/weave/__tests__/import-ui.test.tsx src/plugins/weave/__tests__/client-bundle.ui.test.tsx"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
