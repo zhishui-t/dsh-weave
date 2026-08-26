@@ -7,6 +7,10 @@ import { SessionTracker } from '../session-tracker.js'
 import { TASK_STATUSES, type TaskRecord } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge-model.js'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../import-pipeline.js'
 import type { TeamManager } from '../team-manager.js'
 import { buildKnowledgeGraph } from './knowledge-graph.js'
 
@@ -104,6 +108,8 @@ export interface QueryServiceDeps {
   teamManager?: TeamManager
   /** 知识仓库：knowledge/graph 只读真实知识文件与 [[双链]]。 */
   knowledgeStore?: KnowledgeStore
+  /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
+  importPipeline?: ImportPipeline
 }
 
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
@@ -117,6 +123,7 @@ export class WeaveQueryService {
   private readonly sessionTracker?: SessionTracker
   private readonly teamManager?: TeamManager
   private readonly knowledgeStore?: KnowledgeStore
+  private readonly importPipeline?: ImportPipeline
   private readonly dagRepository: DagRepository
 
   constructor(deps: QueryServiceDeps) {
@@ -126,6 +133,7 @@ export class WeaveQueryService {
     this.sessionTracker = deps.sessionTracker
     this.teamManager = deps.teamManager
     this.knowledgeStore = deps.knowledgeStore
+    this.importPipeline = deps.importPipeline
     this.dagRepository = new DagRepository(deps.persistence)
   }
 
@@ -328,6 +336,50 @@ export class WeaveQueryService {
     })
   }
 
+  /** knowledge/import/upload：浏览器 base64 上传到服务端临时目录。 */
+  async importUpload(input: unknown): Promise<unknown> {
+    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入（knowledge/import 需要 ImportPipeline）')
+    const p = asPayload(input)
+    const filename = requireString(p, 'filename')
+    const dataB64 = requireString(p, 'data')
+    const meta = p['meta'] as ImportMeta | undefined
+    if (!meta) throw new WeaveError('invalid_argument', 'meta 不能为空')
+    const dir = join(homedir(), '.dsh', 'imports')
+    mkdirSync(dir, { recursive: true })
+    const filePath = join(dir, `${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
+    writeFileSync(filePath, Buffer.from(dataB64, 'base64'))
+    return this.importPipeline.upload({ original_filename: filename, local_path: filePath }, meta)
+  }
+
+  /** knowledge/import/convert：AnyDoc 转换。 */
+  async importConvert(input: unknown): Promise<unknown> {
+    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
+    return this.importPipeline.convert(requireString(asPayload(input), 'jobId', 'job_id'))
+  }
+
+  /** knowledge/import/preview：读转换后的 Markdown。 */
+  async importPreview(input: unknown): Promise<unknown> {
+    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
+    return this.importPipeline.preview(requireString(asPayload(input), 'jobId', 'job_id'))
+  }
+
+  /** knowledge/import/confirm：生成 candidate。 */
+  async importConfirm(input: unknown): Promise<unknown> {
+    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
+    const p = asPayload(input)
+    const jobId = requireString(p, 'jobId', 'job_id')
+    const candidate = p['candidate'] as KnowledgeCandidate | undefined
+    if (!candidate) throw new WeaveError('invalid_argument', 'candidate 不能为空')
+    return this.importPipeline.confirm(jobId, candidate)
+  }
+
+  /** knowledge/import/cancel：取消导入任务。 */
+  async importCancel(input: unknown): Promise<unknown> {
+    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
+    await this.importPipeline.cancel(requireString(asPayload(input), 'jobId', 'job_id'))
+    return { cancelled: true }
+  }
+
   /* --------------------------------- 审计域 --------------------------------- */
 
   /** audit/list：types/from/to/limit/order，转发 AuditLog.query（JSONL 真实审计）。 */
@@ -438,6 +490,16 @@ export class WeaveQueryService {
         return this.knowledgeReject(payload)
       case 'knowledge/graph':
         return this.knowledgeGraph(payload ?? {})
+      case 'knowledge/import/upload':
+        return this.importUpload(payload ?? {})
+      case 'knowledge/import/convert':
+        return this.importConvert(payload ?? {})
+      case 'knowledge/import/preview':
+        return this.importPreview(payload ?? {})
+      case 'knowledge/import/confirm':
+        return this.importConfirm(payload ?? {})
+      case 'knowledge/import/cancel':
+        return this.importCancel(payload ?? {})
       case 'audit/list':
         return this.auditList(payload)
       case 'session/bindings':
@@ -467,5 +529,6 @@ export function createWeaveQueryServiceFromCliDeps(deps: CliMcpDeps): WeaveQuery
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
     knowledgeStore: deps.knowledgeStore,
+    importPipeline: deps.importPipeline,
   })
 }

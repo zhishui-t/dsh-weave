@@ -9,6 +9,8 @@ export interface KnowledgeGraphNode {
   tags: string[]
   kind: 'knowledge' | 'missing'
   path?: string
+  /** 跨层关联节点：当前筛选层外、但因 [[双链]] 被引用的真实知识条目。 */
+  linked?: boolean
 }
 
 export interface KnowledgeGraphEdge {
@@ -67,6 +69,7 @@ export async function buildKnowledgeGraph(
     status?: KnowledgeStatus
     layer?: KnowledgeLayer
     limit?: number
+    includeLinkedLayers?: boolean
   } = {},
 ): Promise<KnowledgeGraphResult> {
   if (input.status !== undefined && !STATUSES.has(input.status)) {
@@ -115,8 +118,31 @@ export async function buildKnowledgeGraph(
     }
   }
 
+  const allEntries: LoadedEntry[] = []
+  if (input.includeLinkedLayers === true) {
+    const allMetas = await store.listMeta({})
+    for (const meta of allMetas) {
+      try {
+        const file = store.getKnowledgeFile(meta.id)
+        if (!file) continue
+        allEntries.push({
+          id: meta.id,
+          title: file.frontmatter.title,
+          status: meta.status,
+          layer: meta.layer,
+          tags: [...file.frontmatter.tags],
+          path: meta.path,
+          body: file.body,
+        })
+      } catch {
+        // 跨层解析时单个损坏文件跳过，不阻断。
+      }
+    }
+  }
+  const resolutionEntries = input.includeLinkedLayers === true ? allEntries : entries
+
   const nodes = new Map<string, KnowledgeGraphNode>()
-  const ids = new Set(entries.map((entry) => entry.id))
+  const ids = new Set(resolutionEntries.map((entry) => entry.id))
   const titles = new Map<string, string>()
   const fileNames = new Map<string, string>()
 
@@ -130,6 +156,8 @@ export async function buildKnowledgeGraph(
       kind: 'knowledge',
       path: entry.path,
     })
+  }
+  for (const entry of resolutionEntries) {
     titles.set(normalize(entry.title), entry.id)
     titles.set(normalize(pathTitle(entry.path)), entry.id)
     fileNames.set(normalize(pathTitle(entry.path)), entry.id)
@@ -156,6 +184,20 @@ export async function buildKnowledgeGraph(
             layer: 'shared',
             tags: [],
             kind: 'missing',
+          })
+        }
+      } else if (!nodes.has(targetId) && input.includeLinkedLayers === true) {
+        const linked = allEntries.find((item) => item.id === targetId)
+        if (linked) {
+          nodes.set(targetId, {
+            id: linked.id,
+            title: linked.title,
+            status: linked.status,
+            layer: linked.layer,
+            tags: [...linked.tags],
+            kind: 'knowledge',
+            path: linked.path,
+            linked: true,
           })
         }
       }

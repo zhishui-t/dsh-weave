@@ -3,6 +3,7 @@ import type { ExecutorRegistry } from './executor-registry.js'
 import type { FeedbackRouter } from './feedback-router.js'
 import type { KnowledgeReviewService } from './knowledge-review.js'
 import type { KnowledgeStore, KnowledgeMeta, KnowledgeLayer, KnowledgeStatus } from './knowledge-model.js'
+import type { ImportPipeline } from './import-pipeline.js'
 import type { WeavePersistence } from './persistence/index.js'
 import { TaskStateMachine } from './state/task-state-machine.js'
 import type { CircuitBreaker, BreakerRecord } from './safety/circuit-breaker.js'
@@ -36,6 +37,8 @@ export interface CliMcpDeps {
   knowledgeReview?: KnowledgeReviewService
   /** KnowledgeStore：knowledge_review 非 candidate 状态查询用。 */
   knowledgeStore?: KnowledgeStore
+  /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
+  importPipeline?: ImportPipeline
   /** 熔断器（P0-SAFETY-015，t8）：ban list 用。 */
   circuitBreaker?: CircuitBreaker
 }

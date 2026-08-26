@@ -10,6 +10,7 @@ import { ExecutorRegistry } from './executor-registry.js'
 import { FeedbackRouter } from './feedback-router.js'
 import { KnowledgeReviewService } from './knowledge-review.js'
 import { KnowledgeStore } from './knowledge-model.js'
+import { ImportPipeline } from './import-pipeline.js'
 import { openPersistence } from './persistence/persistence.js'
 import { SessionTracker } from './session-tracker.js'
 import { TeamManager } from './team-manager.js'
@@ -477,6 +478,11 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   const auditDir = options.auditDir ?? DEFAULT_AUDIT_DIR
   const kstore = new KnowledgeStore({ rootDir: knowledgeRoot, metaDb: persistence.knowledgeMeta })
   const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: auditDir }) })
+  const importPipeline = new ImportPipeline({
+    importsDb: persistence.imports,
+    importsDir: join(homedir(), '.dsh', 'imports'),
+    knowledgeStore: kstore,
+  })
   return {
     persistence,
     teamManager: new TeamManager(registry, { teamsDir, persistence }),
@@ -485,6 +491,7 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     dagRepository: new DagRepository(persistence),
     knowledgeReview: kreview,
     knowledgeStore: kstore,
+    importPipeline,
     circuitBreaker: new CircuitBreaker(),
   }
 }

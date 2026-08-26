@@ -120,35 +120,25 @@ export interface AnyDocLikeConverter {
 }
 
 /**
- * 默认转换器：适配 `@firecrawl/anydoc`（FDD 4.2.1 唯一选型）。
- * 基线环境未安装该包（审核报告 E8），此时动态导入失败并给出可读错误；
- * 包安装后按 anydoc 实际导出接口接入（当前仅声明适配点，不硬编码未知 API）。
+ * 默认转换器：@firecrawl/anydoc 0.2.3
+ * 读取服务器本地文件，输出 GitHub-Flavored Markdown；标题取首个 H1/H2，否则取文件名。
  */
 export class AnyDocConverterAdapter implements AnyDocLikeConverter {
   async convert(input: ConvertInput): Promise<ConvertOutput> {
-    let anydocModule: unknown
+    let anydoc: typeof import('@firecrawl/anydoc')
     try {
-      // 动态导入（变量说明符避开模块解析/打包预检；@firecrawl/anydoc 为 FDD 4.2.1 唯一选型）
-      const moduleName = '@firecrawl/anydoc'
-      anydocModule = await import(/* @vite-ignore */ moduleName)
+      anydoc = await import('@firecrawl/anydoc')
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       throw new ImportPipelineError(
         'conversion_failed',
-        `AnyDoc 转换器不可用：@firecrawl/anydoc 未安装（${reason}）；请先安装后再导入 ${input.fileType} 文件`,
+        `AnyDoc 转换器不可用：@firecrawl/anydoc 未安装（${reason}）`,
       )
     }
-    const anydoc = (anydocModule as { default?: unknown } | undefined)?.default
-    if (!anydoc || typeof (anydoc as { convert?: unknown }).convert !== 'function') {
-      throw new ImportPipelineError(
-        'conversion_failed',
-        `AnyDoc 转换器接口异常：@firecrawl/anydoc 未导出 convert()，无法转换 ${input.fileType}`,
-      )
-    }
-    throw new ImportPipelineError(
-      'conversion_failed',
-      `AnyDoc 转换器已加载但 P0 适配点未实现：@firecrawl/anydoc 的 convert() 需按实际导出签名接入（fileType=${input.fileType}）`,
-    )
+    const markdown = await anydoc.toMarkdown(input.filePath)
+    const titleMatch = markdown.match(/^#s+(.+?)s*$/m) ?? markdown.match(/^##s+(.+?)s*$/m)
+    const title = titleMatch?.[1]?.trim() || input.originalFilename.replace(/.[^.]+$/, '')
+    return { markdown, title, warnings: [], outputPath: undefined }
   }
 }
 

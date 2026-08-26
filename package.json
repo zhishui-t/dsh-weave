@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@firecrawl/anydoc": "0.2.3",
     "yaml": "^2.9.0",
     "zcode-acp-server": "0.11.9"
   },
