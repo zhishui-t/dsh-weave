@@ -93,6 +93,7 @@ type RpcCall = { endpoint: string; payload: unknown }
 function makeClientContext(endpointValues: Record<string, unknown> = {}) {
   const calls: RpcCall[] = []
   let component: WeaveActionComponent | undefined
+  const registrations: Array<{ name: string; component: ComponentType<Record<string, unknown>> }> = []
   const ctx = {
     effect(execute: () => unknown) {
       execute()
@@ -132,13 +133,21 @@ function makeClientContext(endpointValues: Record<string, unknown> = {}) {
       inject(_slot: string, register: () => unknown) {
         register()
       },
-      register(_def: { id?: string }, registered: ComponentType) {
-        component = registered
+      register(def: { id?: string; name?: string }, registered: ComponentType) {
+        registrations.push({ name: def?.name ?? '', component: registered })
+        if (def?.name === 'sidebar.footer.action') component = registered
         return () => undefined
       },
     },
   }
-  return { calls, ctx, get component() { return component } }
+  return {
+    calls,
+    ctx,
+    get component() { return component },
+    registration(name: string) {
+      return registrations.find((item) => item.name === name)?.component
+    },
+  }
 }
 
 describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
@@ -174,12 +183,12 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
       },
       slots: {
         inject(slot: string, register: () => unknown) {
-          registeredSlot = slot
+          if (!registeredSlot) registeredSlot = slot
           register()
         },
         register(def: { id?: string }, component: ComponentType) {
-          registeredDef = def
-          registeredComponent = component
+          if (!registeredDef) registeredDef = def
+          if (!registeredComponent) registeredComponent = component
           return () => undefined
         },
       },
@@ -296,7 +305,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
           register()
         },
         register(_def: { id?: string }, registered: ComponentType) {
-          component = registered
+          if (!component) component = registered
           return () => undefined
         },
       },
@@ -373,7 +382,8 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     fireEvent.click(screen.getByTestId('nav-tasks'))
     await screen.findByTestId('task-row-T-1')
     expect(screen.getByTestId('task-row-T-2')).toBeTruthy()
-    expect(screen.getByTestId('task-create-submit')).toBeTruthy()
+    expect(screen.queryByTestId('task-create-submit')).toBeNull()
+    expect(screen.queryByText('创建任务')).toBeNull()
     const filter = screen.getByTestId('task-status-filter') as HTMLSelectElement
     expect(filter.options.length).toBe(15)
     expect(screen.getByTestId('task-action-cancel-T-1')).toBeTruthy()
@@ -439,5 +449,155 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     const settings = await screen.findByTestId('settings-list')
     expect(settings.textContent).toContain('9.9.9-test')
     expect(settings.textContent).toContain(process.version)
+  })
+})
+describe('t8 会话优先模型与治理化改造', () => {
+  const moduleRequireOf = () => (id: string) => {
+    if (id === 'react') return React
+    if (id === 'react-dom') return ReactDOM
+    throw new Error(`unexpected client dependency: ${id}`)
+  }
+
+  it('任务页不再提供创建入口，并明确提示任务来自 DSH 会话', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'task/list': { total: 1, tasks: [{ id: 'T-9', description: '会话发起的任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-04T09:00:00Z' }] },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-tasks'))
+    await screen.findByTestId('task-row-T-9')
+    expect(screen.queryByText('创建任务')).toBeNull()
+    expect(screen.queryByTestId('task-create-submit')).toBeNull()
+    expect(screen.queryByTestId('task-project-input')).toBeNull()
+    await screen.findByText((content) => content.includes('任务由当前 DSH 会话发起'))
+  })
+
+  it('不再注册输入框团队选择器；团队启停由当前会话自然语言处理', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext()
+    exported.apply(fixture.ctx as never)
+    expect(fixture.registration('conversation.input.right')).toBeUndefined()
+
+    const source = await readFile(sourcePath, 'utf8')
+    expect(source).not.toContain('conversation.input.right')
+    expect(source).not.toContain('session-team-selector')
+  })
+  it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'provider/list': {
+        providers: [
+          { name: 'myacp', transport: 'stdio', command: 'node', args: ['srv.js'], protocol: 'acp', declaredExtensions: ['zcode'], enabled: true },
+        ],
+      },
+      'settings/describe': {
+        version: '9.9.9-test',
+        node_version: process.version,
+        state_dir: '/state',
+        teams_dir: '/teams',
+        audit_dir: '/audit',
+        providers_file: '/f/providers.json',
+        zcode: { configured: false, registered: true },
+      },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+
+    fireEvent.click(screen.getByTestId('nav-executors'))
+    const card = await screen.findByTestId('provider-card-myacp')
+    expect(card.textContent).toContain('已生效')
+    expect(card.textContent).toContain('node srv.js')
+    expect(card.textContent).toContain('zcode')
+    expect(card.textContent).toContain('fallback ✓')
+
+    fireEvent.click(screen.getByTestId('nav-settings'))
+    const summary = await screen.findByTestId('providers-summary')
+    expect(summary.textContent).toContain('/f/providers.json')
+    expect(summary.textContent).toContain('myacp · stdio · node · 已生效')
+  })
+})
+describe('t9 任务依赖图可视化', () => {
+  const moduleRequireOf = () => (id: string) => {
+    if (id === 'react') return React
+    if (id === 'react-dom') return ReactDOM
+    throw new Error(`unexpected client dependency: ${id}`)
+  }
+
+  const THREE_NODE_DAG = {
+    dag_id: 'D1',
+    status: 'RUNNING',
+    tasks: [
+      { id: 'T-A', description: '根任务', status: 'RUNNING', dependencies: [], assigned_agent: 'agent-1', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' },
+      { id: 'T-B', description: '中间任务', status: 'WAITING', dependencies: ['T-A'] },
+      { id: 'T-C', description: '末级任务', status: 'COMPLETED', dependencies: ['T-B'] },
+    ],
+    edges: [
+      { from: 'T-A', to: 'T-B' },
+      { from: 'T-B', to: 'T-C' },
+    ],
+  }
+
+  function openTaskDetail(fixture: ReturnType<typeof makeClientContext>): void {
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-tasks'))
+  }
+
+  it('分层布局：节点按最长路径分列，边用方向线连接，节点含状态与负责人', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'task/list': { total: 1, tasks: [{ id: 'T-A', description: '根任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
+      'task/get': THREE_NODE_DAG,
+    })
+    exported.apply(fixture.ctx as never)
+    openTaskDetail(fixture)
+    await screen.findByTestId('task-row-T-A')
+    fireEvent.click(screen.getByTestId('task-detail-toggle-T-A'))
+    await screen.findByTestId('dag-panel')
+
+    const nodes = screen.getAllByTestId(/^dag-node-/)
+    expect(nodes.length).toBe(3)
+    const svg = screen.getByTestId('dag-edges')
+    expect(svg.querySelectorAll('line').length).toBe(2)
+
+    // 状态徽标与负责人
+    expect(screen.getByTestId('dag-node-T-C').textContent).toContain('COMPLETED')
+    expect(screen.getByTestId('dag-node-T-A').textContent).toContain('agent-1')
+    expect(screen.getByTestId('dag-node-T-B').textContent).toContain('未分配')
+
+    // 层级：x 随最长依赖路径递增 A < B < C
+    const leftOf = (id: string) => Number.parseInt((screen.getByTestId('dag-node-' + id) as HTMLElement).style.left, 10)
+    expect(leftOf('T-C')).toBeGreaterThan(leftOf('T-B'))
+    expect(leftOf('T-B')).toBeGreaterThan(leftOf('T-A'))
+
+    // 点击联动详情 + 选中高亮
+    fireEvent.click(screen.getByTestId('dag-node-T-C'))
+    await waitFor(() => {
+      const gets = fixture.calls.filter((item) => item.endpoint === 'task/get')
+      expect(gets.some((item) => (item.payload as Record<string, unknown>).taskId === 'T-C')).toBe(true)
+    })
+    expect(screen.getByTestId('dag-node-T-C').getAttribute('data-selected')).toBe('true')
+    expect(screen.getByTestId('dag-node-T-A').getAttribute('data-selected')).toBe('false')
+  })
+
+  it('无依赖 DAG 显示单节点且无边', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'task/list': { total: 1, tasks: [{ id: 'S-1', description: '独立任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.2.0', updated_at: '2025-01-06T09:00:00Z' }] },
+      'task/get': { dag_id: '', status: 'created', tasks: [{ id: 'S-1', status: 'RUNNING', dependencies: [] }], edges: [] },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-tasks'))
+    await screen.findByTestId('task-row-S-1')
+    fireEvent.click(screen.getByTestId('task-detail-toggle-S-1'))
+    await screen.findByTestId('dag-panel')
+    expect(screen.getAllByTestId(/^dag-node-/).length).toBe(1)
+    expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(0)
+    expect(screen.getByTestId('dag-node-S-1').textContent).toContain('RUNNING')
   })
 })

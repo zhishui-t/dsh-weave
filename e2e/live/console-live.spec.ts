@@ -1,6 +1,6 @@
 // Weave 控制台真实 DSH Web 端到端验收（t5 live 层）。
 // 运行：pnpm test:e2e:live —— 访问真实 http://127.0.0.1:3080，走真实 Connection RPC，无任何 mock。
-// 通过标准：八页可达；团队/任务创建成功；知识/审计/会话/设置真实数据或明确空态；
+// 通过标准：八页可达；团队配置创建成功；任务由当前 DSH 会话发起，Web 仅验收列表/治理；知识/审计/会话/设置真实数据或明确空态；
 // 无 405、无 invalid client-request message、无未捕获页面异常、/dsh-weave 信封全部 ok=true。
 import { expect, test, type Page } from '@playwright/test'
 
@@ -116,39 +116,35 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('tasks: 提交唯一 project 任务并在列表与详情可见', async () => {
-    const tag = Date.now().toString(36)
-    const project = `e2e-proj-${tag}`
+  test('tasks: 任务中心只读展示且无 Web 创建任务入口', async () => {
     try {
       await page.getByTestId('nav-tasks').click()
-      await page.getByTestId('task-project-input').waitFor({ state: 'visible', timeout: 10_000 })
-      await page.getByTestId('task-project-input').fill(project)
-      await page.getByTestId('task-version-input').fill('v0.1.0')
-      await page
-        .locator('.weave-field', { hasText: '任务描述' })
-        .locator('textarea')
-        .fill(project)
-      if (createdTeamId !== '') {
-        await page
-          .locator('.weave-field', { hasText: '团队 ID（可选）' })
-          .locator('input')
-          .fill(createdTeamId)
+      await page.getByTestId('task-search').waitFor({ state: 'visible', timeout: 10_000 })
+      await page.getByTestId('task-status-filter').waitFor({ state: 'visible', timeout: 10_000 })
+
+      await expect(page.getByTestId('task-create-submit')).toHaveCount(0)
+      await expect(page.getByTestId('task-project-input')).toHaveCount(0)
+      await expect(page.getByTestId('task-version-input')).toHaveCount(0)
+      await expect(page.getByText('任务由当前 DSH 会话发起')).toBeVisible()
+
+      const rows = page.locator('[data-testid^="task-row-"]')
+      const rowCount = await rows.count()
+      if (rowCount > 0) {
+        const rowId = (await rows.first().getAttribute('data-testid'))!.replace('task-row-', '')
+        await page.getByTestId(`task-detail-toggle-${rowId}`).click()
+        await page.getByTestId('task-detail').waitFor({ state: 'visible', timeout: 10_000 })
+        const detail = await page.getByTestId('task-detail').innerText()
+        expect(detail.length).toBeGreaterThan(0)
+        expect(detail).toMatch(/状态|WAITING|RUNNING|BLOCKED|PENDING/)
+      } else {
+        console.log('  当前 tasks.db 无任务（明确空态）')
       }
-      await page.getByTestId('task-create-submit').click()
-      await page.waitForTimeout(1500)
-      const row = page.locator('[data-testid^="task-row-"]').filter({ hasText: project }).first()
-      await row.waitFor({ state: 'visible', timeout: 20_000 })
-      const rowId = (await row.getAttribute('data-testid'))!.replace('task-row-', '')
-      await page.getByTestId(`task-detail-toggle-${rowId}`).click()
-      await page.getByTestId('task-detail').waitFor({ state: 'visible', timeout: 10_000 })
-      const detail = await page.getByTestId('task-detail').innerText()
-      expect(detail.length).toBeGreaterThan(0)
-      expect(detail).toMatch(/状态|WAITING|RUNNING|BLOCKED|PENDING/)
-      await shot(page, '11-task-created')
-      console.log(`  任务已创建: ${project} (id=${rowId})`)
-      step(`任务创建+详情状态 (${project})`)()
+
+      await shot(page, '11-task-governance')
+      console.log('  任务中心为只读/治理模式，未提供 Web 创建入口')
+      step('任务中心无创建入口并真实渲染')()
     } catch (err) {
-      step(`任务创建+详情状态 (${project})`)(String(err))
+      step('任务中心无创建入口并真实渲染')(String(err))
       throw err
     }
   })

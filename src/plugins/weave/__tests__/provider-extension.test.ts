@@ -22,7 +22,7 @@ import {
 } from '../acp/provider-extension'
 import type { AcpProviderExtension } from '../acp/provider-extension'
 import { ProviderStore, parseProviderInput } from '../acp/provider-store'
-import { registerWeaveProviderCommands } from '../host-wiring'
+import { createWeaveProviderCommandDefinitions } from '../acp/dynamic-provider'
 
 const roots: string[] = []
 afterEach(() => {
@@ -281,58 +281,51 @@ describe('providers.json 存储与入参解析', () => {
   })
 })
 
-describe('/weave-add-provider 与 /weave-provider 命令', () => {
+describe('/weave addProvider 与 /weave provider 命令', () => {
   function makeCommandEnv() {
     const root = tmpRoot()
-    const registeredDefs: Array<{ name: string; handler: (inv: { rawInput: string }) => Promise<{ kind: string; text: string }> }> = []
-    const liveRegistered: Array<{ name?: string }> = []
-    const ctx = {
-      commands: {
-        register: (def: { name: string; handler: (inv: { rawInput: string }) => Promise<{ kind: string; text: string }> }) => {
-          registeredDefs.push(def)
-          return () => undefined
-        },
-      },
-      subprocess: { spawn: () => { throw new Error('not spawned in test') } },
-      reflect: { get: (_key: string, _optional?: boolean) => ({ registerProvider: (provider: { name?: string }) => { liveRegistered.push(provider); return () => undefined } }) },
-    }
-    const registration = registerWeaveProviderCommands(ctx as never, { providersFile: join(root, 'providers.json') })
-    expect(registration.registeredAdd).toBe(true)
-    expect(registration.registeredManage).toBe(true)
-    return { registeredDefs, liveRegistered, store: new ProviderStore({ file: join(root, 'providers.json') }), root }
+    const hotCalls: string[] = []
+    const removed: string[] = []
+    const defs = createWeaveProviderCommandDefinitions({
+      providersFile: join(root, 'providers.json'),
+      hotRegister: (cfg) => { hotCalls.push(cfg.name); return null },
+      onRemove: (name) => removed.push(name),
+    })
+    const registeredDefs = [defs.addProvider, defs.manageProvider]
+    return { registeredDefs, hotCalls, removed, store: new ProviderStore({ file: join(root, 'providers.json') }), root }
   }
 
   it('add-provider：JSON 成功持久化并热注册；坏 JSON 报 error 信封', async () => {
     const env = makeCommandEnv()
-    const add = env.registeredDefs.find((d) => d.name === 'weave-add-provider')!
-    const ok = await add.handler({ rawInput: '{"name":"agent7","transport":"stdio","command":"node","args":["a.js"],"protocol":"acp","declaredExtensions":["zcode"]}' })
+    const add = env.registeredDefs.find((d) => d.name === 'addProvider')!
+    const ok = await add.handler('{"name":"agent7","transport":"stdio","command":"node","args":["a.js"],"protocol":"acp","declaredExtensions":["zcode"]}')
     expect(ok.kind).toBe('success')
     expect(ok.text).toContain('已注册执行器 agent7')
     expect(env.store.get('agent7')?.declaredExtensions).toEqual(['zcode'])
-    expect(env.liveRegistered.map((p) => p.name)).toContain('agent7')
+    expect(env.hotCalls).toContain('agent7')
 
-    const bad = await add.handler({ rawInput: '{ broken' })
+    const bad = await add.handler('{ broken')
     expect(bad.kind).toBe('error')
     expect(env.store.get('agent8')).toBeUndefined()
   })
 
   it('list/remove 子命令；remove 未知名报错', async () => {
     const env = makeCommandEnv()
-    const manage = env.registeredDefs.find((d) => d.name === 'weave-provider')!
-    const emptyList = await manage.handler({ rawInput: 'list' })
+    const manage = env.registeredDefs.find((d) => d.name === 'provider')!
+    const emptyList = await manage.handler('list')
     expect(emptyList.text).toBe('（无动态 provider）')
 
-    const add = env.registeredDefs.find((d) => d.name === 'weave-add-provider')!
-    await add.handler({ rawInput: 'name=p9 command=deno transport=stdio protocol=acp' })
+    const add = env.registeredDefs.find((d) => d.name === 'addProvider')!
+    await add.handler('name=p9 command=deno transport=stdio protocol=acp')
 
-    const listed = await manage.handler({ rawInput: 'list' })
+    const listed = await manage.handler('list')
     expect(listed.kind).toBe('success')
     expect(listed.text).toContain('- p9 command=deno')
 
-    const ghost = await manage.handler({ rawInput: 'remove ghost' })
+    const ghost = await manage.handler('remove ghost')
     expect(ghost.kind).toBe('error')
 
-    const removed = await manage.handler({ rawInput: 'remove p9' })
+    const removed = await manage.handler('remove p9')
     expect(removed.kind).toBe('success')
     expect(env.store.list()).toHaveLength(0)
   })

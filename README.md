@@ -92,26 +92,49 @@ ctx.registry.delete(weavePlugin)       // 卸载
 `WeaveService` 在 `ctx.weave` 上提供 `version()` / `describe()` / `loadedAt`，后续模块
 （ExecutorRegistry / TaskStateMachine / Persistence 等）以方法或子服务挂载于此。
 
-## 5. Web 控制台与团队管理
+## 5. Web 控制台、当前会话团队与外部 Provider
 
-DSH Web 左侧底部点击 **Weave** 打开控制台。控制台中的 **团队** 页面会通过
-`/dsh-weave` Connection RPC 读取已注册执行器和团队，并可直接创建一个团队。
+DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配置、执行器治理、
+任务监控和知识审核；**任务不由 Web 表单下发**。
 
-- ZCode Provider 会在插件加载时自动发现：
-  - `zcode-acp-server` 来自本包依赖；
-  - ZCode CLI 默认探测 Windows 安装目录，也可用 `WEAVE_ZCODE_BIN` 显式指定；
-  - 运行 ZCode 的 Node 默认使用当前 Node（需 >=22），也可用 `WEAVE_ZCODE_NODE` 指定。
-- 创建团队时可填写 ZCode 的 Provider UUID 与模型 ID，例如：
+当前 DSH 会话是团队控制面：
 
 ```text
-provider: 80600797-559a-47b9-9360-78f03230ae5c
-model: deepseek-v4-flash
-thought_level: max
+启用 pipe-team
+使用 流水线团队
+切换到 alpha
+关闭团队
 ```
+
+插件在 `agent/pre-step` 中识别这些短句，写入该会话的团队绑定；后续用户消息
+按该团队配置顺序委托。未绑定团队时消息正常进入主模型。
+
+控制台中的 **团队** 页面通过 `/dsh-weave` Connection RPC 读取已注册执行器和团队，
+并可创建/删除团队配置。角色可选择任意当前真实注册的执行器；ZCode 只是可选源，
+不是必需项。
+
+外部 ACP harness 通过当前会话命令接入：
+
+```text
+/weave addProvider {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}
+/weave provider list
+/weave provider remove myagent
+```
+
+配置持久化到 `~/.dsh/weave/providers.json`，热注册后执行器列表立即可见。
+ACP 标准协议由统一内核处理；ZCode 的 model/thought/mode 是内置 extension 示例。
+未声明或探测失败的 extension 会以 requested/effective/supported/fallback 明确降级，
+不会伪装成功。
+
+内置 ZCode 自动发现仍可选启用：
+
+- `zcode-acp-server` 来自本包依赖；
+- ZCode CLI 默认探测 Windows 安装目录，也可用 `WEAVE_ZCODE_BIN` 显式指定；
+- 运行 ZCode 的 Node 默认使用当前 Node（需 >=22），也可用 `WEAVE_ZCODE_NODE` 指定。
 
 团队文件写入 `~/.dsh/teams/<team_id>.yaml`；保存前会做完整结构和执行器校验。
 
-## 5. 构建说明
+## 6. 构建说明
 
 - 开发/测试：`tsconfig.json`（bundler 解析 + noEmit），vitest 直接跑 TS 源码。
 - 发布：`tsconfig.build.json` 继承开发配置，改为产出 `dist/`（声明文件 + sourcemap），

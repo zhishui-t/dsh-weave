@@ -62,6 +62,8 @@ export interface HostToolDefinition {
 export interface WeaveHostOptions {
   /** MCP 工具名前缀，默认 `weave_` */
   toolPrefix?: string
+  /** 动态 ACP provider 管理回调；由集成方注入热注册实现。 */
+  providerCommand?: (args: string[]) => Promise<{ kind: 'success' | 'error'; text: string }>
 }
 
 export interface WeaveMcpToolsRegistration {
@@ -254,7 +256,7 @@ export function registerWeaveHost(
   options: WeaveHostOptionsCommand = {},
 ): WeaveHostBundle {
   const mcp = new WeaveMcp(deps)
-  const cli = new WeaveCli(mcp)
+  const cli = new WeaveCli(mcp, options.providerCommand)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -365,14 +367,14 @@ export function tokenizeCommandLine(input: string): string[] {
 export function registerWeaveCommand(
   ctx: Context,
   deps: CliMcpDeps,
-  _options: WeaveHostOptions = {},
+  options: WeaveHostOptions = {},
 ): WeaveCommandRegistration {
   const commands = (ctx as Context & { commands?: HostCommandRuntime }).commands
   if (!commands || typeof commands.register !== 'function') {
     return { registered: false, name: SLASH_COMMAND_NAME, unregister: () => undefined }
   }
   const mcp = new WeaveMcp(deps)
-  const cli = new WeaveCli(mcp)
+  const cli = new WeaveCli(mcp, options.providerCommand)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp

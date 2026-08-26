@@ -208,12 +208,52 @@ export interface PreStepHookDeps {
   getSelection: (sessionId: string) => Promise<{ team_id: string } | null>
   /** 团队加载（选择指向已删团队时走失败通知路径）。 */
   loadTeam: (teamId: string) => TeamConfig
+  listTeams(): TeamConfig[]
+  setSelection(sessionId: string, teamId: string | null): Promise<void>
   delegator: SequentialSessionDelegator
   /** 会话 notice 写入（prod 绑定 notifySession；session 缺席时实现方自行降级告警）。 */
   notify: (sessionId: string, text: string, session?: NoticeSessionLike) => void
   log?: { warn?: (...args: unknown[]) => void }
   /** 去重表容量上限（FIFO 淘汰；默认 512）。 */
   dedupeLimit?: number
+}
+
+export type TeamSelectionCommand =
+  | { action: 'enable'; team: TeamConfig }
+  | { action: 'disable' }
+
+/**
+ * 解析当前会话中的团队启停指令。
+ * 只匹配以启停动词开头的短句，避免把普通任务误判为控制指令。
+ */
+export function parseTeamSelectionCommand(text: string, teams: readonly TeamConfig[]): TeamSelectionCommand | null {
+  const raw = text.trim()
+  if (raw === '' || raw.length > 120) return null
+
+  const BS = String.fromCharCode(92)
+  const space = BS + 's*'
+  const boundary = '(?:[。.!！?？]|$)'
+  const teamWord = '(?:当前)?(?:的)?(?:团队|小队)'
+  const disablePattern = new RegExp('(?:^|' + space + ')' + '(?:关闭|停用|禁用|取消启用|不启用)' + teamWord + boundary)
+
+  const verb = '(?:启用|开启|启动|激活|使用|切换到|切换)'
+  const prefix = '^(?:' + BS + '/weave' + space + ')?(?:请|帮我|麻烦)?(?:立即)?' + verb + space
+  const enabledPattern = new RegExp(prefix + '(?:' + teamWord + ')?(?:[:：]?' + space + ')?(.+?)' + boundary)
+
+  if (disablePattern.test(raw)) return { action: 'disable' }
+
+  const enabled = raw.match(enabledPattern)
+  if (!enabled) return null
+
+  const target = (enabled[1] ?? '').trim().replace(/^["'“”]+|["'“”]+$/g, '')
+  if (target === '') return null
+  const needle = target.toLowerCase()
+  const team =
+    teams.find((item) => item.team_id.toLowerCase() === needle) ??
+    teams.find((item) => item.name.toLowerCase() === needle) ??
+    teams.find((item) => item.team_id.toLowerCase().includes(needle)) ??
+    teams.find((item) => item.name.toLowerCase().includes(needle))
+  return team ? { action: 'enable', team } : null
 }
 
 function markProcessed(seen: Map<string, true>, messageId: string, limit: number): void {
@@ -240,8 +280,40 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
     payload: PreStepPayloadLike,
     next: () => Promise<PreStepDecisionLike>,
   ): Promise<PreStepDecisionLike> => {
-    const decision = await next()
+    let decision: PreStepDecisionLike = { kind: 'enter', messages: [] }
     try {
+      // 当前会话自然语言团队控制优先于任务委托；命中后不进入普通模型回合。
+      const controlMessages = (payload.messages ?? []).filter((message) => message?.source?.kind === 'user')
+      const controlMessage = controlMessages[controlMessages.length - 1]
+      if (controlMessage && !processed.has(controlMessage.id)) {
+        const sessionId = String(payload.agent?.id ?? '')
+        const controlText = (controlMessage.content ?? [])
+          .filter((block) => block?.type === 'text')
+          .map((block) => block.text ?? '')
+          .join(String.fromCharCode(10))
+          .trim()
+        if (sessionId !== '' && controlText !== '' && deps.listTeams && deps.setSelection) {
+          const command = parseTeamSelectionCommand(controlText, deps.listTeams())
+          if (command) {
+            await deps.setSelection(
+              sessionId,
+              command.action === 'enable' ? command.team.team_id : null,
+            )
+            markProcessed(processed, controlMessage.id, deps.dedupeLimit ?? 512)
+            deps.notify(
+              sessionId,
+              command.action === 'enable'
+                ? `[weave] 已在当前会话启用团队「${command.team.name}」。`
+                : '[weave] 已关闭当前会话的团队。',
+              payload.agent?.session,
+            )
+            return { kind: 'reject' }
+          }
+        }
+      }
+
+      decision = await next()
+      try {
       const userMessages = (payload.messages ?? []).filter((message) => message?.source?.kind === 'user')
       const latest = userMessages[userMessages.length - 1]
       if (!latest || processed.has(latest.id)) return decision
@@ -291,9 +363,13 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
           deps.notify(sessionId, `[weave] 任务委托失败（${code}）：${message}`, payload.agent?.session)
           deps.log?.warn?.('[dsh-weave] session delegation failed:', error)
         })
+      } catch (delegationHookError) {
+        deps.log?.warn?.('[dsh-weave] session delegation hook error:', delegationHookError)
+      }
     } catch (hookError) {
       // hook 自身异常不得破坏 pre-step 主链路。
       deps.log?.warn?.('[dsh-weave] pre-step delegation hook error:', hookError)
+      return { kind: 'enter', messages: [] }
     }
     return decision
   }

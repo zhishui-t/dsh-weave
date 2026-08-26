@@ -421,13 +421,23 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   task revise <task_id> <反馈文本>
   task accept <task_id>
   executor list
-  dag <dag_id>`
+  dag <dag_id>
+  addProvider <JSON|紧凑配置>
+  provider list
+  provider remove <name>`
+
+export type WeaveProviderCliCommand = (args: string[]) => Promise<{
+  kind: 'success' | 'error'
+  text: string
+}>
 
 export class WeaveCli {
   readonly #mcp: WeaveMcp
+  readonly #providerCommand?: WeaveProviderCliCommand
 
-  constructor(mcp: WeaveMcp) {
+  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand) {
     this.#mcp = mcp
+    this.#providerCommand = providerCommand
   }
 
   /**
@@ -459,6 +469,20 @@ export class WeaveCli {
     const [domain, command, ...rest] = argv
     if (!domain || domain === 'help' || domain === '--help' || domain === '-h') {
       return { json: CLI_HELP, data: null }
+    }
+    if (domain === 'addProvider' || domain === 'provider') {
+      const args = domain === 'addProvider' ? ['add', ...rest] : rest
+      const result = await this.#providerCommand?.(args) ?? {
+        kind: 'error' as const,
+        text: '动态 provider 管理未接入',
+      }
+      if (result.kind !== 'success') {
+        throw new Error(result.text)
+      }
+      return {
+        json: JSON.stringify({ ok: true, result }, null, 2),
+        data: result,
+      }
     }
     switch (domain) {
       case 'team': {

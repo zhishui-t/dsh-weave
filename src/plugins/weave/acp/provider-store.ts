@@ -164,7 +164,7 @@ export interface ProviderStoreOptions {
   file?: string
 }
 
-const DEFAULT_PROVIDERS_FILE = join(homedir(), '.dsh', 'weave', 'providers.json')
+export const DEFAULT_PROVIDERS_FILE = join(homedir(), '.dsh', 'weave', 'providers.json')
 
 /** providers.json 的读改写门面；所有变更立即落盘。 */
 export class ProviderStore {

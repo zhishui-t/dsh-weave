@@ -7,6 +7,7 @@ import type { ExecutorSessionConfig } from './executors/executor-provider.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import type { WeaveQueryService } from './web/query-service.js'
 import { WeaveError } from './state/weave-error.js'
+import { DEFAULT_PROVIDERS_FILE, type StoredProviderConfig } from './acp/provider-store.js'
 import type { TeamConfig } from './team-manager.js'
 
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
@@ -85,6 +86,11 @@ export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> 
      * 可传实例或惰性工厂（部署侧延迟组装）；未注入时相应端点返回 configuration_error。
      */
     queryService?: WeaveQueryService | (() => WeaveQueryService | undefined)
+    /**
+     * t8：providers.json 动态 ACP provider 存储（provider/list 与 settings.providers_file 用）。
+     * 未注入时相应能力返回 configuration_error，UI 呈现明确空态。
+     */
+    providerStore?: { list(): StoredProviderConfig[] } | (() => { list(): StoredProviderConfig[] } | undefined)
   }
 
 /** 部署侧注入的静态描述信息（settings/describe 用）。 */
@@ -93,6 +99,8 @@ export interface WeaveRpcSettings {
   version?: string
   /** 审计目录；缺省 DEFAULT_AUDIT_DIR（~/.dsh/audit）。 */
   auditDir?: string
+  /** providers.json 路径（settings/describe 的配置来源展示）；缺省 DEFAULT_PROVIDERS_FILE。 */
+  providersFile?: string
 }
 
 /* ------------------------------ 序列化：完整团队与角色信息 ------------------------------ */
@@ -130,6 +138,13 @@ function serializeTeam(team: TeamConfig) {
  * - 客户端调用永远传 payload={} 或具体对象（零参 endpoint 也接受 {}）；
  * - 错误统一走 failure()：WeaveError 映射业务 code，其余归 internal。
  */
+/** 解析可选 providerStore（实例或惰性工厂）；未注入返回 undefined。 */
+function resolvedProviderStore(deps: WeaveRpcDeps): { list(): StoredProviderConfig[] } | undefined {
+  const resolved = deps.providerStore
+  if (resolved === undefined) return undefined
+  return typeof resolved === 'function' ? resolved() ?? undefined : resolved
+}
+
 export function createWeaveRpcHandler(
   deps: WeaveRpcDeps | (() => WeaveRpcDeps),
   zcodeCatalog?: ZcodeCatalog,
@@ -291,7 +306,40 @@ export function createWeaveRpcHandler(
             // 是否已在执行器注册表中真实发现 ZCode（来自 ctx.subagents 注册项）。
             registered: registeredZcode,
           },
+          ...(resolvedProviderStore(resolvedDeps)
+            ? { providers_file: settings.providersFile ?? DEFAULT_PROVIDERS_FILE }
+            : {}),
         })
+      }
+
+      // t8：动态 ACP provider 清单（真实 providers.json + 注册表生效状态）。
+      if (endpoint === 'provider/list') {
+        objectPayload(payload)
+        const store = resolvedProviderStore(resolvedDeps)
+        if (!store) {
+          throw new WeaveError('configuration_error', 'providerStore 未注入（provider/list 不可用）')
+        }
+        const providers = store.list().map((config: StoredProviderConfig) => {
+          let enabled = false
+          try {
+            enabled = resolvedDeps.executorRegistry?.get(config.name) !== undefined
+          } catch {
+            enabled = false
+          }
+          return {
+            name: config.name,
+            transport: config.transport,
+            command: config.command,
+            ...(config.args !== undefined ? { args: config.args } : {}),
+            ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+            protocol: config.protocol,
+            declaredExtensions: config.declaredExtensions ?? [],
+            // 生效状态 = 该名字已真实注册进 ExecutorRegistry（host-wiring 注册即生效）。
+            enabled,
+            envKeys: Object.keys(config.env ?? {}),
+          }
+        })
+        return success({ providers })
       }
 
       // 四域端点统一路由到 WeaveQueryService.dispatch（t4）；错误由外层 catch 映射为 RpcResult 信封。

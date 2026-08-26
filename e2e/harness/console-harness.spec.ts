@@ -50,7 +50,6 @@ function defaultScenario(): Record<string, RpcEnvelope> {
       },
     },
     'task/get': { ok: true, value: { dag: { id: 't-wait' }, tasks: [], edges: [] } },
-    'task/create': { ok: true, value: { dag_id: 'dag-new' } },
     'knowledge/list': {
       ok: true,
       value: { candidates: [{ id: 'kn-1', title: '候选知识', status: 'candidate', layer: 'project' }] },

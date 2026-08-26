@@ -185,6 +185,9 @@ interface TaskRow {
   version?: string
   created_at?: string
   updated_at?: string
+  /** task/get 返回完整记录时携带；列表行可能缺省。 */
+  dependencies?: string[] | null
+  assigned_agent?: string | null
 }
 
 interface TaskDagDetail {
@@ -235,7 +238,22 @@ interface SettingsInfo {
   state_dir?: string
   teams_dir?: string
   audit_dir?: string
+  /** t8：providers.json 路径（providerStore 注入时才返回）。 */
+  providers_file?: string
   zcode?: { configured?: boolean; registered?: boolean }
+}
+
+/** provider/list 单条（服务端从真实 providers.json + 注册表推导）。 */
+interface ProviderRow {
+  name: string
+  transport: string
+  command: string
+  args?: string[]
+  cwd?: string
+  protocol: string
+  declaredExtensions?: string[]
+  enabled?: boolean
+  envKeys?: string[]
 }
 
 /* ------------------------------- 样式 ------------------------------- */
@@ -309,6 +327,12 @@ function ensureStyle(): void {
 .weave-subh{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:550;line-height:20px}
 .weave-chiprow{display:flex;gap:6px;flex-wrap:wrap}
 .weave-chip{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 10px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.weave-dag-wrap{position:relative;overflow:auto;margin:8px 0}
+.weave-dag-node{position:absolute;box-sizing:border-box;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:6px 8px;display:flex;flex-direction:column;gap:2px;cursor:pointer}
+.weave-dag-node:hover{border-color:var(--dsw-alias-label-tertiary)}
+.weave-dag-node[data-selected="true"]{outline:2px solid var(--dsw-alias-label-primary);outline-offset:1px}
+.weave-dag-node b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:16px}
+.weave-dag-node .weave-muted{font-size:11px;line-height:14px}
 `
   document.head.appendChild(style)
 }
@@ -927,6 +951,155 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
+  /* ------------------------------ 任务依赖图（t9） ------------------------------ */
+
+  const DAG_CELL_W = 170
+  const DAG_CELL_H = 56
+  const DAG_LEVEL_GAP = 56
+  const DAG_ROW_GAP = 18
+
+  /** 状态 → 节点左边框颜色（与宿主 dag-panel P0 视图同源）。 */
+  const DAG_STATUS_COLORS: Record<string, string> = {
+    WAITING: '#8c8c8c',
+    BLOCKED: '#bfbfbf',
+    RUNNING: '#1677ff',
+    COMPLETED: '#52c41a',
+    AWAITING_FEEDBACK: '#faad14',
+    REVISION_RUNNING: '#722ed1',
+    CLOSED: '#13c2c2',
+    FAILED: '#f5222d',
+    BANNED: '#a8071a',
+    LOOP_TERMINATED: '#d4380d',
+    INTERRUPTED: '#fa8c16',
+    CANCELLED: '#595959',
+    SKIPPED: '#d9d9d9',
+    COOLDOWN: '#6b6b6b',
+  }
+
+  /**
+   * level = 最长依赖路径深度；依赖取 dag.edges 与 task.dependencies 的并集。
+   * 与 src/plugins/weave/dag/dag-panel.tsx 的 computeLevels 同算法的单文件移植（bundle 不允许 import）。
+   */
+  function computeDagLevels(tasks: TaskRow[], edges: Array<{ from: string; to: string }>): Map<string, number> {
+    const upstream = new Map<string, string[]>()
+    const addDep = (from: string, to: string) => {
+      if (from === '' || to === '') return
+      const arr = upstream.get(to) ?? []
+      arr.push(from)
+      upstream.set(to, arr)
+    }
+    for (const task of tasks) {
+      for (const dep of task.dependencies ?? []) addDep(dep, String(task.id ?? ''))
+    }
+    for (const edge of edges) addDep(edge.from, edge.to)
+    const level = new Map<string, number>()
+    const visit = (id: string): number => {
+      const cached = level.get(id)
+      if (cached !== undefined) return cached
+      level.set(id, 0) // 环保护：访问中先置 0
+      const deps = upstream.get(id) ?? []
+      const lv = deps.length === 0 ? 0 : Math.max(...deps.map(visit)) + 1
+      level.set(id, lv)
+      return lv
+    }
+    for (const task of tasks) {
+      if (task.id) visit(task.id)
+    }
+    return level
+  }
+
+  interface DagGraphProps {
+    dag: TaskDagDetail
+    selectedId: string
+    onSelect: (taskId: string) => void
+  }
+
+  function DagGraph({ dag, selectedId, onSelect }: DagGraphProps) {
+    const tasks = dag.tasks ?? []
+    const edges = dag.edges ?? []
+    const levels = computeDagLevels(tasks, edges)
+    const byLevel = new Map<number, TaskRow[]>()
+    for (const task of tasks) {
+      const id = String(task.id ?? '')
+      const lv = levels.get(id) ?? 0
+      const group = byLevel.get(lv) ?? []
+      group.push(task)
+      byLevel.set(lv, group)
+    }
+    const layout: Array<{ task: TaskRow; id: string; x: number; y: number }> = []
+    for (const [lv, group] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
+      group.forEach((task, index) =>
+        layout.push({
+          task,
+          id: String(task.id ?? ''),
+          x: lv * (DAG_CELL_W + DAG_LEVEL_GAP),
+          y: index * (DAG_CELL_H + DAG_ROW_GAP),
+        }),
+      )
+    }
+    const pos = new Map(layout.map((node) => [node.id, node]))
+    const maxLevel = Math.max(0, ...[...byLevel.keys()])
+    const maxRows = Math.max(1, ...[...byLevel.values()].map((group) => group.length))
+    const width = (maxLevel + 1) * DAG_CELL_W + maxLevel * DAG_LEVEL_GAP
+    const height = maxRows * DAG_CELL_H + Math.max(0, maxRows - 1) * DAG_ROW_GAP
+    return React.createElement(
+      'div',
+      { className: 'weave-dag-wrap', 'data-testid': 'dag-panel' },
+      React.createElement(
+        'svg',
+        { width, height, style: { position: 'absolute', inset: 0, pointerEvents: 'none' }, 'data-testid': 'dag-edges' },
+        React.createElement(
+          'defs',
+          null,
+          React.createElement(
+            'marker',
+            { id: 'weave-dag-arrow', markerWidth: 8, markerHeight: 8, refX: 8, refY: 4, orient: 'auto' },
+            React.createElement('path', { d: 'M0,0 L8,4 L0,8 z', fill: '#999' }),
+          ),
+        ),
+        ...edges.map((edge) => {
+          const from = pos.get(String(edge.from))
+          const to = pos.get(String(edge.to))
+          if (!from || !to) return null
+          return React.createElement('line', {
+            key: String(edge.from) + '->' + String(edge.to),
+            'data-edge': String(edge.from) + '->' + String(edge.to),
+            x1: from.x + DAG_CELL_W,
+            y1: from.y + DAG_CELL_H / 2,
+            x2: to.x,
+            y2: to.y + DAG_CELL_H / 2,
+            stroke: '#999',
+            strokeWidth: 1.5,
+            markerEnd: 'url(#weave-dag-arrow)',
+          })
+        }),
+      ),
+      ...layout.map((node) =>
+        React.createElement(
+          'div',
+          {
+            key: node.id,
+            className: 'weave-dag-node',
+            'data-testid': 'dag-node-' + node.id,
+            'data-selected': node.id === selectedId ? 'true' : 'false',
+            onClick: () => onSelect(node.id),
+            title: String(node.task.description ?? ''),
+            style: {
+              left: node.x,
+              top: node.y,
+              width: DAG_CELL_W,
+              minHeight: DAG_CELL_H,
+              borderLeft: '4px solid ' + (DAG_STATUS_COLORS[String(node.task.status ?? '')] ?? '#8c8c8c'),
+            },
+          },
+          React.createElement('b', null, node.id),
+          React.createElement('span', { className: 'weave-muted', 'data-status': String(node.task.status ?? '') }, String(node.task.status ?? 'UNKNOWN')),
+          React.createElement('span', { className: 'weave-muted' }, String(node.task.assigned_agent ?? '未分配')),
+        ),
+      ),
+    )
+  }
+
   /* ============================== 任务中心 ============================== */
 
   const TASK_PAGE_SIZE = 20
@@ -965,30 +1138,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       [detailId],
     )
 
-    const [desc, setDesc] = useState('')
-    const [projectId, setProjectId] = useState('')
-    const [version, setVersion] = useState('')
-    const [teamIdDraft, setTeamIdDraft] = useState('')
-    const [depsDraft, setDepsDraft] = useState('')
-    const submitter = useAction()
-    const submitTask = async (event: { preventDefault(): void }) => {
-      event.preventDefault()
-      await submitter.run(async () => {
-        const payload: Json = { description: desc, project_id: projectId, version }
-        if (teamIdDraft !== '') payload.team_id = teamIdDraft
-        const depIds = depsDraft.split(',').map((part: string) => part.trim()).filter(Boolean)
-        if (depIds.length) payload.dependencies = depIds.map((id: string) => ({ task_id: id }))
-        const created = (await rpc('task/create', payload)) as { dag_id?: string }
-        setDesc('')
-        setProjectId('')
-        setVersion('')
-        setTeamIdDraft('')
-        setDepsDraft('')
-        void list.refresh()
-        return `任务已提交：DAG ${created.dag_id ?? '(未知)'}`
-      })
-    }
-
     const actionsFor = (row: TaskRow) => TASK_ACTIONS_BY_STATUS[String(row.status ?? '')] ?? []
     const controlStyle = {
       minWidth: 160,
@@ -1009,10 +1158,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       Note({
         text: list.loading
           ? '正在加载...'
-          : list.error || submitter.note || actor.note || '列表来自真实 tasks.db；操作经 14 态权威矩阵校验，非法转移将被拒绝。',
+          : list.error || actor.note || '任务由当前 DSH 会话发起；Web 控制台仅提供列表、详情与治理操作，不下发新任务。列表来自真实 tasks.db，操作经 14 态权威矩阵校验。',
       }),
       list.error ? Note({ text: list.error, kind: 'error' }) : null,
-      submitter.ok === false || actor.ok === false ? Note({ text: submitter.note || actor.note, kind: 'error' }) : null,
+      actor.ok === false ? Note({ text: actor.note, kind: 'error' }) : null,
       React.createElement(
         'form',
         {
@@ -1123,64 +1272,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         React.createElement(
           'div',
           { style: { display: 'grid', gap: 16, alignContent: 'start' } },
-          React.createElement(
-            'form',
-            { className: 'weave-form', onSubmit: submitTask },
-            React.createElement('b', { className: 'weave-subh' }, '创建任务'),
-            React.createElement(
-              'label',
-              { className: 'weave-field' },
-              React.createElement('span', null, '任务描述 *'),
-              React.createElement('textarea', { value: desc, rows: 3, onChange: (event: { target: { value: string } }) => setDesc(event.target.value) }),
-            ),
-            React.createElement(
-              'label',
-              { className: 'weave-field' },
-              React.createElement('span', null, 'Project ID *'),
-              React.createElement('input', {
-                'data-testid': 'task-project-input',
-                value: projectId,
-                onChange: (event: { target: { value: string } }) => setProjectId(event.target.value),
-              }),
-            ),
-            React.createElement(
-              'label',
-              { className: 'weave-field' },
-              React.createElement('span', null, 'Version *'),
-              React.createElement('input', {
-                'data-testid': 'task-version-input',
-                value: version,
-                onChange: (event: { target: { value: string } }) => setVersion(event.target.value),
-              }),
-            ),
-            React.createElement(
-              'label',
-              { className: 'weave-field' },
-              React.createElement('span', null, '团队 ID（可选）'),
-              React.createElement('input', { value: teamIdDraft, onChange: (event: { target: { value: string } }) => setTeamIdDraft(event.target.value) }),
-            ),
-            React.createElement(
-              'label',
-              { className: 'weave-field' },
-              React.createElement('span', null, '依赖任务 ID（逗号分隔，可选）'),
-              React.createElement('input', { value: depsDraft, onChange: (event: { target: { value: string } }) => setDepsDraft(event.target.value) }),
-            ),
-            React.createElement(
-              'button',
-              {
-                className: 'weave-button',
-                type: 'submit',
-                disabled: submitter.busy || desc === '' || projectId === '' || version === '',
-                'data-testid': 'task-create-submit',
-              },
-              submitter.busy ? '提交中' : '创建任务',
-            ),
-          ),
           detailId !== ''
             ? React.createElement(
                 'div',
                 { className: 'weave-panel', 'data-testid': 'task-detail' },
                 React.createElement('b', { className: 'weave-subh' }, `DAG 详情：${detailId}`),
+                detail.loading || detail.error || !detail.data ? null : React.createElement(DagGraph, { dag: detail.data as TaskDagDetail, selectedId: detailId, onSelect: (next: string) => setDetailId(next) }),
                 detail.loading
                   ? React.createElement('span', { className: 'weave-muted' }, '正在加载...')
                   : detail.error
@@ -1396,6 +1493,83 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const snapshot = useResource<SnapshotData>(() => rpc('snapshot') as Promise<SnapshotData>, [])
     const executors = snapshot.data?.executors ?? []
     const capabilities = snapshot.data?.zcodeCapabilities
+    // t8：动态注册的 ACP provider（真实 providers.json；未注入时端点报 configuration_error → 显式空态）。
+    const providers = useResource<{ providers?: ProviderRow[] }>(
+      () => rpc('provider/list') as Promise<{ providers?: ProviderRow[] }>,
+      [],
+    )
+    const providerRows = providers.data?.providers ?? []
+
+    /** 声明态能力行：supported 来自执行器标准能力；requested/effective 运行值随任务产生，此处如实标注。 */
+    const intentLine = (executorId: string) => {
+      const caps = executors.find((executor: ExecutorInfo) => executor.id === executorId)?.capabilities as
+        | { modelSelection?: boolean; thoughtControl?: boolean; modeControl?: boolean; tools?: { externalRuntime?: boolean; filtering?: string } }
+        | undefined
+      const entries: Array<[string, boolean]> = [
+        ['model', caps?.modelSelection === true],
+        ['thought', caps?.thoughtControl === true],
+        ['mode', caps?.modeControl === true],
+        ['tools', caps?.tools?.filtering !== undefined && caps.tools.filtering !== 'none'],
+      ]
+      return entries.map(([label, supported]) =>
+        React.createElement(
+          'span',
+          { className: 'weave-muted', key: label },
+          label + '：' + (supported
+            ? 'supported ✓ · effective 随运行上报 · fallback 不适用'
+            : 'requested 按会话意图 · supported ✗ · effective 无 · fallback ✓（框架 v1 保证降级）'),
+        ),
+      )
+    }
+
+    const providersBlock = providers.error
+      ? React.createElement(
+          'div',
+          { className: 'weave-panel', 'data-testid': 'providers-unavailable' },
+          React.createElement('b', { className: 'weave-subh' }, '动态 ACP Provider'),
+          React.createElement('span', { className: 'weave-muted' }, providers.error + '（providerStore 未注入时出现此提示）'),
+        )
+      : providerRows.length
+        ? React.createElement(
+            'div',
+            { className: 'weave-panel', 'data-testid': 'providers-panel' },
+            React.createElement('b', { className: 'weave-subh' }, '动态 ACP Provider（providers.json，注册即生效）'),
+            ...providerRows.map((provider: ProviderRow) =>
+              React.createElement(
+                'article',
+                { className: 'weave-list-item', key: provider.name, 'data-testid': 'provider-card-' + provider.name },
+                React.createElement(
+                  'div',
+                  { className: 'weave-list-head' },
+                  React.createElement('b', null, provider.name),
+                  React.createElement(Pill, { label: provider.enabled ? '已生效' : '未注册', tone: provider.enabled ? 'good' : 'idle' }),
+                ),
+                React.createElement(
+                  'span',
+                  { className: 'weave-muted' },
+                  provider.transport + ' · ' + provider.command +
+                    (provider.args && provider.args.length ? ' ' + provider.args.join(' ') : '') +
+                    (provider.cwd ? ' · cwd ' + provider.cwd : '') +
+                    ((provider.envKeys && provider.envKeys.length) ? ' · env(' + String(provider.envKeys.length) + '项)' : ''),
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'weave-chiprow' },
+                  ...(provider.declaredExtensions && provider.declaredExtensions.length
+                    ? provider.declaredExtensions.map((extension) => React.createElement('span', { className: 'weave-chip', key: extension }, extension))
+                    : [React.createElement('span', { className: 'weave-chip', key: 'none' }, '未声明扩展')]),
+                ),
+                ...intentLine(provider.name),
+              ),
+            ),
+            React.createElement('span', { className: 'weave-muted' }, 'ZCode 只是其中一个可选 extension；requested/effective 的运行值在任务执行后由协商结果产生。'),
+          )
+        : React.createElement(
+            'div',
+            { className: 'weave-panel', 'data-testid': 'providers-empty' },
+            React.createElement('b', { className: 'weave-subh' }, '动态 ACP Provider'),
+            React.createElement('span', { className: 'weave-muted' }, 'providers.json 中暂无条目。'),
+          )
 
     return React.createElement(
       'section',
@@ -1430,6 +1604,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               }),
             ]),
       ),
+      providersBlock,
       capabilities
         ? React.createElement(
             'div',
@@ -1721,7 +1896,48 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   function SettingsPage() {
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
+    // t8：provider 配置来源与注册摘要（provider/list 不可用时静默降级为一行说明）。
+    const providers = useResource<{ providers?: ProviderRow[] }>(
+      () => rpc('provider/list') as Promise<{ providers?: ProviderRow[] }>,
+      [],
+    )
+    const providerRows = providers.data?.providers ?? []
     const data = info.data ?? {}
+    const extensionUnion: string[] = []
+    for (const provider of providerRows) {
+      for (const extension of provider.declaredExtensions ?? []) {
+        if (!extensionUnion.includes(extension)) extensionUnion.push(extension)
+      }
+    }
+    const providersSummary = React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'providers-summary' },
+      React.createElement('b', { className: 'weave-subh' }, 'Provider 配置'),
+      React.createElement(
+        'div',
+        { className: 'weave-kv' },
+        React.createElement('span', { key: 'src-k' }, '配置来源'),
+        React.createElement('b', { key: 'src-v' }, String(data.providers_file ?? '—')),
+      ),
+      ...(providers.error
+        ? [React.createElement('span', { className: 'weave-muted', key: 'err' }, providers.error)]
+        : providerRows.length
+          ? providerRows.map((provider: ProviderRow) =>
+              React.createElement(
+                'span',
+                { className: 'weave-muted', key: provider.name },
+                provider.name + ' · ' + provider.transport + ' · ' + provider.command + (provider.enabled ? ' · 已生效' : ' · 未注册'),
+              ),
+            )
+          : [React.createElement('span', { className: 'weave-muted', key: 'empty' }, '暂无动态 provider。')]),
+      extensionUnion.length
+        ? React.createElement(
+            'div',
+            { className: 'weave-chiprow', key: 'ext' },
+            ...extensionUnion.map((extension) => React.createElement('span', { className: 'weave-chip', key: extension }, extension)),
+          )
+        : null,
+    )
     const row = (label: string, value: string) => [
       React.createElement('span', { key: `${label}-k` }, label),
       React.createElement('b', { key: `${label}-v` }, value),
@@ -1743,6 +1959,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           row('状态目录', String(data.state_dir ?? '—')),
           row('团队目录', String(data.teams_dir ?? '—')),
           row('审计目录', String(data.audit_dir ?? '—')),
+          row('Provider 配置来源', String(data.providers_file ?? '—')),
           row('ZCode 发现', data.zcode?.configured ? '已配置' : '未配置'),
           row('ZCode 注册', data.zcode?.registered ? '已注册' : '未注册'),
         ),
@@ -1752,8 +1969,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           '刷新',
         ),
       ),
+      providersSummary,
     )
   }
+
 
   /* ============================== 壳与入口 ============================== */
 
@@ -1902,6 +2121,7 @@ moduleLoader.load({
           ),
         'dsh-weave sidebar action',
       )
+
     }
 
     const module = { exports: {} as Record<string, unknown> }

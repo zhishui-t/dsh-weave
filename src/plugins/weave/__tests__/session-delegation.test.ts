@@ -11,6 +11,7 @@ import {
   SequentialSessionDelegator,
   createPreStepDelegationHook,
   notifySession,
+  parseTeamSelectionCommand,
   pickDifficulty,
   planStages,
 } from '../session-delegation'
@@ -89,6 +90,11 @@ function makeHookEnv() {
   const hook = createPreStepDelegationHook({
     getSelection: (sessionId) => manager.getSelection(sessionId),
     loadTeam: (teamId) => manager.loadTeam(teamId),
+    listTeams: () => manager.listTeams(),
+    setSelection: async (sessionId, teamId) => {
+      if (teamId === null) await manager.unbindTeam(sessionId)
+      else await manager.bindTeam(sessionId, teamId)
+    },
     delegator,
     notify: (sessionId, text) => { notices.push({ sessionId, text }) },
   })
@@ -128,6 +134,44 @@ describe('pickDifficulty / planStages（t6 顺序计划）', () => {
     expect(plan.map((step) => step.role.id)).toEqual(['researcher', 'coder', 'reviewer'])
     const fallback = planStages(TEAM, 'easy')
     expect(fallback.map((step) => step.stage)).toEqual(['prepare'])
+  })
+})
+
+describe('自然语言团队启停（t6 会话控制）', () => {
+  it('解析启用指令并按 ID / 名称匹配团队', () => {
+    expect(parseTeamSelectionCommand('启用 pipe-team', [TEAM])).toEqual({ action: 'enable', team: TEAM })
+    expect(parseTeamSelectionCommand('请切换到 流水线团队。', [TEAM])).toEqual({ action: 'enable', team: TEAM })
+    expect(parseTeamSelectionCommand('帮我实现登录功能', [TEAM])).toBeNull()
+  })
+
+  it('解析关闭团队指令', () => {
+    expect(parseTeamSelectionCommand('关闭团队', [TEAM])).toEqual({ action: 'disable' })
+    expect(parseTeamSelectionCommand('请停用小队。', [TEAM])).toEqual({ action: 'disable' })
+  })
+
+  it('自然语言启用会写入绑定、通知会话且不触发委托', async () => {
+    const env = makeHookEnv()
+    const payload = makePayload('nl-enable', '启用 pipe-team')
+    const decision = await env.hook(payload.payload, nextOk)
+    await flushAsync()
+
+    expect(decision).toEqual({ kind: 'reject' })
+    expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
+    expect(env.notices.at(-1)?.text).toContain('已在当前会话启用团队「流水线团队」')
+    expect(env.fake.calls).toHaveLength(0)
+  })
+
+  it('自然语言关闭会清除绑定且不触发委托', async () => {
+    const env = makeHookEnv()
+    await env.manager.bindTeam('sess-1', 'pipe-team')
+    const payload = makePayload('nl-disable', '关闭团队')
+    const decision = await env.hook(payload.payload, nextOk)
+    await flushAsync()
+
+    expect(decision).toEqual({ kind: 'reject' })
+    expect(await env.manager.getSelection('sess-1')).toBeNull()
+    expect(env.notices.at(-1)?.text).toContain('已关闭当前会话的团队')
+    expect(env.fake.calls).toHaveLength(0)
   })
 })
 

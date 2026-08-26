@@ -1,6 +1,8 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
-import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost, registerWeaveProviderCommands } from './host-wiring.js'
+import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import { ProviderStore } from './acp/provider-store.js'
+import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
 import { KnowledgeEngine } from './knowledge-engine.js'
 import { ProcessLimiter } from './safety/process-limiter.js'
@@ -69,6 +71,14 @@ export function apply(ctx: Context): void {
 
     try {
       service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
+      // 启动即加载用户通过 /weave addProvider 持久化的外部 harness。
+      const storedProviders = registerStoredAcpProviders({
+        ...acpRegistryContextFrom(runtime),
+        registry: service.executorProviders,
+      })
+      if (storedProviders.failed.length > 0) {
+        console.warn('[dsh-weave] dynamic provider registration failed:', storedProviders.failed)
+      }
     } catch (error) {
       console.warn('[dsh-weave] executor provider registration failed:', error)
     }
@@ -76,11 +86,29 @@ export function apply(ctx: Context): void {
     try {
       const deps = createDefaultCliDeps(runtime)
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
-      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps) }, async () => {
+      const providerCommands = createWeaveProviderCommandDefinitions({
+        hotRegister: (config) => {
+          const result = registerStoredAcpProviders({
+            ...acpRegistryContextFrom(runtime),
+            registry: service.executorProviders,
+            names: [config.name],
+          })
+          const failed = result.failed.find((item) => item.name === config.name)
+          return failed ? failed.error : null
+        },
+      })
+      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore() }, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
       }, { version: WEAVE_VERSION })
-      const bundle = registerWeaveHost(runtime, deps)
+      const bundle = registerWeaveHost(runtime, deps, {
+        providerCommand: async (args) => {
+          if (args[0] === 'add') {
+            return await providerCommands.addProvider.handler(args.slice(1).join(' '))
+          }
+          return await providerCommands.manageProvider.handler(args.join(' '))
+        },
+      })
       runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
 
       // t6：会话内任务委托编排——agent/pre-step 拦截用户消息，按会话启用的团队顺序委托。
@@ -97,6 +125,11 @@ export function apply(ctx: Context): void {
       const hook = createPreStepDelegationHook({
         getSelection: (sessionId) => deps.teamManager.getSelection(sessionId),
         loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
+        listTeams: () => deps.teamManager.listTeams(),
+        setSelection: async (sessionId, teamId) => {
+          if (teamId === null) await deps.teamManager.unbindTeam(sessionId)
+          else await deps.teamManager.bindTeam(sessionId, teamId)
+        },
         delegator: new SequentialSessionDelegator(delegation),
         notify: (sessionId, text, session?: NoticeSessionLike) => {
           if (!session) {
@@ -116,15 +149,6 @@ export function apply(ctx: Context): void {
         if (typeof offHook === 'function') offHook()
       }, 'dsh-weave pre-step delegation hook')
 
-      // t7：/weave-add-provider 与 /weave-provider 会话命令。
-      try {
-        const providerCommands = registerWeaveProviderCommands(runtime)
-        if (providerCommands.registeredAdd || providerCommands.registeredManage) {
-          runtime.effect(() => () => providerCommands.unregisterAll(), 'dsh-weave provider commands')
-        }
-      } catch (error) {
-        console.warn('[dsh-weave] provider command registration failed:', error)
-      }
     } catch (error) {
       console.warn('[dsh-weave] automatic host wiring failed:', error)
     }
