@@ -687,7 +687,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ============================== 团队页 ============================== */
 
-  const DEFAULT_STAGES = 'prepare,implement,review'
+  const DEFAULT_STAGES = ''
   const DEFAULT_PERSONALITY = '你是可靠的协作执行角色，输出可验证结果。'
 
   const blankRole = (): RoleDraft => ({
@@ -760,7 +760,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             name: draft.name.trim() || '成员',
             bias: draft.bias.trim() || 'dev',
             executor: draft.executor || fallbackExecutor,
-            stages: stages.length ? stages : ['prepare', 'implement', 'review'],
+            stages,
             max_concurrent_tasks: Number.isInteger(maxConcurrent) && maxConcurrent > 0 ? maxConcurrent : 1,
             personality: draft.personality,
           }
@@ -1030,7 +1030,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       : [React.createElement('option', { key: 'empty', value: '' }, '未发现执行器')]),
                   ),
                 ),
-                roleField(index, '阶段（逗号分隔）', 'stages', DEFAULT_STAGES),
+                roleField(index, '职责标签（逗号分隔，可选）', 'stages', DEFAULT_STAGES),
                 roleField(index, '最大并发任务', 'maxConcurrent', '1', 'number'),
               ),
               roles[index]?.executor === 'zcode'

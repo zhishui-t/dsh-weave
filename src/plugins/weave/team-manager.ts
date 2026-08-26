@@ -240,7 +240,6 @@ export class TeamManager {
    */
   validateTeam(team: TeamConfig, lookup: ExecutorLookup = this.lookup): TeamConfig {
     const seen = new Set<string>()
-    const templateStages = new Set<string>()
     for (const role of team.roles) {
       if (seen.has(role.id)) {
         throw new WeaveError('invalid_team', `角色 id 重复: ${role.id}`)
@@ -270,9 +269,6 @@ export class TeamManager {
           executor: role.executor,
         })
       }
-      for (const stage of role.stages) {
-        templateStages.add(stage)
-      }
     }
     const td = team.task_decomposition
     for (const [index, matcher] of td.matchers.entries()) {
@@ -290,17 +286,6 @@ export class TeamManager {
     }
     if (!(fallback in td.dag_templates)) {
       throw new WeaveError('invalid_team', `dag_templates 缺少默认难度模板: ${fallback}`)
-    }
-    for (const [difficulty, stages] of Object.entries(td.dag_templates)) {
-      for (const stage of stages) {
-        if (!templateStages.has(stage)) {
-          throw new WeaveError(
-            'invalid_team',
-            `难度 ${difficulty} 的阶段 ${stage} 未绑定任何角色（roles 需声明 stages，HI-4）`,
-            { stage },
-          )
-        }
-      }
     }
     for (const [executor, limit] of Object.entries(team.executor_limits ?? {})) {
       if (

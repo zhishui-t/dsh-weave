@@ -97,12 +97,12 @@ export function planStages(team: TeamConfig, difficulty: Difficulty): PlannedSta
   }
   const plan: PlannedStage[] = []
   for (const stage of template) {
-    const role = team.roles.find((candidate) => candidate.stages.includes(stage))
+    const role =
+      team.roles.find((candidate) => candidate.stages.includes(stage)) ??
+      team.roles.find((candidate) => candidate.name.includes(stage) || candidate.id.includes(stage)) ??
+      team.roles[0]
     if (!role) {
-      throw new WeaveError('configuration_error', `阶段 ${stage} 无角色绑定（团队 ${team.team_id}）`, {
-        team_id: team.team_id,
-        stage,
-      })
+      throw new WeaveError('configuration_error', '团队未声明任何角色，无法绑定任务阶段', { team_id: team.team_id, stage })
     }
     plan.push({ stage, role })
   }

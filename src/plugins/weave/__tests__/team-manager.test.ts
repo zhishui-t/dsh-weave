@@ -187,10 +187,10 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('模板阶段未被任何角色绑定 → invalid_team（HI-4）', () => {
+  it('模板阶段未被角色标签绑定 → 允许：任务按需兜底匹配', () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('    stages: [implement, test, integrate, execute, deploy]', '    stages: [implement, test, execute, deploy]')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    expect(() => mgr.validateTeam(mgr.parseTeam(bad, 'f'))).not.toThrow()
   })
 
   it('default_difficulty 对应模板缺失 → invalid_team（HI-4）', () => {
