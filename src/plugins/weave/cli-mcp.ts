@@ -422,7 +422,7 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   task accept <task_id>
   executor list
   dag <dag_id>
-  provider add <JSON|JSON数组|紧凑配置>
+  provider add <JSON|JSON数组|YAML|文件路径|紧凑配置>
   provider list
   provider remove <name>`
 

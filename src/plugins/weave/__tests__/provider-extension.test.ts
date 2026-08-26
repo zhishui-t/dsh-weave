@@ -323,6 +323,11 @@ describe('providers.json 存储与入参解析', () => {
     expect(fenced[0]?.name).toBe('fenced-agent')
     expect(fenced[0]?.args).toEqual(['f.js'])
 
+    const loose = parseProviderInputs('Some ACP protocol doc\nname = loose-agent\ncommand = npx\nargs = --serve,--port 8080\nextensions = zcode')
+    expect(loose[0]?.name).toBe('loose-agent')
+    expect(loose[0]?.args).toEqual(['--serve', '--port', '8080'])
+    expect(loose[0]?.declaredExtensions).toEqual(['zcode'])
+
     expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
     expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
   })

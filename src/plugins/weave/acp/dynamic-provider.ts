@@ -184,7 +184,7 @@ export function createWeaveProviderCommandDefinitions(
   const add: WeaveProviderCommandDefinition = {
     name: 'provider',
     description:
-      '注册一个或多个 ACP 执行器 provider。JSON 支持单对象、数组、或 {providers|servers|mcpServers:[...]}；也支持紧凑 key=value。字段：name、transport=stdio、command、args(逗号分隔)、cwd、env(A=1,B=2或[{name,value}])、protocol=acp、declaredExtensions(逗号分隔)。',
+      '注册一个或多个 ACP 执行器 provider。支持 JSON（单对象/数组/{providers|servers|mcpServers}）、YAML、围栏代码块、文件路径、紧凑 key=value。字段：name、transport=stdio、command、args、cwd、env、protocol=acp、declaredExtensions/extensions。',
     input: {
       hint: 'provider add [{"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}]',
     },

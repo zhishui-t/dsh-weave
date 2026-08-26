@@ -124,8 +124,43 @@ DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配�
 ```
 
 `provider add` 接受单个 JSON 对象、JSON 数组，或 `{providers|servers|mcpServers:[...]}` / 名字到配置的对象表 形式的 ACP 协议配置；
-每条配置的 `transport` 缺省为 `stdio`、`protocol` 缺省为 `acp`；`env` 兼容 `{K:V}` 与 `[{name,value}]`。
+也接受 YAML、``` 围栏代码块、本地协议文件路径，以及包含 `name/command/args/env/extensions` 等字段的非结构化协议文本（自动尽力提取）。
+每条配置的 `transport` 缺省为 `stdio`、`protocol` 缺省为 `acp`；`env` 兼容 `{K:V}` 与 `[{name,value}]`；`extensions` 自动映射为 `declaredExtensions`。
 斜杠命令分词器会原样保留 JSON 对象/数组，因此可以直接粘贴含空格的 JSON。
+
+### 从 ACP 协议文档提取 provider 配置
+
+拿到一份新的 ACP 协议/文档时，按下面映射提取：
+
+| 协议文档里的信息 | provider 配置字段 |
+| --- | --- |
+| 执行器/服务名、`id`、对象 key | `name` |
+| 启动命令（stdio 可执行文件） | `command` |
+| 启动参数 | `args`（数组或空格/逗号分隔字符串均可） |
+| 工作目录 | `cwd` |
+| 环境变量 | `env`（对象或 `[{name,value}]` 均可） |
+| 文档中声明的扩展能力 | `declaredExtensions`（也可写 `extensions`） |
+
+扩展名判断规则：协议中出现 `session/setModel`、`session/setThoughtLevel`、`session/setMode`、`zcode` 等 ZCode 扩展方法时，填 `zcode`；
+如果文档声明了其它扩展（如 `codex`、`claude-code`），把对应扩展名加入数组。
+没有扩展时可省略，运行时会对未声明/未探测到的扩展明确降级，不会伪装成功。
+
+常见可直接粘贴的形态：
+
+```yaml
+name: my-agent
+command: npx
+args:
+  - my-acp-server
+extensions:
+  - zcode
+```
+
+也可以把上面的 YAML 存成文件后执行：
+
+```text
+/weave provider add C:\path\to\acp-protocol.yaml
+```
 
 配置持久化到 `~/.dsh/weave/providers.json`，热注册后执行器列表立即可见。
 

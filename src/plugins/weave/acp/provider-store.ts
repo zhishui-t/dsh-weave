@@ -141,6 +141,75 @@ function looksLikeYaml(text: string): boolean {
   return /(^|\n)\s*[A-Za-z_][\w.-]*\s*:(\s|$)/.test(text) || /^---\s*$/.test(text.trim())
 }
 
+/** 从非结构化协议文本中尽力提取 name/command/args/env/extensions 等字段。 */
+function tryExtractProviderText(text: string): Record<string, unknown> | undefined {
+  const record: Record<string, unknown> = {}
+  const env: Record<string, string> = {}
+  let currentListKey: string | undefined
+  let inEnv = false
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue
+    const listItem = line.match(/^-\s+(.+)$/)
+    if (listItem && currentListKey) {
+      const arr = (record[currentListKey] as string[] | undefined) ?? []
+      arr.push(listItem[1]!.trim())
+      record[currentListKey] = arr
+      continue
+    }
+    const kv = line.match(/^([A-Za-z_][\w.-]*)\s*[:=]\s*(.*)$/)
+    if (!kv) {
+      if (inEnv) {
+        const envKv = line.match(/^([A-Za-z_][\w.-]*)\s*[:=]\s*(.*)$/)
+        if (envKv) env[envKv[1]!] = envKv[2]!.trim()
+      }
+      continue
+    }
+    const key = kv[1]!
+    const value = kv[2]!.trim()
+    currentListKey = undefined
+    inEnv = false
+    if (key === 'env') {
+      inEnv = true
+      if (value) {
+        if (value.startsWith('{') && value.endsWith('}')) {
+          try {
+            const parsed = JSON.parse(value) as Record<string, unknown>
+            if (parsed && typeof parsed === 'object') {
+              for (const [envKey, envValue] of Object.entries(parsed)) env[envKey] = String(envValue)
+            }
+          } catch {
+            // ignore inline object parse failure
+          }
+        } else {
+          for (const pair of value.split(',')) {
+            const eq = pair.indexOf('=')
+            if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim()
+          }
+        }
+        record.env = { ...env }
+      }
+      continue
+    }
+    if (key === 'args' || key === 'extensions' || key === 'declaredExtensions') {
+      if (!value) {
+        currentListKey = key
+        record[key] = []
+      } else {
+        record[key] = value.split(/[\s,]+/).filter(Boolean)
+      }
+      continue
+    }
+    if (['name', 'id', 'command', 'cwd', 'protocol', 'transport'].includes(key)) {
+      record[key] = value
+    }
+  }
+  if (Object.keys(env).length > 0) record.env = { ...env }
+  if (!record.name && record.id) record.name = record.id
+  if (typeof record.name !== 'string' || typeof record.command !== 'string') return undefined
+  return record
+}
+
 /** 解析多 provider 输入：单对象、JSON 数组、或 `{providers|servers|mcpServers:[]}`，也支持 YAML/文件路径。 */
 export function parseProviderInputs(raw: string | unknown): StoredProviderConfig[] {
   if (typeof raw !== 'string') {
@@ -176,6 +245,10 @@ export function parseProviderInputs(raw: string | unknown): StoredProviderConfig
     if (parsed !== undefined && parsed !== null) {
       return normalizeProviderCandidates(parsed)
     }
+  }
+  const extracted = tryExtractProviderText(trimmed)
+  if (extracted) {
+    return [parseProviderInput(normalizeProviderRecord(extracted))]
   }
   return [parseProviderInput(trimmed)]
 }
