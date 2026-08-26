@@ -422,7 +422,7 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   task accept <task_id>
   executor list
   dag <dag_id>
-  addProvider <JSON|紧凑配置>
+  provider add <JSON|紧凑配置>
   provider list
   provider remove <name>`
 
@@ -470,8 +470,8 @@ export class WeaveCli {
     if (!domain || domain === 'help' || domain === '--help' || domain === '-h') {
       return { json: CLI_HELP, data: null }
     }
-    if (domain === 'addProvider' || domain === 'provider') {
-      const args = domain === 'addProvider' ? ['add', ...argv.slice(1)] : argv.slice(1)
+    if (domain === 'provider') {
+      const args = argv.slice(1)
       const result = await this.#providerCommand?.(args) ?? {
         kind: 'error' as const,
         text: '动态 provider 管理未接入',

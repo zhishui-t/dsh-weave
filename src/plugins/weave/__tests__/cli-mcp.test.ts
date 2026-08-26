@@ -515,14 +515,14 @@ describe('WeaveCli 补充命令（t36）', () => {
 })
 
 describe('WeaveCli 动态 provider 路由', () => {
-  it('addProvider 映射为 add；provider list/remove 原样传参', async () => {
+  it('provider add/list/remove 统一走 provider 域', async () => {
     const calls: string[][] = []
     const cli = new WeaveCli({} as WeaveMcp, async (args) => {
       calls.push(args)
       return { kind: 'success', text: `ok:${args.join('|')}` }
     })
 
-    const added = await cli.run(['addProvider', '{"name":"agent-x"}'])
+    const added = await cli.run(['provider', 'add', '{"name":"agent-x"}'])
     expect(calls.at(-1)).toEqual(['add', '{"name":"agent-x"}'])
     expect(added.exitCode).toBe(0)
     const addedJson = JSON.parse(added.json) as { data: { text: string } }

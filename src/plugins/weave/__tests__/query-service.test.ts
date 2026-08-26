@@ -126,6 +126,7 @@ async function newEnv(): Promise<Env> {
     auditLog: audit,
     sessionTracker: tracker,
     teamManager: teams,
+    knowledgeStore: store,
   })
   const env: Env = {
     p,
@@ -388,6 +389,40 @@ describe('WeaveQueryService knowledge 域', () => {
 })
 
 /* --------------------------------- 审计域 --------------------------------- */
+
+describe('WeaveQueryService knowledge/graph', () => {
+  it('读取真实 Markdown/frontmatter，解析 [[双链]] 并标记缺失目标', async () => {
+    const env = await newEnv()
+    const a = await env.store.createCandidate({
+      layer: 'project',
+      scope: { projectId: 'demo', version: 'v1' },
+      filename: 'graph-a.md',
+      frontmatter: { title: 'A 指南', type: 'doc', visibility: 'project_only', tags: ['图谱'] },
+      body: '参见 [[B 指南]] 和 [[缺失想法]]。',
+    })
+    const b = await env.store.createCandidate({
+      layer: 'project',
+      scope: { projectId: 'demo', version: 'v1' },
+      filename: 'graph-b.md',
+      frontmatter: { title: 'B 指南', type: 'guide', visibility: 'project_only', tags: ['双链'] },
+      body: '反向引用 [[A 指南]]。',
+    })
+
+    const graph = await env.svc.knowledgeGraph({})
+    expect(graph.counts).toMatchObject({ knowledge: 2, missing: 1, edges: 3, unresolved: 1, skipped: 0 })
+    expect(graph.nodes.find((node) => node.id === a.id)).toMatchObject({ title: 'A 指南', kind: 'knowledge' })
+    expect(graph.nodes.find((node) => node.title === '缺失想法')).toMatchObject({ kind: 'missing' })
+    expect(graph.edges).toEqual(expect.arrayContaining([
+      { source: a.id, target: b.id },
+      { source: a.id, target: `missing:缺失想法` },
+      { source: b.id, target: a.id },
+    ]))
+
+    const activeOnly = await env.svc.knowledgeGraph({ status: 'active' })
+    expect(activeOnly.counts.knowledge).toBe(0)
+    expect(await errorCodeOf(() => env.svc.knowledgeGraph({ status: 'archived' }))).toBe('invalid_argument')
+  })
+})
 
 describe('WeaveQueryService audit 域', () => {
   async function seedAudit(env: Env): Promise<void> {

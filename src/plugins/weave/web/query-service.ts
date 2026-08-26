@@ -6,7 +6,9 @@ import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'
 import { SessionTracker } from '../session-tracker.js'
 import { TASK_STATUSES, type TaskRecord } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
+import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge-model.js'
 import type { TeamManager } from '../team-manager.js'
+import { buildKnowledgeGraph } from './knowledge-graph.js'
 
 /**
  * Web 真实数据查询/操作服务（t2）——供 RPC 层（rpc.ts 由 weave-dev-api 接线）调用的
@@ -100,6 +102,8 @@ export interface QueryServiceDeps {
   sessionTracker?: SessionTracker
   /** 团队管理：session/set-binding、clear-binding 复用现有绑定方法。 */
   teamManager?: TeamManager
+  /** 知识仓库：knowledge/graph 只读真实知识文件与 [[双链]]。 */
+  knowledgeStore?: KnowledgeStore
 }
 
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
@@ -112,6 +116,7 @@ export class WeaveQueryService {
   private readonly auditLog?: AuditLog
   private readonly sessionTracker?: SessionTracker
   private readonly teamManager?: TeamManager
+  private readonly knowledgeStore?: KnowledgeStore
   private readonly dagRepository: DagRepository
 
   constructor(deps: QueryServiceDeps) {
@@ -120,6 +125,7 @@ export class WeaveQueryService {
     this.auditLog = deps.auditLog
     this.sessionTracker = deps.sessionTracker
     this.teamManager = deps.teamManager
+    this.knowledgeStore = deps.knowledgeStore
     this.dagRepository = new DagRepository(deps.persistence)
   }
 
@@ -304,6 +310,24 @@ export class WeaveQueryService {
     return this.mcp.knowledgeReject(id, reason)
   }
 
+  /** knowledge/graph：读取真实知识文件；轻量双链图，完整 Graphify 仍属 P1。 */
+  async knowledgeGraph(input: unknown = {}): Promise<ReturnType<typeof buildKnowledgeGraph>> {
+    if (!this.knowledgeStore) {
+      throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge/graph 需要 KnowledgeStore）')
+    }
+    const p = asPayload(input)
+    const statusValue = optionalString(p, 'status')
+    const layerValue = optionalString(p, 'layer')
+    const status = statusValue !== undefined ? enumOrThrow(statusValue, KNOWLEDGE_STATUSES, '知识状态') as KnowledgeStatus : undefined
+    const layer = layerValue !== undefined ? enumOrThrow(layerValue, KNOWLEDGE_LAYERS, '知识层级') as KnowledgeLayer : undefined
+    const limitRaw = optionalPositiveInt(p, 'limit')
+    return await buildKnowledgeGraph(this.knowledgeStore, {
+      ...(status ? { status } : {}),
+      ...(layer ? { layer } : {}),
+      ...(limitRaw ? { limit: limitRaw } : {}),
+    })
+  }
+
   /* --------------------------------- 审计域 --------------------------------- */
 
   /** audit/list：types/from/to/limit/order，转发 AuditLog.query（JSONL 真实审计）。 */
@@ -412,6 +436,8 @@ export class WeaveQueryService {
         return this.knowledgeApprove(payload)
       case 'knowledge/reject':
         return this.knowledgeReject(payload)
+      case 'knowledge/graph':
+        return this.knowledgeGraph(payload ?? {})
       case 'audit/list':
         return this.auditList(payload)
       case 'session/bindings':
@@ -440,5 +466,6 @@ export function createWeaveQueryServiceFromCliDeps(deps: CliMcpDeps): WeaveQuery
     auditLog: new AuditLog({ dir: DEFAULT_AUDIT_DIR }),
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
+    knowledgeStore: deps.knowledgeStore,
   })
 }

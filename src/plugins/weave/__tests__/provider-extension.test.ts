@@ -341,7 +341,7 @@ describe('registerStoredAcpProviders 生命周期', () => {
   })
 })
 
-describe('/weave addProvider 与 /weave provider 命令', () => {
+describe('/weave provider add/list/remove 命令', () => {
   function makeCommandEnv() {
     const root = tmpRoot()
     const hotCalls: string[] = []
@@ -351,13 +351,12 @@ describe('/weave addProvider 与 /weave provider 命令', () => {
       hotRegister: (cfg) => { hotCalls.push(cfg.name); return null },
       onRemove: (name) => removed.push(name),
     })
-    const registeredDefs = [defs.addProvider, defs.manageProvider]
-    return { registeredDefs, hotCalls, removed, store: new ProviderStore({ file: join(root, 'providers.json') }), root }
+    return { add: defs.add, manage: defs.manage, hotCalls, removed, store: new ProviderStore({ file: join(root, 'providers.json') }), root }
   }
 
   it('add-provider：JSON 成功持久化并热注册；坏 JSON 报 error 信封', async () => {
     const env = makeCommandEnv()
-    const add = env.registeredDefs.find((d) => d.name === 'addProvider')!
+    const add = env.add!
     const ok = await add.handler('{"name":"agent7","transport":"stdio","command":"node","args":["a.js"],"protocol":"acp","declaredExtensions":["zcode"]}')
     expect(ok.kind).toBe('success')
     expect(ok.text).toContain('已注册执行器 agent7')
@@ -371,11 +370,11 @@ describe('/weave addProvider 与 /weave provider 命令', () => {
 
   it('list/remove 子命令；remove 未知名报错', async () => {
     const env = makeCommandEnv()
-    const manage = env.registeredDefs.find((d) => d.name === 'provider')!
+    const manage = env.manage!
     const emptyList = await manage.handler('list')
     expect(emptyList.text).toBe('（无动态 provider）')
 
-    const add = env.registeredDefs.find((d) => d.name === 'addProvider')!
+    const add = env.add!
     await add.handler('name=p9 command=deno transport=stdio protocol=acp')
 
     const listed = await manage.handler('list')

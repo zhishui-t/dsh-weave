@@ -72,7 +72,7 @@ export function apply(ctx: Context): void {
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
     try {
       service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
-      // 启动即加载用户通过 /weave addProvider 持久化的外部 harness。
+      // 启动即加载用户通过 /weave provider add 持久化的外部 harness。
       const storedProviders = registerStoredAcpProviders({
         ...acpRegistryContextFrom(runtime),
         registry: service.executorProviders,
@@ -121,9 +121,9 @@ export function apply(ctx: Context): void {
       const bundle = registerWeaveHost(runtime, deps, {
         providerCommand: async (args) => {
           if (args[0] === 'add') {
-            return await providerCommands.addProvider.handler(args.slice(1).join(' '))
+            return await providerCommands.add.handler(args.slice(1).join(' '))
           }
-          return await providerCommands.manageProvider.handler(args.join(' '))
+          return await providerCommands.manage.handler(args.join(' '))
         },
       })
       runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')

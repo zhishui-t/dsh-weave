@@ -112,6 +112,50 @@ const TASK_ACTIONS_BY_STATUS: Record<string, Array<{ action: string; label: stri
 
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
 const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  WAITING: '等待中',
+  BLOCKED: '已阻塞',
+  RUNNING: '执行中',
+  COMPLETED: '已完成',
+  AWAITING_FEEDBACK: '待反馈',
+  REVISION_RUNNING: '修订执行中',
+  CLOSED: '已关闭',
+  FAILED: '已失败',
+  BANNED: '已熔断',
+  LOOP_TERMINATED: '循环终止',
+  INTERRUPTED: '已中断',
+  CANCELLED: '已取消',
+  SKIPPED: '已跳过',
+  COOLDOWN: '冷却中',
+}
+const KNOWLEDGE_STATUS_LABELS: Record<string, string> = {
+  candidate: '候选',
+  active: '已生效',
+  deprecated: '已弃用',
+  superseded: '已替代',
+  missing: '缺失目标',
+}
+const KNOWLEDGE_LAYER_LABELS: Record<string, string> = {
+  project: '项目',
+  role: '角色',
+  instance: '实例',
+  shared: '共享',
+}
+const AUDIT_EVENT_LABELS: Record<string, string> = {
+  'task.status_changed': '任务状态变更',
+  'task.feedback_received': '收到任务反馈',
+  'knowledge.status_changed': '知识状态变更',
+  'knowledge.superseded': '知识被替代',
+  'import.confirmed': '导入确认',
+  'ban.created': '创建熔断',
+  'ban.resolved': '解除熔断',
+  'team.switched': '切换团队',
+  'recovery.task_repaired': '修复任务',
+  'recovery.import_repaired': '修复导入',
+}
+const labelOf = (labels: Record<string, string>, value: unknown): string =>
+  labels[String(value ?? '')] ?? String(value ?? '—')
 const AUDIT_EVENT_TYPES = [
   'task.status_changed',
   'task.feedback_received',
@@ -232,7 +276,22 @@ interface RevisionRow {
   updated_at?: string
 }
 
+interface KnowledgeGraphNode {
+  id: string
+  title: string
+  status: string
+  layer: string
+  tags: string[]
+  kind: 'knowledge' | 'missing'
+  path?: string
+}
+interface KnowledgeGraphData {
+  nodes?: KnowledgeGraphNode[]
+  edges?: Array<{ source: string; target: string }>
+  counts?: { knowledge: number; missing: number; edges: number; unresolved: number; skipped: number }
+}
 interface SettingsInfo {
+  obsidian_dir?: string
   version?: string
   node_version?: string
   state_dir?: string
@@ -310,6 +369,17 @@ function ensureStyle(): void {
 .weave-pill{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 10px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);flex:none}
 .weave-pill[data-tone="good"]{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-tertiary)}
 .weave-pill[data-tone="run"]{font-weight:600}
+.weave-control{box-sizing:border-box;width:auto;min-width:150px;min-height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;padding:7px 9px;outline:none}
+.weave-control:focus{border-color:var(--dsw-alias-label-tertiary)}
+.weave-code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.weave-graph-wrap{position:relative;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-bottom:16px}
+.weave-graph-node{cursor:pointer}
+.weave-graph-node circle{fill:var(--dsw-specific-menu);stroke:var(--dsw-alias-border-l2)}
+.weave-graph-node:hover circle{stroke:var(--dsw-alias-label-tertiary)}
+.weave-graph-node[data-selected="true"] circle{stroke:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));stroke-width:2.5}
+.weave-graph-node[data-kind="missing"] circle{stroke-dasharray:4 3}
+.weave-graph-node text{fill:var(--dsw-alias-label-primary);font-size:11px;text-anchor:middle;dominant-baseline:middle}
+.weave-graph-detail{display:grid;gap:8px;padding:14px;border-top:1px solid var(--dsw-alias-border-l2)}
 .weave-list{display:grid;gap:10px}
 .weave-list-item{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:12px;display:grid;gap:6px;background:var(--dsw-alias-bg-layer-2)}
 .weave-list-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -468,8 +538,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return 'idle'
   }
 
-  const Pill = ({ label, tone }: { label: string; tone?: string }) =>
-    React.createElement('span', { className: 'weave-pill', 'data-tone': tone ?? 'idle' }, label)
+  const Pill = ({ label, tone, title }: { label: string; tone?: string; title?: string }) =>
+    React.createElement('span', { className: 'weave-pill', 'data-tone': tone ?? 'idle', title: title ?? label }, label)
 
   const Pager = ({ page, pageSize, total, onPage }: { page: number; pageSize: number; total: number; onPage: (next: number) => void }) => {
     const pages = Math.max(1, Math.ceil(total / pageSize))
@@ -578,7 +648,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         }),
         Card({
           title: `待审知识（${data.candidates ?? (data.knowledgeError ? '—' : 0)}）`,
-          meta: React.createElement('span', null, data.knowledgeError ? missing : 'candidate 队列等待审核。'),
+          meta: React.createElement('span', null, data.knowledgeError ? missing : '候选队列等待审核。'),
           onClick: () => navigate('knowledge'),
           testId: 'overview-card-knowledge',
         }),
@@ -1093,7 +1163,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             },
           },
           React.createElement('b', null, node.id),
-          React.createElement('span', { className: 'weave-muted', 'data-status': String(node.task.status ?? '') }, String(node.task.status ?? 'UNKNOWN')),
+          React.createElement('span', { className: 'weave-muted', 'data-status': String(node.task.status ?? ''), title: String(node.task.status ?? '') }, labelOf(TASK_STATUS_LABELS, node.task.status)),
           React.createElement('span', { className: 'weave-muted' }, String(node.task.assigned_agent ?? '未分配')),
         ),
       ),
@@ -1139,18 +1209,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
 
     const actionsFor = (row: TaskRow) => TASK_ACTIONS_BY_STATUS[String(row.status ?? '')] ?? []
-    const controlStyle = {
-      minWidth: 160,
-      minHeight: 34,
-      borderRadius: 10,
-      border: '1px solid var(--dsw-alias-border-l2)',
-      background: 'var(--dsw-specific-menu)',
-      color: 'var(--dsw-alias-label-primary)',
-      font: 'inherit',
-      fontSize: 13,
-      padding: '7px 9px',
-    } as const
-
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-tasks' },
@@ -1176,22 +1234,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           'data-testid': 'task-search',
           value: searchDraft,
           placeholder: '搜索描述 / 任务 ID',
+          className: 'weave-control',
+          style: { minWidth: 220 },
           onChange: (event: { target: { value: string } }) => setSearchDraft(event.target.value),
-          style: { ...controlStyle, minWidth: 220 },
         }),
         React.createElement(
           'select',
           {
             'data-testid': 'task-status-filter',
             value: status,
+            className: 'weave-control',
             onChange: (event: { target: { value: string } }) => {
               setStatus(event.target.value)
               setPage(1)
             },
-            style: controlStyle,
           },
           React.createElement('option', { value: '' }, '全部状态'),
-          ...TASK_STATUSES.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ...TASK_STATUSES.map((value: string) => React.createElement(
+            'option',
+            { key: value, value },
+            labelOf(TASK_STATUS_LABELS, value),
+          )),
         ),
         React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'submit' }, '查询'),
         React.createElement(
@@ -1222,7 +1285,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     React.createElement(
                       'div',
                       { className: 'weave-list-head' },
-                      React.createElement(Pill, { label: String(row.status ?? 'UNKNOWN'), tone: toneOf(String(row.status ?? '')) }),
+                      React.createElement(Pill, { label: labelOf(TASK_STATUS_LABELS, row.status), tone: toneOf(String(row.status ?? '')), title: String(row.status ?? '') }),
                       React.createElement('b', null, id),
                     ),
                     React.createElement('span', { className: 'weave-muted' }, String(row.description ?? '')),
@@ -1264,7 +1327,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               : [
                   EmptyState({
                     title: '暂无任务',
-                    reason: list.loading ? '正在加载...' : '当前过滤条件下没有任务；可在右侧提交新任务。',
+                    reason: list.loading ? '正在加载...' : '当前过滤条件下没有任务；任务由当前 DSH 会话发起。',
                   }),
                 ]),
           rows.length > 0 ? Pager({ page, pageSize: TASK_PAGE_SIZE, total, onPage: setPage }) : null,
@@ -1300,7 +1363,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                           React.createElement(
                             'div',
                             { className: 'weave-list-head', key: String(task.id ?? '') },
-                            React.createElement(Pill, { label: String(task.status ?? ''), tone: toneOf(String(task.status ?? '')) }),
+                            React.createElement(Pill, { label: labelOf(TASK_STATUS_LABELS, task.status), tone: toneOf(String(task.status ?? '')), title: String(task.status ?? '') }),
                             React.createElement('span', { className: 'weave-muted' }, String(task.id ?? '')),
                           ),
                         ),
@@ -1312,6 +1375,93 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
+  function KnowledgeGraphView({ graph, selectedId, onSelect }: {
+    graph: KnowledgeGraphData
+    selectedId: string
+    onSelect: (id: string) => void
+  }) {
+    const nodes = [...(graph.nodes ?? [])].sort((a: KnowledgeGraphNode, b: KnowledgeGraphNode) => a.title.localeCompare(b.title))
+    if (nodes.length === 0) {
+      return EmptyState({ title: '知识图谱为空', reason: '当前知识库还没有可展示的条目。' })
+    }
+
+    const width = 760
+    const height = 430
+    const centerX = width / 2
+    const centerY = height / 2
+    const radius = Math.min(170, 70 + nodes.length * 8)
+    const positions = new Map(nodes.map((node: { id: string }, index: number) => {
+      const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2 - Math.PI / 2
+      return [node.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      }]
+    }))
+    const selected = nodes.find((node: KnowledgeGraphNode) => node.id === selectedId)
+
+    return React.createElement(
+      'div',
+      null,
+      React.createElement(
+        'div',
+        { className: 'weave-graph-wrap', 'data-testid': 'knowledge-graph' },
+        React.createElement(
+          'svg',
+          { width: '100%', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': '知识双链图谱' },
+          ...(graph.edges ?? []).map((edge: { source: string; target: string }) => {
+            const source = positions.get(edge.source)
+            const target = positions.get(edge.target)
+            if (!source || !target) return null
+            return React.createElement('line', {
+              key: edge.source + '->' + edge.target,
+              x1: source.x,
+              y1: source.y,
+              x2: target.x,
+              y2: target.y,
+              stroke: 'var(--dsw-alias-border-l2)',
+              strokeWidth: 1.5,
+              'data-edge': edge.source + '->' + edge.target,
+            })
+          }),
+          ...nodes.map((node: KnowledgeGraphNode) => {
+            const point = positions.get(node.id)!
+            return React.createElement(
+              'g',
+              {
+                key: node.id,
+                className: 'weave-graph-node',
+                transform: `translate(${point.x}, ${point.y})`,
+                'data-kind': node.kind,
+                'data-id': node.id,
+                'data-selected': node.id === selectedId ? 'true' : 'false',
+                'data-testid': `knowledge-node-${node.id}`,
+                onClick: () => onSelect(node.id),
+              },
+              React.createElement('circle', { r: node.kind === 'missing' ? 7 : 10 }),
+              React.createElement('text', { y: -16 }, node.title),
+            )
+          }),
+        ),
+        selected
+          ? React.createElement(
+              'div',
+              { className: 'weave-graph-detail', 'data-testid': 'knowledge-graph-detail' },
+              React.createElement('b', null, selected.title),
+              React.createElement(
+                'div',
+                { className: 'weave-list-head' },
+                React.createElement(Pill, { label: labelOf(KNOWLEDGE_STATUS_LABELS, selected.status), title: selected.status }),
+                React.createElement(Pill, { label: labelOf(KNOWLEDGE_LAYER_LABELS, selected.layer), title: selected.layer }),
+                React.createElement(Pill, { label: selected.kind === 'missing' ? '缺失目标' : '已有条目' }),
+              ),
+              selected.tags.length ? React.createElement('span', { className: 'weave-muted' }, '标签：' + selected.tags.join('、')) : null,
+              selected.path ? React.createElement('span', { className: 'weave-code weave-muted' }, selected.path) : null,
+            )
+          : React.createElement('div', { className: 'weave-note', style: { padding: '0 14px 12px' } }, '点击节点查看知识条目详情。'),
+      ),
+    )
+  }
+
   /* ============================== 知识库 ============================== */
 
   function KnowledgePage() {
@@ -1319,6 +1469,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [layer, setLayer] = useState('')
     const [reasonFor, setReasonFor] = useState('')
     const [reasonDraft, setReasonDraft] = useState('')
+    const [selectedNodeId, setSelectedNodeId] = useState('')
+    const [copiedPath, setCopiedPath] = useState(false)
+
+    const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
+    const vaultPath = String(info.data?.obsidian_dir ?? '')
+    const obsidianHref = vaultPath === '' ? undefined : `obsidian://open?path=${encodeURIComponent(vaultPath)}`
 
     const list = useResource<{ candidates?: KnowledgeItem[] }>(async () => {
       const payload: Json = { status, limit: 50 }
@@ -1326,6 +1482,11 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       return (await rpc('knowledge/list', payload)) as { candidates?: KnowledgeItem[] }
     }, [status, layer])
     const items = list.data?.candidates ?? []
+    const graph = useResource<KnowledgeGraphData>(
+      () => rpc('knowledge/graph') as Promise<KnowledgeGraphData>,
+      [],
+    )
+    const graphNodes = graph.data?.nodes ?? []
 
     const approver = useAction()
     const rejecter = useAction()
@@ -1349,16 +1510,15 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       })
     }
 
-    const controlStyle = {
-      minHeight: 34,
-      borderRadius: 10,
-      border: '1px solid var(--dsw-alias-border-l2)',
-      background: 'var(--dsw-specific-menu)',
-      color: 'var(--dsw-alias-label-primary)',
-      font: 'inherit',
-      fontSize: 13,
-      padding: '7px 9px',
-    } as const
+    const copyVaultPath = async () => {
+      try {
+        await navigator.clipboard.writeText(vaultPath)
+        setCopiedPath(true)
+        window.setTimeout(() => setCopiedPath(false), 1800)
+      } catch {
+        window.prompt('复制 Obsidian Vault 路径：', vaultPath)
+      }
+    }
 
     return React.createElement(
       'section',
@@ -1367,33 +1527,65 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       Note({
         text: list.loading
           ? '正在加载...'
-          : list.error || approver.note || rejecter.note || 'candidate 只能通过显式审核转正（active）或驳回（deprecated）。',
+          : list.error || approver.note || rejecter.note || '候选知识必须显式审核，才能生效或驳回。',
       }),
       list.error ? Note({ text: list.error, kind: 'error' }) : null,
       approver.ok === false || rejecter.ok === false ? Note({ text: approver.note || rejecter.note, kind: 'error' }) : null,
       React.createElement(
         'div',
+        { className: 'weave-panel', 'data-testid': 'obsidian-panel' },
+        React.createElement('b', { className: 'weave-subh' }, 'Obsidian Vault'),
+        React.createElement(
+          'div',
+          { className: 'weave-actions', style: { alignItems: 'center' } },
+          vaultPath ? React.createElement('span', { className: 'weave-code weave-muted', 'data-testid': 'obsidian-path' }, vaultPath) : null,
+          obsidianHref
+            ? React.createElement(
+                'a',
+                { className: 'weave-button weave-button-secondary', href: obsidianHref, target: '_blank', rel: 'noreferrer', 'data-testid': 'obsidian-open' },
+                '打开 Obsidian',
+              )
+            : React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', disabled: true }, '路径不可用'),
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', disabled: vaultPath === '', 'data-testid': 'obsidian-copy', onClick: () => void copyVaultPath() },
+            copiedPath ? '已复制' : '复制路径',
+          ),
+        ),
+        React.createElement('span', { className: 'weave-muted' }, '知识主存储仍是 Markdown + frontmatter；P0 只提供入口，不做双向同步。'),
+      ),
+      graph.loading
+        ? React.createElement(Note, { text: '正在加载知识图谱...' })
+        : graph.error
+          ? React.createElement(Note, { text: graph.error, kind: 'error' })
+          : React.createElement(
+              'div',
+              { className: 'weave-panel' },
+              React.createElement('b', { className: 'weave-subh' }, '知识图谱（双链预览）'),
+              React.createElement(KnowledgeGraphView, {
+                graph: graph.data ?? {},
+                selectedId: selectedNodeId,
+                onSelect: (id: string) => setSelectedNodeId(id === selectedNodeId ? '' : id),
+              }),
+              React.createElement(
+                'span',
+                { className: 'weave-muted' },
+                `共 ${graphNodes.filter((node: KnowledgeGraphNode) => node.kind === 'knowledge').length} 条 · ${graph.data?.counts?.missing ?? 0} 个缺失目标 · ${graph.data?.counts?.edges ?? 0} 条关联；完整 Graphify 查询属于后续版本。`,
+              ),
+            ),
+      React.createElement(
+        'div',
         { className: 'weave-toolbar' },
         React.createElement(
           'select',
-          {
-            'data-testid': 'knowledge-status-filter',
-            value: status,
-            onChange: (event: { target: { value: string } }) => setStatus(event.target.value),
-            style: controlStyle,
-          },
-          ...KNOWLEDGE_STATUSES.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          { className: 'weave-control', 'data-testid': 'knowledge-status-filter', value: status, onChange: (event: { target: { value: string } }) => setStatus(event.target.value) },
+          ...KNOWLEDGE_STATUSES.map((value: string) => React.createElement('option', { key: value, value }, `${labelOf(KNOWLEDGE_STATUS_LABELS, value)}（${value}）`)),
         ),
         React.createElement(
           'select',
-          {
-            'data-testid': 'knowledge-layer-filter',
-            value: layer,
-            onChange: (event: { target: { value: string } }) => setLayer(event.target.value),
-            style: controlStyle,
-          },
+          { className: 'weave-control', 'data-testid': 'knowledge-layer-filter', value: layer, onChange: (event: { target: { value: string } }) => setLayer(event.target.value) },
           React.createElement('option', { value: '' }, '全部层级'),
-          ...KNOWLEDGE_LAYERS.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ...KNOWLEDGE_LAYERS.map((value: string) => React.createElement('option', { key: value, value }, `${labelOf(KNOWLEDGE_LAYER_LABELS, value)}（${value}）`)),
         ),
         React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => void list.refresh() }, '刷新'),
       ),
@@ -1411,8 +1603,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   React.createElement(
                     'div',
                     { className: 'weave-list-head' },
-                    React.createElement(Pill, { label: String(item.status ?? 'unknown') }),
-                    React.createElement(Pill, { label: String(item.layer ?? '—') }),
+                    React.createElement(Pill, { label: labelOf(KNOWLEDGE_STATUS_LABELS, item.status), title: String(item.status ?? '') }),
+                    React.createElement(Pill, { label: labelOf(KNOWLEDGE_LAYER_LABELS, item.layer), title: String(item.layer ?? '') }),
                     React.createElement('b', null, String(item.title ?? id)),
                   ),
                   item.path ? React.createElement('span', { className: 'weave-muted' }, String(item.path)) : null,
@@ -1458,11 +1650,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                         'div',
                         { className: 'weave-actions' },
                         React.createElement('input', {
+                          className: 'weave-control',
+                          style: { minWidth: 220 },
                           'data-testid': `knowledge-reason-${id}`,
                           value: reasonDraft,
                           placeholder: '驳回原因（可选）',
                           onChange: (event: { target: { value: string } }) => setReasonDraft(event.target.value),
-                          style: { ...controlStyle, minWidth: 220 },
                         }),
                         React.createElement(
                           'button',
@@ -1501,7 +1694,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const providerRows = providers.data?.providers ?? []
 
     /** 声明态能力行：supported 来自执行器标准能力；requested/effective 运行值随任务产生，此处如实标注。 */
-    const intentLine = (executorId: string) => {
+    const capabilityLabels: Record<string, string> = {
+    model: '模型选择',
+    thought: '思考控制',
+    mode: '模式控制',
+    tools: '工具过滤',
+  }
+  const intentLine = (executorId: string) => {
       const caps = executors.find((executor: ExecutorInfo) => executor.id === executorId)?.capabilities as
         | { modelSelection?: boolean; thoughtControl?: boolean; modeControl?: boolean; tools?: { externalRuntime?: boolean; filtering?: string } }
         | undefined
@@ -1515,9 +1714,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         React.createElement(
           'span',
           { className: 'weave-muted', key: label },
-          label + '：' + (supported
-            ? 'supported ✓ · effective 随运行上报 · fallback 不适用'
-            : 'requested 按会话意图 · supported ✗ · effective 无 · fallback ✓（框架 v1 保证降级）'),
+          labelOf(capabilityLabels, label) + '：' + (supported
+            ? '支持运行时指定；实际值随运行上报'
+            : '可按会话意图请求；当前不支持；自动降级'),
         ),
       )
     }
@@ -1556,7 +1755,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   'div',
                   { className: 'weave-chiprow' },
                   ...(provider.declaredExtensions && provider.declaredExtensions.length
-                    ? provider.declaredExtensions.map((extension) => React.createElement('span', { className: 'weave-chip', key: extension }, extension))
+                    ? provider.declaredExtensions.map((extension) => React.createElement('span', { className: 'weave-chip weave-code', key: extension }, extension))
                     : [React.createElement('span', { className: 'weave-chip', key: 'none' }, '未声明扩展')]),
                 ),
                 ...intentLine(provider.name),
@@ -1664,18 +1863,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const rows = bindings.data?.bindings ?? []
     const revisionRows = revisions.data?.revisions ?? []
 
-    const inputStyle = {
-      minWidth: 160,
-      minHeight: 34,
-      borderRadius: 10,
-      border: '1px solid var(--dsw-alias-border-l2)',
-      background: 'var(--dsw-specific-menu)',
-      color: 'var(--dsw-alias-label-primary)',
-      font: 'inherit',
-      fontSize: 13,
-      padding: '7px 9px',
-    } as const
-
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-sessions' },
@@ -1691,18 +1878,18 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         'form',
         { className: 'weave-toolbar', onSubmit: setBinding },
         React.createElement('input', {
+          className: 'weave-control',
           'data-testid': 'binding-session-input',
           value: sessionId,
-          placeholder: 'Session ID',
+          placeholder: '会话 ID',
           onChange: (event: { target: { value: string } }) => setSessionId(event.target.value),
-          style: inputStyle,
         }),
         React.createElement('input', {
+          className: 'weave-control',
           'data-testid': 'binding-team-input',
           value: teamId,
           placeholder: '团队 ID',
           onChange: (event: { target: { value: string } }) => setTeamId(event.target.value),
-          style: inputStyle,
         }),
         React.createElement(
           'button',
@@ -1806,23 +1993,22 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const events = list.data?.events ?? []
     const summarize = (event: AuditEventView): string => {
       const parts: string[] = []
-      for (const key of ['task_id', 'knowledge_id', 'dag_id', 'by', 'from', 'to', 'session_id', 'reason']) {
+      const fieldLabels: Record<string, string> = {
+        task_id: '任务ID',
+        knowledge_id: '知识ID',
+        dag_id: 'DAG ID',
+        by: '操作者',
+        from: '原值',
+        to: '新值',
+        session_id: '会话ID',
+        reason: '原因',
+      }
+      for (const key of Object.keys(fieldLabels)) {
         const value = event[key]
-        if (value !== undefined && value !== null && value !== '') parts.push(`${key}=${String(value)}`)
+        if (value !== undefined && value !== null && value !== '') parts.push(`${fieldLabels[key]}=${String(value)}`)
       }
       return parts.join(' · ')
     }
-
-    const inputStyle = {
-      minHeight: 34,
-      borderRadius: 10,
-      border: '1px solid var(--dsw-alias-border-l2)',
-      background: 'var(--dsw-specific-menu)',
-      color: 'var(--dsw-alias-label-primary)',
-      font: 'inherit',
-      fontSize: 13,
-      padding: '7px 9px',
-    } as const
 
     return React.createElement(
       'section',
@@ -1841,27 +2027,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         },
         React.createElement(
           'select',
-          { 'data-testid': 'audit-type-filter', value: type, onChange: (event: { target: { value: string } }) => setType(event.target.value), style: inputStyle },
+          { className: 'weave-control', 'data-testid': 'audit-type-filter', value: type, onChange: (event: { target: { value: string } }) => setType(event.target.value) },
           React.createElement('option', { value: '' }, '全部类型'),
-          ...AUDIT_EVENT_TYPES.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ...AUDIT_EVENT_TYPES.map((value: string) => React.createElement('option', { key: value, value }, `${labelOf(AUDIT_EVENT_LABELS, value)}（${value}）`)),
         ),
         React.createElement('input', {
           'data-testid': 'audit-from',
           type: 'datetime-local',
           value: from,
+          className: 'weave-control',
           onChange: (event: { target: { value: string } }) => setFrom(event.target.value),
-          style: inputStyle,
         }),
         React.createElement('input', {
           'data-testid': 'audit-to',
           type: 'datetime-local',
           value: to,
+          className: 'weave-control',
           onChange: (event: { target: { value: string } }) => setTo(event.target.value),
-          style: inputStyle,
         }),
         React.createElement(
           'select',
-          { 'data-testid': 'audit-order', value: order, onChange: (event: { target: { value: string } }) => setOrder(event.target.value), style: inputStyle },
+          { className: 'weave-control', 'data-testid': 'audit-order', value: order, onChange: (event: { target: { value: string } }) => setOrder(event.target.value) },
           React.createElement('option', { value: 'desc' }, '最新优先'),
           React.createElement('option', { value: 'asc' }, '最旧优先'),
         ),
@@ -1881,7 +2067,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   React.createElement(
                     'div',
                     { className: 'weave-list-head' },
-                    React.createElement(Pill, { label: String(event.type ?? 'unknown') }),
+                    React.createElement(Pill, { label: labelOf(AUDIT_EVENT_LABELS, event.type), title: String(event.type ?? '') }),
                     React.createElement('span', { className: 'weave-muted' }, fmtTime(event.occurred_at)),
                   ),
                   React.createElement('span', { className: 'weave-muted' }, summarize(event) || '（无附加字段）'),

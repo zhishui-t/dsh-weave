@@ -484,6 +484,51 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(source).not.toContain('conversation.input.right')
     expect(source).not.toContain('session-team-selector')
   })
+  it('知识页：Obsidian Vault 入口可用，图谱按真实 [[双链]] 渲染', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'settings/describe': {
+        version: '9.9.9-test',
+        node_version: process.version,
+        state_dir: '/state',
+        teams_dir: '/teams',
+        audit_dir: '/audit',
+        providers_file: '/f/providers.json',
+        obsidian_dir: '~/.dsh/obsidian',
+      },
+      'knowledge/graph': {
+        nodes: [
+          { id: 'g-a', title: 'A 指南', status: 'active', layer: 'project', tags: ['图谱'], kind: 'knowledge' },
+          { id: 'g-b', title: 'B 指南', status: 'candidate', layer: 'project', tags: [], kind: 'knowledge' },
+          { id: 'missing:未收录', title: '未收录', status: 'missing', layer: 'shared', tags: [], kind: 'missing' },
+        ],
+        edges: [
+          { source: 'g-a', target: 'g-b' },
+          { source: 'g-a', target: 'missing:未收录' },
+        ],
+        counts: { knowledge: 2, missing: 1, edges: 2, unresolved: 1, skipped: 0 },
+      },
+      'knowledge/list': {
+        candidates: [
+          { id: 'g-b', title: 'B 指南', layer: 'project', status: 'candidate', confidence: 0.5, freshness_score: 0.5 },
+        ],
+      },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-knowledge'))
+
+    await screen.findByTestId('obsidian-panel')
+    expect(screen.getByTestId('obsidian-path').textContent).toBe('~/.dsh/obsidian')
+    expect(screen.getByTestId('obsidian-open').getAttribute('href')).toBe('obsidian://open?path=~%2F.dsh%2Fobsidian')
+    await screen.findByTestId('knowledge-graph')
+    expect(screen.getByTestId('knowledge-node-g-a').getAttribute('data-kind')).toBe('knowledge')
+    fireEvent.click(screen.getByTestId('knowledge-node-g-a'))
+    await screen.findByTestId('knowledge-graph-detail')
+    expect(screen.getByTestId('knowledge-graph-detail').textContent).toContain('A 指南')
+  })
+
   it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({
@@ -511,7 +556,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(card.textContent).toContain('已生效')
     expect(card.textContent).toContain('node srv.js')
     expect(card.textContent).toContain('zcode')
-    expect(card.textContent).toContain('fallback ✓')
+    expect(card.textContent).toContain('自动降级')
 
     fireEvent.click(screen.getByTestId('nav-settings'))
     const summary = await screen.findByTestId('providers-summary')
@@ -564,7 +609,7 @@ describe('t9 任务依赖图可视化', () => {
     expect(svg.querySelectorAll('line').length).toBe(2)
 
     // 状态徽标与负责人
-    expect(screen.getByTestId('dag-node-T-C').textContent).toContain('COMPLETED')
+    expect(screen.getByTestId('dag-node-T-C').textContent).toContain('已完成')
     expect(screen.getByTestId('dag-node-T-A').textContent).toContain('agent-1')
     expect(screen.getByTestId('dag-node-T-B').textContent).toContain('未分配')
 
@@ -598,6 +643,6 @@ describe('t9 任务依赖图可视化', () => {
     await screen.findByTestId('dag-panel')
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(1)
     expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(0)
-    expect(screen.getByTestId('dag-node-S-1').textContent).toContain('RUNNING')
+    expect(screen.getByTestId('dag-node-S-1').textContent).toContain('执行中')
   })
 })

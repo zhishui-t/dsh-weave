@@ -17,7 +17,7 @@ import type { ExecutorCapabilities } from '../executors/executor-provider.js'
  * - loadProviderConfigs()：读取 providers.json 全部配置；
  * - createAcpProviderFromConfig(config, spawn)：配置 → { acp, wrapper } 执行器栈；
  * - registerStoredAcpProviders(...)：批量热注册到当前会话（subagents/subprocess 由调用方注入）；
- * - createWeaveProviderCommandDefinitions(...)：/weave addProvider 与 /weave provider
+ * - createWeaveProviderCommandDefinitions(...)：/weave provider add/list/remove
  *   的命令定义（结构兼容 dsh-commands CommandDefinition），由集成方统一挂载。
  */
 
@@ -142,7 +142,7 @@ export function registerStoredAcpProviders(
   return result
 }
 
-/* --------------------- /weave addProvider 与 /weave provider 命令定义 --------------------- */
+/* --------------------- /weave provider add/list/remove 命令定义 --------------------- */
 
 export interface WeaveProviderCommandDefinition {
   name: string
@@ -172,7 +172,7 @@ function invalidText(error: unknown): { kind: 'error'; text: string } {
  */
 export function createWeaveProviderCommandDefinitions(
   options: CreateWeaveProviderCommandDefinitionsOptions = {},
-): { addProvider: WeaveProviderCommandDefinition; manageProvider: WeaveProviderCommandDefinition } {
+): { add: WeaveProviderCommandDefinition; manage: WeaveProviderCommandDefinition } {
   const store = new ProviderStore({ file: options.providersFile })
   const hotRegister = options.hotRegister ?? ((cfg: StoredProviderConfig): string | null => {
     const outcome = registerStoredAcpProviders({ providersFile: options.providersFile, ...(options.onRemove !== undefined ? {} : {}) })
@@ -181,12 +181,12 @@ export function createWeaveProviderCommandDefinitions(
     return failed ? `热注册失败（配置已持久化）: ${failed.error}` : null
   })
 
-  const addProvider: WeaveProviderCommandDefinition = {
-    name: 'addProvider',
+  const add: WeaveProviderCommandDefinition = {
+    name: 'provider',
     description:
       '注册新 ACP 执行器 provider。字段：name、transport=stdio、command、args(逗号分隔)、cwd、env(A=1,B=2)、protocol=acp、declaredExtensions(逗号分隔)；JSON 或紧凑 key=value 均可，JSON 优先。',
     input: {
-      hint: 'addProvider {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}',
+      hint: 'provider add {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}',
     },
     async handler(rawInput) {
       try {
@@ -203,10 +203,10 @@ export function createWeaveProviderCommandDefinitions(
     },
   }
 
-  const manageProvider: WeaveProviderCommandDefinition = {
+  const manage: WeaveProviderCommandDefinition = {
     name: 'provider',
     description: '管理动态 provider：list 列出全部；remove <name> 从配置移除（当前会话已注册实例保持可用，重启后不再加载）。',
-    input: { hint: 'provider list ｜ provider remove <name>' },
+    input: { hint: 'provider add <配置> ｜ provider list ｜ provider remove <name>' },
     async handler(rawInput) {
       const argv = rawInput.trim().split(/\s+/).filter((item) => item !== '')
       const command = argv[0] ?? 'list'
@@ -232,7 +232,7 @@ export function createWeaveProviderCommandDefinitions(
     },
   }
 
-  return { addProvider, manageProvider }
+  return { add, manage }
 }
 
 /** 宿主集成辅助：从 cordis ctx 提取 subagents/subprocess 最小面（仅集成任务使用）。 */

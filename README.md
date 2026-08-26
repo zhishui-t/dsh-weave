@@ -116,12 +116,14 @@ DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配�
 外部 ACP harness 通过当前会话命令接入：
 
 ```text
-/weave addProvider {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}
+/weave provider add {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}
 /weave provider list
 /weave provider remove myagent
 ```
 
 配置持久化到 `~/.dsh/weave/providers.json`，热注册后执行器列表立即可见。
+
+知识页提供 **Obsidian Vault 入口**（默认 `~/.dsh/obsidian`）：展示真实路径、复制路径，并通过 `obsidian://open` 协议尝试打开；主存储仍是 Markdown + frontmatter，P0 不做双向同步。知识列表下方有**轻量双链图谱**（`knowledge/graph`），基于真实知识文件和 `[[双链]]` 生成节点/缺失目标/关联边；完整 Graphify 查询属于后续版本。
 ACP 标准协议由统一内核处理；ZCode 的 model/thought/mode 是内置 extension 示例。
 未声明或探测失败的 extension 会以 requested/effective/supported/fallback 明确降级，
 不会伪装成功。

@@ -1,3 +1,6 @@
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 import type { Context } from '@deepseek-ai/cordis'
 import { stringify as stringifyYaml } from 'yaml'
 
@@ -12,6 +15,8 @@ import type { TeamConfig } from './team-manager.js'
 
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
 export const WEAVE_RPC_CHANNEL = '/dsh-weave'
+
+export const DEFAULT_OBSIDIAN_DIR = join(homedir(), '.dsh', 'obsidian')
 
 type RpcSuccess<T> = { ok: true; value: T }
 type RpcFailure = {
@@ -101,6 +106,8 @@ export interface WeaveRpcSettings {
   auditDir?: string
   /** providers.json 路径（settings/describe 的配置来源展示）；缺省 DEFAULT_PROVIDERS_FILE。 */
   providersFile?: string
+  /** Obsidian Vault 路径；缺省 ~/.dsh/obsidian。 */
+  obsidianDir?: string
 }
 
 /* ------------------------------ 序列化：完整团队与角色信息 ------------------------------ */
@@ -300,6 +307,7 @@ export function createWeaveRpcHandler(
           state_dir: resolvedDeps.persistence?.stateDir ?? DEFAULT_STATE_DIR,
           teams_dir: resolvedDeps.teamManager.teamsDir,
           audit_dir: settings.auditDir ?? DEFAULT_AUDIT_DIR,
+          obsidian_dir: settings.obsidianDir ?? DEFAULT_OBSIDIAN_DIR,
           zcode: {
             // 发现状态：部署侧是否装配了 ZCode 能力目录源。
             configured: typeof zcodeCatalog === 'function',
