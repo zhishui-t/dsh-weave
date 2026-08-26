@@ -162,4 +162,30 @@ export class SessionTracker {
       raw.prepare('DELETE FROM revision_records WHERE task_id = ?').run(taskId)
     })
   }
+
+
+  /**
+   * 列出修订记录（Web session/revisions 用）：updated_at 降序（最近优先），
+   * 同刻以 task_id 降序兜底保证确定性。limit 由调用方（服务边界）校验后传入。
+   */
+  async listRevisions(limit = 50): Promise<RevisionRecord[]> {
+    await this.#ensureTable()
+    const rows = await this.#db.run((raw) => {
+      return raw
+        .prepare(
+          `SELECT task_id, revision_count, previous_result, user_feedback, updated_at
+           FROM revision_records
+           ORDER BY updated_at DESC, task_id DESC
+           LIMIT ?`,
+        )
+        .all(limit) as unknown as RevisionRow[]
+    })
+    return rows.map((row) => ({
+      task_id: row.task_id,
+      revision_count: row.revision_count,
+      previous_result: row.previous_result,
+      user_feedback: JSON.parse(row.user_feedback) as string[],
+      updated_at: row.updated_at,
+    }))
+  }
 }
