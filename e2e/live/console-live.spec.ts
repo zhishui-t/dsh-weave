@@ -56,7 +56,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('nav: 八页全部可达且无错误态', async () => {
+  test('nav: 九页全部可达且无错误态', async () => {
     try {
       for (let i = 0; i < ROUTES.length; i += 1) {
         const key = ROUTES[i]!
@@ -67,9 +67,9 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         await shot(page, `${String(i + 2).padStart(2, '0')}-page-${key}`)
         console.log(`  页面可达: ${key}`)
       }
-      step('八页全部可达且无错误态')()
+      step('九页全部可达且无错误态')()
     } catch (err) {
-      step('八页全部可达且无错误态')(String(err))
+      step('九页全部可达且无错误态')(String(err))
       throw err
     }
   })
