@@ -1647,6 +1647,136 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ============================== 知识库 ============================== */
 
+  function KnowledgeImportPanel() {
+    const [note, setNote] = useState('')
+    const [jobId, setJobId] = useState('')
+    const [preview, setPreview] = useState('')
+    const [target, setTarget] = useState('project')
+    const [projectId, setProjectId] = useState('')
+    const [version, setVersion] = useState('')
+    const [roleId, setRoleId] = useState('')
+    const [instanceId, setInstanceId] = useState('')
+    const [visibility, setVisibility] = useState('project_only')
+    const [busy, setBusy] = useState(false)
+
+    const uploadAndConvert = async (event: { target: { files?: ArrayLike<File> } }) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      setBusy(true)
+      setNote('')
+      try {
+        const b64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const text = String(reader.result ?? '')
+            resolve(text.includes(',') ? text.split(',').slice(1).join(',') : text)
+          }
+          reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
+          reader.readAsDataURL(file)
+        })
+        const meta: Record<string, unknown> = { target, visibility }
+        if (projectId) meta.project_id = projectId
+        if (version) meta.version = version
+        if (roleId) meta.role_id = roleId
+        if (instanceId) meta.instance_id = instanceId
+        const uploaded = (await rpc('knowledge/import/upload', { filename: file.name, data: b64, meta })) as { jobId?: string; id?: string }
+        const id = String(uploaded.jobId ?? uploaded.id ?? '')
+        setJobId(id)
+        const converted = (await rpc('knowledge/import/convert', { jobId: id })) as { markdown?: string; output?: { markdown?: string } }
+        const md = String(converted.markdown ?? converted.output?.markdown ?? '')
+        setPreview(md)
+        setNote('转换完成，请确认候选知识。')
+      } catch (cause) {
+        setNote('导入失败：' + errText(cause))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    const confirm = async () => {
+      if (!jobId) return
+      setBusy(true)
+      setNote('')
+      try {
+        const title = preview.split(String.fromCharCode(10)).find((entry: string) => entry.trim().startsWith('#'))?.replace(/^#+/, '').trim() || '导入知识'
+        await rpc('knowledge/import/confirm', {
+          jobId,
+          candidate: {
+            title,
+            content: preview,
+            type: 'doc',
+            visibility,
+            tags: [],
+          },
+        })
+        setNote('已生成候选知识，可在上方候选列表审核。')
+        setPreview('')
+        setJobId('')
+      } catch (cause) {
+        setNote('确认失败：' + errText(cause))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'knowledge-import-panel' },
+      React.createElement('b', { className: 'weave-subh' }, '导入知识'),
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement('input', {
+          className: 'weave-control',
+          type: 'file',
+          accept: '.doc,.docx,.pdf,.ppt,.pptx,.xls,.xlsx,.epub,.csv,.rtf,.odt',
+          disabled: busy,
+          'data-testid': 'import-file',
+          onChange: (event: { target: { files?: ArrayLike<File> } }) => void uploadAndConvert(event),
+        }),
+        React.createElement(
+          'select',
+          { className: 'weave-control', 'data-testid': 'import-target', value: target, onChange: (event: { target: { value: string } }) => setTarget(event.target.value) },
+          React.createElement('option', { value: 'project' }, '项目'),
+          React.createElement('option', { value: 'role' }, '角色'),
+          React.createElement('option', { value: 'instance' }, '实例'),
+          React.createElement('option', { value: 'global' }, '全局'),
+        ),
+        target === 'project'
+          ? React.createElement(React.Fragment, null,
+              React.createElement('input', { className: 'weave-control', placeholder: '项目ID', value: projectId, onChange: (e: { target: { value: string } }) => setProjectId(e.target.value), 'data-testid': 'import-project' }),
+              React.createElement('input', { className: 'weave-control', placeholder: '版本', value: version, onChange: (e: { target: { value: string } }) => setVersion(e.target.value), 'data-testid': 'import-version' }),
+            )
+          : null,
+        target === 'role'
+          ? React.createElement('input', { className: 'weave-control', placeholder: '角色ID', value: roleId, onChange: (e: { target: { value: string } }) => setRoleId(e.target.value), 'data-testid': 'import-role' })
+          : null,
+        target === 'instance'
+          ? React.createElement('input', { className: 'weave-control', placeholder: '实例ID', value: instanceId, onChange: (e: { target: { value: string } }) => setInstanceId(e.target.value), 'data-testid': 'import-instance' })
+          : null,
+        React.createElement(
+          'select',
+          { className: 'weave-control', 'data-testid': 'import-visibility', value: visibility, onChange: (event: { target: { value: string } }) => setVisibility(event.target.value) },
+          React.createElement('option', { value: 'project_only' }, '项目可见'),
+          React.createElement('option', { value: 'role_only' }, '角色可见'),
+          React.createElement('option', { value: 'instance_only' }, '实例可见'),
+          React.createElement('option', { value: 'global' }, '全局可见'),
+        ),
+        React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', disabled: busy, onClick: () => void confirm(), 'data-testid': 'import-confirm' }, '确认生成候选'),
+      ),
+      preview
+        ? React.createElement('textarea', {
+            className: 'weave-control',
+            style: { minHeight: 160, width: '100%', marginTop: 8 },
+            value: preview,
+            onChange: (event: { target: { value: string } }) => setPreview(event.target.value),
+            'data-testid': 'import-preview',
+          })
+        : null,
+      note ? React.createElement(Note, { text: note }) : null,
+    )
+  }
+
   function KnowledgePage() {
     const [status, setStatus] = useState('candidate')
     const [layer, setLayer] = useState('')
@@ -1721,6 +1851,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       }),
       list.error ? Note({ text: list.error, kind: 'error' }) : null,
       approver.ok === false || rejecter.ok === false ? Note({ text: approver.note || rejecter.note, kind: 'error' }) : null,
+      React.createElement(KnowledgeImportPanel, null),
       React.createElement(
         'div',
         { className: 'weave-panel', 'data-testid': 'obsidian-panel' },
