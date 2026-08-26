@@ -901,10 +901,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       return [
         thoughtSupported
           ? roleSelect(index, '思考深度', 'thoughtLevel', thoughtValues.length ? thoughtValues : ['off', 'high', 'max'])
-          : disabledSelect('思考深度', '当前执行器不支持'),
+          : disabledSelect('思考深度', '继承当前会话默认（DSH 子代理不支持单独设置）'),
         modeSupported
           ? roleSelect(index, '模式', 'mode', modeValues.length ? modeValues : ['plan', 'build', 'edit', 'yolo', 'auto'])
-          : disabledSelect('模式', '当前执行器不支持'),
+          : disabledSelect('模式', '继承当前会话默认（DSH 子代理不支持单独设置）'),
       ]
     }
 
