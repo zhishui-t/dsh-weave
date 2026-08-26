@@ -314,6 +314,15 @@ describe('providers.json 存储与入参解析', () => {
     expect(objectMap[0]?.name).toBe('map-agent')
     expect(objectMap[0]?.args).toEqual(['m.js'])
 
+    const yaml = parseProviderInputs('name: yaml-agent\ncommand: node\nargs:\n  - y.js\nextensions:\n  - zcode')
+    expect(yaml[0]?.name).toBe('yaml-agent')
+    expect(yaml[0]?.args).toEqual(['y.js'])
+    expect(yaml[0]?.declaredExtensions).toEqual(['zcode'])
+
+    const fenced = parseProviderInputs('```yaml\nname: fenced-agent\ncommand: node\nargs: f.js\n```')
+    expect(fenced[0]?.name).toBe('fenced-agent')
+    expect(fenced[0]?.args).toEqual(['f.js'])
+
     expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
     expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
   })

@@ -1,6 +1,8 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+
+import { parse as parseYaml } from 'yaml'
 
 import { WeaveError } from '../state/weave-error.js'
 
@@ -134,7 +136,12 @@ function normalizeEnv(value: unknown): Record<string, string> {
   return env
 }
 
-/** 解析多 provider 输入：单对象、JSON 数组、或 `{providers|servers|mcpServers:[]}`。 */
+/** 粗略判断一段文本更像 YAML 而不是紧凑 key=value。 */
+function looksLikeYaml(text: string): boolean {
+  return /(^|\n)\s*[A-Za-z_][\w.-]*\s*:(\s|$)/.test(text) || /^---\s*$/.test(text.trim())
+}
+
+/** 解析多 provider 输入：单对象、JSON 数组、或 `{providers|servers|mcpServers:[]}`，也支持 YAML/文件路径。 */
 export function parseProviderInputs(raw: string | unknown): StoredProviderConfig[] {
   if (typeof raw !== 'string') {
     return normalizeProviderCandidates(raw)
@@ -149,6 +156,26 @@ export function parseProviderInputs(raw: string | unknown): StoredProviderConfig
       invalid(`JSON 解析失败: ${String(error)}`)
     }
     return normalizeProviderCandidates(parsed)
+  }
+  const fenceMatch = trimmed.match(/```(?:json|yaml|yml)?\s*\n([\s\S]*?)\n```/)
+  if (fenceMatch?.[1]) {
+    return parseProviderInputs(fenceMatch[1].trim())
+  }
+  if (existsSync(trimmed)) {
+    const content = readFileSync(trimmed, 'utf8')
+    return parseProviderInputs(content)
+  }
+  const yamlCandidate = looksLikeYaml(trimmed)
+  if (yamlCandidate) {
+    let parsed: unknown
+    try {
+      parsed = parseYaml(trimmed)
+    } catch {
+      parsed = undefined
+    }
+    if (parsed !== undefined && parsed !== null) {
+      return normalizeProviderCandidates(parsed)
+    }
   }
   return [parseProviderInput(trimmed)]
 }
@@ -194,10 +221,16 @@ function normalizeProviderCandidates(input: unknown): StoredProviderConfig[] {
       if ((entry.name === undefined || entry.name === '') && typeof entry.id === 'string' && entry.id !== '') {
         entry.name = entry.id
       }
+      if (entry.declaredExtensions === undefined && Array.isArray(entry.extensions)) {
+        entry.declaredExtensions = entry.extensions
+      }
+      if (typeof entry.args === 'string') {
+        entry.args = entry.args.split(/[\s,]+/).filter((item: string) => item !== '')
+      }
       return parseProviderInput(entry as Record<string, unknown>)
     })
   }
-  return [parseProviderInput(record)]
+  return [parseProviderInput(normalizeProviderRecord(record))]
 }
 
 /**
@@ -205,6 +238,23 @@ function normalizeProviderCandidates(input: unknown): StoredProviderConfig[] {
  * 其次紧凑 key=value（空白分词；args/declaredExtensions 逗号分隔；
  * env 形如 A=1,B=2，每项按第一个 '=' 切分）。未知键直接拒绝。
  */
+/** 归一化单条 provider 记录：补默认值、兼容 id/extensions/args 字符串等 ACP 常见写法。 */
+function normalizeProviderRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const entry = { ...record }
+  if (entry.transport === undefined) entry.transport = 'stdio'
+  if (entry.protocol === undefined) entry.protocol = 'acp'
+  if ((entry.name === undefined || entry.name === '') && typeof entry.id === 'string' && entry.id !== '') {
+    entry.name = entry.id
+  }
+  if (entry.declaredExtensions === undefined && Array.isArray(entry.extensions)) {
+    entry.declaredExtensions = entry.extensions
+  }
+  if (typeof entry.args === 'string') {
+    entry.args = entry.args.split(/[\s,]+/).filter((item: string) => item !== '')
+  }
+  return entry
+}
+
 export function parseProviderInput(raw: string | Record<string, unknown>): StoredProviderConfig {
   if (typeof raw !== 'string') {
     return validateProviderConfig(raw)
