@@ -280,6 +280,37 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     ])
   })
 
+  it('provider add 保留原始多行协议内容传给 providerCommand', async () => {
+    const env = await newEnv()
+    const registered: Array<{ def: HostCommandDefinition }> = []
+    const commandsRuntime = {
+      register: (def: HostCommandDefinition) => {
+        registered.push({ def })
+        return () => undefined
+      },
+    }
+    ;(env.ctx as unknown as { commands: HostCommandRuntime }).commands = commandsRuntime
+    let capturedArgs: string[] | undefined
+    const bundle = registerWeaveHost(env.ctx, env.deps, {
+      providerCommand: async (args) => {
+        capturedArgs = args
+        return { kind: 'success', text: args.join('|') }
+      },
+    })
+    expect(bundle.command.registered).toBe(true)
+    const def = registered[0]!.def
+    const rawInput = 'provider add name: raw-agent\ncommand: node\nargs:\n  - r.js'
+    const result = await def.handler({
+      commandId: 'cmd-1',
+      agent: undefined,
+      rawInput,
+      attachments: [],
+      signal: new AbortController().signal,
+    } as unknown as HostCommandInvocation)
+    expect(result.kind).toBe('success')
+    expect(capturedArgs).toEqual(['add', 'name: raw-agent\ncommand: node\nargs:\n  - r.js'])
+  })
+
   it('ctx.commands 存在时注册 /weave：team list 与 task status 可执行并返回 CommandResult', async () => {
     const env = await newEnv()
     const registered: Array<{ def: HostCommandDefinition }> = []
