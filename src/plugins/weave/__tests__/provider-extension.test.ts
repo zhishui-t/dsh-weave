@@ -130,9 +130,15 @@ describe('扩展协商 negotiateExtensions（声明 ∧ 探测）', () => {
 })
 
 describe('意图应用 applyRuntimeIntents / zcode.apply', () => {
-  it('白名单：未声明方法直接拒绝', async () => {
+  it('白名单：未声明方法直接拒绝；ZCode 协议中的统一配置方法放行', async () => {
     const ext = createZcodeExtension()
     await expect(callExtensionMethod(ext, { extMethod: async () => 1 }, 'session/hack', {})).rejects.toThrow(/allowlist/)
+    await expect(
+      callExtensionMethod(ext, { extMethod: async () => 1 }, 'session/set_config_option', { sessionId: 's1' }),
+    ).resolves.toBe(1)
+    await expect(
+      callExtensionMethod(ext, { extMethod: async () => 1 }, 'session/updateRuntimeModelConfig', { sessionId: 's1' }),
+    ).resolves.toBe(1)
   })
 
   it('model+thought+mode 全部经 extMethod 应用；provider/model 反斜杠拼接', async () => {

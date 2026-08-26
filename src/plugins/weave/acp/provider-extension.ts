@@ -118,11 +118,18 @@ function looksLikeZcode(value: unknown): boolean {
 }
 
 /**
- * 内置第一个扩展：zcode——封装既有 session/setModel、session/setThoughtLevel、
- * session/setMode extMethod 约定（与协议内核解耦，可被通用 provider 复用）。
+ * 内置第一个扩展：zcode——封装 ZCode ACP 的 model/thought/mode 扩展方法，
+ * 并按真实协议放行统一配置入口 session/set_config_option 与
+ * session/updateRuntimeModelConfig（与协议内核解耦，可被通用 provider 复用）。
  */
 export function createZcodeExtension(): AcpProviderExtension {
-  const ZCODE_METHODS = ['session/setModel', 'session/setThoughtLevel', 'session/setMode'] as const
+  const ZCODE_METHODS = [
+    'session/setModel',
+    'session/setThoughtLevel',
+    'session/setMode',
+    'session/set_config_option',
+    'session/updateRuntimeModelConfig',
+  ] as const
   return {
     name: 'zcode',
     allowedMethods: ZCODE_METHODS,
