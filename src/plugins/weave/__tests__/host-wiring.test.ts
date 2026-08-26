@@ -265,6 +265,21 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(tokenizeCommandLine('"quoted" value')).toEqual(['quoted', 'value'])
   })
 
+  it('tokenizeCommandLine：原样保留 JSON 对象/数组，含空格与引号', () => {
+    const rawJson = 'provider add {"name":"my agent","command":"node","args":["a.js","b.js"]}'
+    expect(tokenizeCommandLine(rawJson)).toEqual([
+      'provider',
+      'add',
+      '{"name":"my agent","command":"node","args":["a.js","b.js"]}',
+    ])
+    const rawArray = 'provider add [{"name":"a","command":"node"},{"name":"b","command":"deno"}]'
+    expect(tokenizeCommandLine(rawArray)).toEqual([
+      'provider',
+      'add',
+      '[{"name":"a","command":"node"},{"name":"b","command":"deno"}]',
+    ])
+  })
+
   it('ctx.commands 存在时注册 /weave：team list 与 task status 可执行并返回 CommandResult', async () => {
     const env = await newEnv()
     const registered: Array<{ def: HostCommandDefinition }> = []
