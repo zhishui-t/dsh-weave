@@ -70,7 +70,7 @@ export function apply(ctx: Context): void {
 
   // 真实 DSH 宿主接入：等待宿主服务就绪后一次性注册真实依赖。
   // 执行器列表来自 ctx.subagents 当前实际注册项；ZCode ACP 只是可选附加源。
-  ctx.inject(['subagents', 'commands', 'tools', 'connection'], (scoped) => {
+  ctx.inject(['subagents', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
     const runtime = scoped as Context
 
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
@@ -133,7 +133,21 @@ export function apply(ctx: Context): void {
           refreshExecutorSnapshot()
         },
       })
-      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile }, async () => {
+      const llmRuntime = (runtime as Context & { llm?: { listProviders(): Array<{ id: string; name: string }>; listModels(providerId: string): Promise<Array<{ id: string; name: string }>> } }).llm
+      const llmCatalog = llmRuntime?.listProviders
+        ? async (): Promise<Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>> => {
+            const providers = llmRuntime.listProviders()
+            return Promise.all(providers.map(async (provider) => {
+              try {
+                const models = await llmRuntime.listModels(provider.id)
+                return { provider: provider.id, name: provider.name, models }
+              } catch {
+                return { provider: provider.id, name: provider.name, models: [] }
+              }
+            }))
+          }
+        : undefined
+      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
       }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })

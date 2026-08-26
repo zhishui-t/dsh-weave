@@ -216,6 +216,7 @@ interface SnapshotData {
   executors?: ExecutorInfo[]
   overview?: Json
   zcodeCapabilities?: ZcodeCapabilities
+  modelCatalog?: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>
 }
 
 /** 创建团队时的角色草稿（界面态，字段均为字符串便于受控输入）。 */
@@ -709,6 +710,26 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const executors = snap.executors ?? []
     const teams = snap.teams ?? []
     const capabilities = snap.zcodeCapabilities
+    const rawModels = (capabilities?.models ?? []) as SelectOption[]
+    const zcodeModelCatalog = rawModels.map((option: SelectOption) => {
+      const sep = String.fromCharCode(92)
+      const cut = option.value.lastIndexOf(sep)
+      return cut >= 0
+        ? { provider: option.value.slice(0, cut), model: option.value.slice(cut + 1), label: option.name ?? option.value }
+        : { provider: '', model: option.value, label: option.name ?? option.value }
+    })
+    const llmModelCatalog = (snap.modelCatalog ?? []).flatMap((group: { provider: string; name: string; models: Array<{ id: string; name: string }> }) =>
+      group.models.map((item: { id: string; name: string }) => ({ provider: group.provider, model: item.id, label: item.name ?? item.id })),
+    )
+    const modelCatalog = [...llmModelCatalog, ...zcodeModelCatalog]
+    const providerItems: string[] = [...new Set(modelCatalog.map((item) => item.provider).filter((item: string): item is string => item !== ''))]
+    const modelsByProvider: Record<string, string[]> = {}
+    for (const item of modelCatalog) {
+      if (item.provider === '') continue
+      const bucket = modelsByProvider[item.provider] ?? []
+      if (!bucket.includes(item.model)) bucket.push(item.model)
+      modelsByProvider[item.provider] = bucket
+    }
 
     const [teamId, setTeamId] = useState('')
     const [name, setName] = useState('')
@@ -853,6 +874,59 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       )
 
+    const roleLinkedModelFields = (index: number): Array<React.ReactElement> => {
+      if (providerItems.length === 0) {
+        return [
+          roleField(index, '推理服务覆盖', 'provider', '可选（无目录时手填）'),
+          roleField(index, '模型覆盖', 'model', '可选（无目录时手填）'),
+        ]
+      }
+      const provider = roles[index]?.provider ?? ''
+      const models = modelsByProvider[provider] ?? []
+      return [
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, '推理服务覆盖'),
+          React.createElement(
+            'select',
+            {
+              className: 'weave-control',
+              'data-testid': `provider-select-${index}`,
+              value: provider,
+              onChange: (event: { target: { value: string } }) => {
+                const value = event.target.value
+                const next = modelsByProvider[value] ?? []
+                const current = roles[index]?.model ?? ''
+                updateRole(index, 'provider', value)
+                updateRole(index, 'model', next.includes(current) ? current : (next[0] ?? ''))
+              },
+            },
+            React.createElement('option', { value: '' }, '继承默认'),
+            ...providerItems.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ),
+        ),
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, '模型覆盖'),
+          React.createElement(
+            'select',
+            {
+              className: 'weave-control',
+              'data-testid': `model-select-${index}`,
+              value: roles[index]?.model ?? '',
+              disabled: provider === '',
+              onChange: (event: { target: { value: string } }) => updateRole(index, 'model', event.target.value),
+            },
+            React.createElement('option', { value: '' }, provider === '' ? '请先选择推理服务' : '继承默认'),
+            ...models.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ),
+        ),
+      ]
+    }
+
+
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-teams' },
@@ -966,8 +1040,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 : React.createElement(
                     'div',
                     { className: 'weave-role-grid' },
-                    roleField(index, '推理服务覆盖', 'provider', '可选'),
-                    roleField(index, '模型覆盖', 'model', '可选'),
+                    ...roleLinkedModelFields(index),
                   ),
               roleField(index, '角色提示词', 'personality', '', 'textarea'),
             ),
@@ -2108,7 +2181,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作' },
     { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
     { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
-    { cmd: '/weave provider add <JSON|紧凑配置>', desc: '注册外部 ACP 执行器' },
+    { cmd: '/weave provider add <JSON|JSON数组|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
     { cmd: '/weave knowledge review', desc: '知识候选队列' },

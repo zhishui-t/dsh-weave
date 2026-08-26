@@ -101,6 +101,8 @@ export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> 
      * 未注入时相应能力返回 configuration_error，UI 呈现明确空态。
      */
     providerStore?: { list(): StoredProviderConfig[] } | (() => { list(): StoredProviderConfig[] } | undefined)
+    /** ctx.llm 驱动：返回全局可用模型目录（provider -> models）。 */
+    llmCatalog?: () => Promise<Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>>
   }
 
 /** 部署侧注入的静态描述信息（settings/describe 用）。 */
@@ -198,7 +200,9 @@ export function createWeaveRpcHandler(
             bindingsCount = undefined
           }
         }
+        const llmCatalog = resolvedDeps.llmCatalog ? await resolvedDeps.llmCatalog() : []
         return success({
+          modelCatalog: llmCatalog,
           zcodeCapabilities: {
             models: modelOption?.options ?? [],
             currentModel: modelOption?.currentValue,

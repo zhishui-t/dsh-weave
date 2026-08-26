@@ -224,6 +224,36 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     }
   })
 
+  it('非 ZCode 角色也展示 Provider/Model 下拉', async () => {
+    const moduleRequire = (id: string) => {
+      if (id === 'react') return React
+      if (id === 'react-dom') return ReactDOM
+      throw new Error(`unexpected client dependency: ${id}`)
+    }
+    const exported = getCapturedBundle().factory(moduleRequire)
+    const fixture = makeClientContext({
+      snapshot: {
+        teams: [],
+        executors: [{ id: 'spawn' }, { id: 'fork' }],
+        zcodeCapabilities: {
+          models: [{ value: ['prov-a', 'deepseek-v4-flash'].join(SEP), name: 'deepseek › deepseek-v4-flash' }],
+          modes: [],
+          thoughtLevels: [],
+        },
+      },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-teams'))
+    await screen.findByTestId('page-teams')
+    const providerSelect = screen.getByTestId('provider-select-0') as HTMLSelectElement
+    const modelSelect = screen.getByTestId('model-select-0') as HTMLSelectElement
+    expect(Array.from(providerSelect.options).map((option) => option.value)).toContain('prov-a')
+    fireEvent.change(providerSelect, { target: { value: 'prov-a' } })
+    expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('deepseek-v4-flash')
+  })
+
   it('团队页可通过 RPC 创建团队', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
