@@ -117,9 +117,15 @@ DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配�
 
 ```text
 /weave provider add {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}
+/weave provider add [{"name":"agent-a","command":"node","args":["a.js"]},{"name":"agent-b","command":"node","args":["b.js"]}]
+/weave provider add {"providers":[{"name":"agent-a","command":"node","args":["a.js"]},{"name":"agent-b","command":"node","args":["b.js"]}]}
 /weave provider list
 /weave provider remove myagent
 ```
+
+`provider add` 接受单个 JSON 对象、JSON 数组，或 `{providers|servers|mcpServers:[...]}` 形式的 ACP 协议配置；
+每条配置的 `transport` 缺省为 `stdio`、`protocol` 缺省为 `acp`；`env` 兼容 `{K:V}` 与 `[{name,value}]`。
+斜杠命令分词器会原样保留 JSON 对象/数组，因此可以直接粘贴含空格的 JSON。
 
 配置持久化到 `~/.dsh/weave/providers.json`，热注册后执行器列表立即可见。
 

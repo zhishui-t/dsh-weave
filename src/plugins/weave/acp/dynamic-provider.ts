@@ -6,7 +6,7 @@ import {
   ZcodeAcpExecutorProvider,
   type AcpSessionProviderConfig,
 } from './acp-session-provider.js'
-import { ProviderStore, parseProviderInput, type StoredProviderConfig } from './provider-store.js'
+import { ProviderStore, parseProviderInputs, type StoredProviderConfig } from './provider-store.js'
 import type { ExecutorCapabilities } from '../executors/executor-provider.js'
 
 /**
@@ -184,18 +184,22 @@ export function createWeaveProviderCommandDefinitions(
   const add: WeaveProviderCommandDefinition = {
     name: 'provider',
     description:
-      '注册新 ACP 执行器 provider。字段：name、transport=stdio、command、args(逗号分隔)、cwd、env(A=1,B=2)、protocol=acp、declaredExtensions(逗号分隔)；JSON 或紧凑 key=value 均可，JSON 优先。',
+      '注册一个或多个 ACP 执行器 provider。JSON 支持单对象、数组、或 {providers|servers|mcpServers:[...]}；也支持紧凑 key=value。字段：name、transport=stdio、command、args(逗号分隔)、cwd、env(A=1,B=2或[{name,value}])、protocol=acp、declaredExtensions(逗号分隔)。',
     input: {
-      hint: 'provider add {"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}',
+      hint: 'provider add [{"name":"myagent","transport":"stdio","command":"node","args":["agent.js"],"protocol":"acp","declaredExtensions":["zcode"]}]',
     },
     async handler(rawInput) {
       try {
-        const cfg = parseProviderInput(rawInput.trim())
-        store.add(cfg)
-        const warn = await options.hotRegister?.(cfg) ?? hotRegister(cfg)
-        const exts = cfg.declaredExtensions && cfg.declaredExtensions.length > 0 ? cfg.declaredExtensions.join(',') : '无'
-        const lines = [`已注册执行器 ${cfg.name}（executor id=${cfg.name}，声明扩展=${exts}）`, `配置已写入 ${store.file}`]
-        lines.push(warn ? `提示：${warn}` : '已在本会话生效，执行器列表立即可见。')
+        const cfgs = parseProviderInputs(rawInput.trim())
+        const lines: string[] = []
+        for (const cfg of cfgs) {
+          store.add(cfg)
+          const warn = await options.hotRegister?.(cfg) ?? hotRegister(cfg)
+          const exts = cfg.declaredExtensions && cfg.declaredExtensions.length > 0 ? cfg.declaredExtensions.join(',') : '无'
+          lines.push(`已注册执行器 ${cfg.name}（executor id=${cfg.name}，声明扩展=${exts}）`)
+          lines.push(warn ? `提示：${warn}` : `  ${cfg.name} 已在本会话生效。`)
+        }
+        lines.push(`配置已写入 ${store.file}`)
         return { kind: 'success', text: lines.join('\n') }
       } catch (error) {
         return invalidText(error)

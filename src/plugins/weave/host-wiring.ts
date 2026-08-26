@@ -328,8 +328,40 @@ export interface WeaveHostOptionsCommand extends WeaveHostOptions {
   registerCommand?: boolean
 }
 
+/** 扫描从 start 开始的 JSON 对象/数组，返回包含空格与引号的完整 JSON 文本。 */
+function scanJsonToken(input: string, start: number): string {
+  const open = input[start]!
+  const close = open === '{' ? '}' : ']'
+  let depth = 1
+  let inString = false
+  let escaped = false
+  let i = start + 1
+  while (i < input.length) {
+    const ch = input[i]!
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+    } else {
+      if (ch === '"') inString = true
+      else if (ch === open) depth += 1
+      else if (ch === close) {
+        depth -= 1
+        if (depth === 0) {
+          i += 1
+          break
+        }
+      }
+    }
+    i += 1
+  }
+  return input.slice(start, i)
+}
+
 /**
  * shell-like 分词：空格分隔 + 双引号包裹（引号内空格保留原文）。
+ * 额外支持把完整的 JSON 对象/数组（含内部空格和引号）作为单个参数保留，
+ * 因此 `/weave provider add {"name":"my agent",...}` 可直接粘贴。
  * 例：`task status --dag "dag-proj x"` → ['task','status','--dag','dag-proj x']。
  */
 export function tokenizeCommandLine(input: string): string[] {
@@ -337,11 +369,22 @@ export function tokenizeCommandLine(input: string): string[] {
   let current = ''
   let inQuotes = false
   let hasToken = false
-  for (const ch of input) {
+  let i = 0
+  while (i < input.length) {
+    const ch = input[i]!
     if (ch === '"') {
       inQuotes = !inQuotes
       hasToken = true
+      i += 1
       continue
+    }
+    if (!inQuotes && (ch === '{' || ch === '[') && !hasToken) {
+      const jsonToken = scanJsonToken(input, i)
+      if (jsonToken.length > 0) {
+        tokens.push(jsonToken)
+        i += jsonToken.length
+        continue
+      }
     }
     if (ch === ' ' && !inQuotes) {
       if (hasToken) {
@@ -349,10 +392,12 @@ export function tokenizeCommandLine(input: string): string[] {
         current = ''
         hasToken = false
       }
+      i += 1
       continue
     }
     current += ch
     hasToken = true
+    i += 1
   }
   if (hasToken) tokens.push(current)
   return tokens

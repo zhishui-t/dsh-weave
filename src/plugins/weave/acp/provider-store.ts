@@ -45,11 +45,13 @@ export function validateProviderConfig(input: unknown): StoredProviderConfig {
   if (typeof name !== 'string' || !PROVIDER_NAME_PATTERN.test(name)) {
     invalid(`name 必须匹配 ${PROVIDER_NAME_PATTERN.source}`, { name })
   }
-  if (raw['transport'] !== 'stdio') {
-    invalid("transport 目前仅支持 'stdio'", { transport: raw['transport'] })
+  const transport = raw['transport'] ?? 'stdio'
+  if (transport !== 'stdio') {
+    invalid("transport 目前仅支持 'stdio'", { transport })
   }
-  if (raw['protocol'] !== 'acp') {
-    invalid("protocol 目前仅支持 'acp'", { protocol: raw['protocol'] })
+  const protocol = raw['protocol'] ?? 'acp'
+  if (protocol !== 'acp') {
+    invalid("protocol 目前仅支持 'acp'", { protocol })
   }
   const command = raw['command']
   if (typeof command !== 'string' || command.trim() === '') {
@@ -74,16 +76,7 @@ export function validateProviderConfig(input: unknown): StoredProviderConfig {
 
   let env: Record<string, string> | undefined
   if (raw['env'] !== undefined) {
-    if (typeof raw['env'] !== 'object' || raw['env'] === null || Array.isArray(raw['env'])) {
-      invalid('env 必须为 string→string 对象', { env: raw['env'] })
-    }
-    env = {}
-    for (const [key, value] of Object.entries(raw['env'] as Record<string, unknown>)) {
-      if (typeof value !== 'string') {
-        invalid(`env.${key} 必须为字符串`, { value })
-      }
-      env[key] = value
-    }
+    env = normalizeEnv(raw['env'])
   }
 
   let declaredExtensions: string[] | undefined
@@ -108,6 +101,87 @@ export function validateProviderConfig(input: unknown): StoredProviderConfig {
   if (env !== undefined) config.env = env
   if (declaredExtensions !== undefined) config.declaredExtensions = declaredExtensions
   return config
+}
+
+/** 归一化 env：兼容 `{K:V}` 与 ACP 常见的 `[{name,value}]`。 */
+function normalizeEnv(value: unknown): Record<string, string> {
+  if (Array.isArray(value)) {
+    const env: Record<string, string> = {}
+    for (const item of value) {
+      if (typeof item !== 'object' || item === null) {
+        invalid('env 数组每项必须是 {name,value} 对象', { item })
+      }
+      const row = item as Record<string, unknown>
+      const name = row['name']
+      const envValue = row['value']
+      if (typeof name !== 'string' || name === '' || typeof envValue !== 'string') {
+        invalid('env 数组每项必须含非空 name 与字符串 value', { item })
+      }
+      env[name] = envValue
+    }
+    return env
+  }
+  if (typeof value !== 'object' || value === null) {
+    invalid('env 必须为 string→string 对象', { env: value })
+  }
+  const env: Record<string, string> = {}
+  for (const [key, envValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof envValue !== 'string') {
+      invalid(`env.${key} 必须为字符串`, { value: envValue })
+    }
+    env[key] = envValue
+  }
+  return env
+}
+
+/** 解析多 provider 输入：单对象、JSON 数组、或 `{providers|servers|mcpServers:[]}`。 */
+export function parseProviderInputs(raw: string | unknown): StoredProviderConfig[] {
+  if (typeof raw !== 'string') {
+    return normalizeProviderCandidates(raw)
+  }
+  const trimmed = raw.trim()
+  if (trimmed === '') invalid('provider 配置不能为空')
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch (error) {
+      invalid(`JSON 解析失败: ${String(error)}`)
+    }
+    return normalizeProviderCandidates(parsed)
+  }
+  return [parseProviderInput(trimmed)]
+}
+
+/** 把顶层候选归一化为若干条 provider 配置。 */
+function normalizeProviderCandidates(input: unknown): StoredProviderConfig[] {
+  if (Array.isArray(input)) {
+    if (input.length === 0) invalid('provider 配置数组不能为空')
+    return input.map((item) => parseProviderInput(item as never))
+  }
+  if (typeof input !== 'object' || input === null) {
+    invalid('provider 配置必须是 JSON 对象或数组')
+  }
+  const record = input as Record<string, unknown>
+  const listKey = (['providers', 'servers', 'mcpServers'] as const).find((key) => Array.isArray(record[key]))
+  if (listKey) {
+    const list = record[listKey] as unknown[]
+    if (list.length === 0) invalid(`${listKey} 不能为空`)
+    return list.map((item) => {
+      if (typeof item === 'string') return parseProviderInput(item)
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        invalid(`${listKey} 每一项必须是对象`)
+      }
+      const entry = { ...(item as Record<string, unknown>) }
+      if (entry.transport === undefined) entry.transport = 'stdio'
+      if (entry.protocol === undefined) entry.protocol = 'acp'
+      if ((entry.name === undefined || entry.name === '') && typeof entry.id === 'string' && entry.id !== '') {
+        entry.name = entry.id
+      }
+      return parseProviderInput(entry as Record<string, unknown>)
+    })
+  }
+  return [parseProviderInput(record)]
 }
 
 /**
