@@ -123,7 +123,7 @@ DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配�
 /weave provider remove myagent
 ```
 
-`provider add` 接受单个 JSON 对象、JSON 数组，或 `{providers|servers|mcpServers:[...]}` 形式的 ACP 协议配置；
+`provider add` 接受单个 JSON 对象、JSON 数组，或 `{providers|servers|mcpServers:[...]}` / 名字到配置的对象表 形式的 ACP 协议配置；
 每条配置的 `transport` 缺省为 `stdio`、`protocol` 缺省为 `acp`；`env` 兼容 `{K:V}` 与 `[{name,value}]`。
 斜杠命令分词器会原样保留 JSON 对象/数组，因此可以直接粘贴含空格的 JSON。
 

@@ -163,9 +163,25 @@ function normalizeProviderCandidates(input: unknown): StoredProviderConfig[] {
     invalid('provider 配置必须是 JSON 对象或数组')
   }
   const record = input as Record<string, unknown>
-  const listKey = (['providers', 'servers', 'mcpServers'] as const).find((key) => Array.isArray(record[key]))
+  const listKey = (['providers', 'servers', 'mcpServers'] as const).find((key) => {
+    const value = record[key]
+    return Array.isArray(value) || (typeof value === 'object' && value !== null)
+  })
   if (listKey) {
-    const list = record[listKey] as unknown[]
+    const container = record[listKey]
+    let list: unknown[]
+    if (Array.isArray(container)) {
+      list = container
+    } else if (typeof container === 'object' && container !== null) {
+      list = Object.entries(container as Record<string, unknown>).map(([name, item]) => {
+        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+          return { name, ...(item as Record<string, unknown>) }
+        }
+        return item
+      })
+    } else {
+      invalid(`${listKey} 必须是数组或对象`)
+    }
     if (list.length === 0) invalid(`${listKey} 不能为空`)
     return list.map((item) => {
       if (typeof item === 'string') return parseProviderInput(item)

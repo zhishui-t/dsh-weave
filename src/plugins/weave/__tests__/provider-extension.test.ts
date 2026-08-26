@@ -310,6 +310,10 @@ describe('providers.json 存储与入参解析', () => {
     const idFallback = parseProviderInputs('{"servers":[{"id":"fallback-agent","command":"npx","args":["agent.js"]}]}')
     expect(idFallback[0]?.name).toBe('fallback-agent')
 
+    const objectMap = parseProviderInputs({ servers: { 'map-agent': { command: 'node', args: ['m.js'] } } })
+    expect(objectMap[0]?.name).toBe('map-agent')
+    expect(objectMap[0]?.args).toEqual(['m.js'])
+
     expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
     expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
   })
