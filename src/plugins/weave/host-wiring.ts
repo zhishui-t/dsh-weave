@@ -410,18 +410,27 @@ export function registerWeaveCommand(
  * DagRepository、KnowledgeStore(~/.dsh/knowledge)+Review、AuditLog(~/.dsh/audit)、CircuitBreaker。
  * 注意：会创建/打开磁盘文件（非 :memory:）；测试请用显式 deps（见 __tests__/cli-mcp.test.ts newEnv）。
  */
-export function createDefaultCliDeps(ctx: Context): CliMcpDeps {
-  const persistence = openPersistence()
+export interface DefaultCliDepsOptions {
+  stateDir?: string
+  teamsDir?: string
+  auditDir?: string
+  knowledgeDir?: string
+}
+
+export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOptions = {}): CliMcpDeps {
+  const persistence = openPersistence({ ...(options.stateDir ? { stateDir: options.stateDir } : {}) })
   const registry = new ExecutorRegistry()
   registry.load(ctx as never) // 真实宿主 ctx.subagents 存在；缺失时 registry 为空（团队校验由 TeamManager 拦截）
   const tracker = new SessionTracker(persistence.feedback)
   const router = new FeedbackRouter({ tasks: persistence.tasks, feedback: persistence.feedback, sessionTracker: tracker })
-  const knowledgeRoot = join(homedir(), '.dsh', 'knowledge')
+  const teamsDir = options.teamsDir ?? join(homedir(), '.dsh', 'teams')
+  const knowledgeRoot = options.knowledgeDir ?? join(homedir(), '.dsh', 'knowledge')
+  const auditDir = options.auditDir ?? DEFAULT_AUDIT_DIR
   const kstore = new KnowledgeStore({ rootDir: knowledgeRoot, metaDb: persistence.knowledgeMeta })
-  const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: DEFAULT_AUDIT_DIR }) })
+  const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: auditDir }) })
   return {
     persistence,
-    teamManager: new TeamManager(registry, { persistence }),
+    teamManager: new TeamManager(registry, { teamsDir, persistence }),
     executorRegistry: registry,
     feedbackRouter: router,
     dagRepository: new DagRepository(persistence),

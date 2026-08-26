@@ -11,12 +11,14 @@ import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import type { WeaveQueryService } from './web/query-service.js'
 import { WeaveError } from './state/weave-error.js'
 import { DEFAULT_PROVIDERS_FILE, type StoredProviderConfig } from './acp/provider-store.js'
+import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides, saveWeaveSettingsOverrides } from './settings-store.js'
 import type { TeamConfig } from './team-manager.js'
 
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
 export const WEAVE_RPC_CHANNEL = '/dsh-weave'
 
 export const DEFAULT_OBSIDIAN_DIR = join(homedir(), '.dsh', 'obsidian')
+export const DEFAULT_KNOWLEDGE_DIR = join(homedir(), '.dsh', 'knowledge')
 
 type RpcSuccess<T> = { ok: true; value: T }
 type RpcFailure = {
@@ -86,6 +88,9 @@ export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
  */
 export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> &
   Partial<Pick<CliMcpDeps, 'persistence'>> & {
+    /** settings.json 目录覆盖文件路径；settings/describe 与 settings/update 用。 */
+    settingsFile?: string
+
     /**
      * t4：任务/知识/审计/会话四域查询服务。
      * 可传实例或惰性工厂（部署侧延迟组装）；未注入时相应端点返回 configuration_error。
@@ -108,6 +113,10 @@ export interface WeaveRpcSettings {
   providersFile?: string
   /** Obsidian Vault 路径；缺省 ~/.dsh/obsidian。 */
   obsidianDir?: string
+  /** state 目录；缺省 DEFAULT_STATE_DIR。 */
+  stateDir?: string
+  /** 知识仓库根目录；缺省 ~/.dsh/knowledge。 */
+  knowledgeDir?: string
 }
 
 /* ------------------------------ 序列化：完整团队与角色信息 ------------------------------ */
@@ -295,6 +304,8 @@ export function createWeaveRpcHandler(
 
       if (endpoint === 'settings/describe') {
         objectPayload(payload)
+        const settingsFile = resolvedDeps.settingsFile ?? DEFAULT_WEAVE_SETTINGS_FILE
+        const overrides = loadWeaveSettingsOverrides(settingsFile)
         let registeredZcode = false
         try {
           registeredZcode = resolvedDeps.executorRegistry.get('zcode') !== undefined
@@ -304,10 +315,13 @@ export function createWeaveRpcHandler(
         return success({
           version: settings.version ?? null,
           node_version: process.version,
-          state_dir: resolvedDeps.persistence?.stateDir ?? DEFAULT_STATE_DIR,
+          state_dir: settings.stateDir ?? resolvedDeps.persistence?.stateDir ?? DEFAULT_STATE_DIR,
           teams_dir: resolvedDeps.teamManager.teamsDir,
           audit_dir: settings.auditDir ?? DEFAULT_AUDIT_DIR,
           obsidian_dir: settings.obsidianDir ?? DEFAULT_OBSIDIAN_DIR,
+          knowledge_dir: settings.knowledgeDir ?? DEFAULT_KNOWLEDGE_DIR,
+          settings_file: settingsFile,
+          overrides,
           zcode: {
             // 发现状态：部署侧是否装配了 ZCode 能力目录源。
             configured: typeof zcodeCatalog === 'function',
@@ -318,6 +332,13 @@ export function createWeaveRpcHandler(
             ? { providers_file: settings.providersFile ?? DEFAULT_PROVIDERS_FILE }
             : {}),
         })
+      }
+
+      if (endpoint === 'settings/update') {
+        const body = objectPayload(payload)
+        const settingsFile = resolvedDeps.settingsFile ?? DEFAULT_WEAVE_SETTINGS_FILE
+        const saved = saveWeaveSettingsOverrides(settingsFile, body)
+        return success({ saved, settings_file: settingsFile, requires_reload: true })
       }
 
       // t8：动态 ACP provider 清单（真实 providers.json + 注册表生效状态）。

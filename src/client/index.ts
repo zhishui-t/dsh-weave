@@ -2080,8 +2080,42 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ============================== 设置 ============================== */
 
+  const SETTINGS_DIR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
+    { key: 'state_dir', label: '状态目录', placeholder: '默认 ~/.dsh/state' },
+    { key: 'teams_dir', label: '团队目录', placeholder: '默认 ~/.dsh/teams' },
+    { key: 'audit_dir', label: '审计目录', placeholder: '默认 ~/.dsh/audit' },
+    { key: 'knowledge_dir', label: '知识库目录', placeholder: '默认 ~/.dsh/knowledge' },
+    { key: 'obsidian_dir', label: 'Obsidian Vault', placeholder: '默认 ~/.dsh/obsidian' },
+    { key: 'providers_file', label: 'Provider 配置来源', placeholder: '默认 ~/.dsh/weave/providers.json' },
+  ]
   function SettingsPage() {
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
+    const [draft, setDraft] = useState({} as Record<string, string>)
+    const [saveNote, setSaveNote] = useState('')
+    const [busy, setBusy] = useState(false)
+    useEffect(() => {
+      if (!info.data) return
+      setDraft((current: Record<string, string>) => {
+        const next: Record<string, string> = { ...current }
+        for (const field of SETTINGS_DIR_FIELDS) if (next[field.key] === undefined) next[field.key] = ''
+        return next
+      })
+    }, [info.data])
+    const savePaths = async (reset: boolean) => {
+      setBusy(true)
+      setSaveNote('')
+      try {
+        const payload: Record<string, string> = {}
+        for (const field of SETTINGS_DIR_FIELDS) payload[field.key] = reset ? '' : String(draft[field.key] ?? '')
+        await rpc('settings/update', payload)
+        setSaveNote('已保存到 ' + String(info.data?.settings_file ?? 'settings.json') + '；重启/重新加载插件后生效。')
+        void info.refresh()
+      } catch (cause) {
+        setSaveNote('保存失败：' + errText(cause))
+      } finally {
+        setBusy(false)
+      }
+    }
     // t8：provider 配置来源与注册摘要（provider/list 不可用时静默降级为一行说明）。
     const providers = useResource<{ providers?: ProviderRow[] }>(
       () => rpc('provider/list') as Promise<{ providers?: ProviderRow[] }>,
@@ -2132,7 +2166,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       'section',
       { className: 'weave-page', 'data-testid': 'page-settings' },
       React.createElement('h1', null, '设置'),
-      Note({ text: info.loading ? '正在加载...' : info.error || '以下均为只读的真实本机配置。' }),
+      Note({ text: info.loading ? '正在加载...' : info.error || saveNote || '目录可在下方修改并持久化；保存后下次加载生效。' }),
       info.error ? Note({ text: info.error, kind: 'error' }) : null,
       React.createElement(
         'div',
@@ -2148,6 +2182,39 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           row('Provider 配置来源', String(data.providers_file ?? '—')),
           row('ZCode 发现', data.zcode?.configured ? '已配置' : '未配置'),
           row('ZCode 注册', data.zcode?.registered ? '已注册' : '未注册'),
+        ),
+        React.createElement(
+          'div',
+          { className: 'weave-settings-grid', style: { marginTop: 14, display: 'grid', gap: 10 } },
+          ...SETTINGS_DIR_FIELDS.map((field) =>
+            React.createElement(
+              'label',
+              { className: 'weave-field', key: field.key },
+              React.createElement('span', null, field.label),
+              React.createElement('input', {
+                className: 'weave-control',
+                value: String(draft[field.key] ?? ''),
+                placeholder: field.placeholder,
+                'data-testid': `settings-${field.key}`,
+                onChange: (event: { target: { value: string } }) =>
+                  setDraft((current: Record<string, string>) => ({ ...current, [field.key]: event.target.value })),
+              }),
+            ),
+          ),
+          React.createElement(
+            'div',
+            { className: 'weave-actions' },
+            React.createElement(
+              'button',
+              { className: 'weave-button', type: 'button', disabled: busy, 'data-testid': 'settings-save', onClick: () => void savePaths(false) },
+              busy ? '保存中...' : '保存目录设置',
+            ),
+            React.createElement(
+              'button',
+              { className: 'weave-button weave-button-secondary', type: 'button', disabled: busy, 'data-testid': 'settings-reset', onClick: () => void savePaths(true) },
+              '恢复默认',
+            ),
+          ),
         ),
         React.createElement(
           'button',

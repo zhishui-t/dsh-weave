@@ -1,7 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
-import { ProviderStore } from './acp/provider-store.js'
+import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
 import { KnowledgeEngine } from './knowledge-engine.js'
@@ -16,6 +16,10 @@ import {
 } from './session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
+import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
+import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
+import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
+import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './rpc.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
@@ -70,10 +74,18 @@ export function apply(ctx: Context): void {
     const runtime = scoped as Context
 
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
+    const weaveSettingsFile = DEFAULT_WEAVE_SETTINGS_FILE
+    const settingsOverrides = loadWeaveSettingsOverrides(weaveSettingsFile)
+    const effectiveProvidersFile = settingsOverrides.providers_file ?? DEFAULT_PROVIDERS_FILE
+    const effectiveStateDir = settingsOverrides.state_dir ?? DEFAULT_STATE_DIR
+    const effectiveAuditDir = settingsOverrides.audit_dir ?? DEFAULT_AUDIT_DIR
+    const effectiveObsidianDir = settingsOverrides.obsidian_dir ?? DEFAULT_OBSIDIAN_DIR
+    const effectiveKnowledgeDir = settingsOverrides.knowledge_dir ?? DEFAULT_KNOWLEDGE_DIR
     try {
       service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
       // 启动即加载用户通过 /weave provider add 持久化的外部 harness。
       const storedProviders = registerStoredAcpProviders({
+        providersFile: effectiveProvidersFile,
         ...acpRegistryContextFrom(runtime),
         registry: service.executorProviders,
       })
@@ -90,12 +102,19 @@ export function apply(ctx: Context): void {
     }
 
     try {
-      const deps = createDefaultCliDeps(runtime)
+      const deps = createDefaultCliDeps(runtime, {
+        ...(settingsOverrides.state_dir ? { stateDir: settingsOverrides.state_dir } : {}),
+        ...(settingsOverrides.teams_dir ? { teamsDir: settingsOverrides.teams_dir } : {}),
+        ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
+        ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
+      })
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
       const refreshExecutorSnapshot = () => deps.executorRegistry.load(runtime)
       const providerCommands = createWeaveProviderCommandDefinitions({
+        providersFile: effectiveProvidersFile,
         hotRegister: (config) => {
           const result = registerStoredAcpProviders({
+            providersFile: effectiveProvidersFile,
             ...acpRegistryContextFrom(runtime),
             registry: service.executorProviders,
             names: [config.name],
@@ -114,10 +133,10 @@ export function apply(ctx: Context): void {
           refreshExecutorSnapshot()
         },
       })
-      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore() }, async () => {
+      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile }, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
-      }, { version: WEAVE_VERSION })
+      }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })
       const bundle = registerWeaveHost(runtime, deps, {
         providerCommand: async (args) => {
           if (args[0] === 'add') {
