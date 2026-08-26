@@ -68,7 +68,7 @@ export function apply(ctx: Context): void {
       registerWeaveRpc(runtime, deps, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
-      })
+      }, { version: WEAVE_VERSION })
       const bundle = registerWeaveHost(runtime, deps)
       runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
     } catch (error) {

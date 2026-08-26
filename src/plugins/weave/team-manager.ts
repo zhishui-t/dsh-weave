@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
@@ -106,6 +106,9 @@ export interface TeamManagerOptions {
 }
 
 export const DEFAULT_TEAMS_DIR = join(homedir(), '.dsh', 'teams')
+
+/** team_id 白名单形态（import/delete 共用）：禁路径分隔符，杜绝穿越。 */
+export const TEAM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -362,7 +365,7 @@ export class TeamManager {
    */
   importTeam(raw: string, options: { overwrite?: boolean } = {}): TeamConfig {
     const team = this.validateTeam(this.parseTeam(raw, 'inline'))
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(team.team_id)) {
+    if (!TEAM_ID_PATTERN.test(team.team_id)) {
       throw new WeaveError('invalid_team', `team_id 含非法字符: ${team.team_id}`, { teamId: team.team_id })
     }
 
@@ -437,5 +440,59 @@ export class TeamManager {
     const teams = this.listTeams()
     const fallback = teams.find((t) => t.default) ?? (teams.length === 1 ? teams[0] : undefined)
     return fallback ?? null
+  }
+
+  /* --------------------- Web RPC 支撑：删除 / 解绑 / 绑定清单 --------------------- */
+
+  /**
+   * 删除团队 YAML（Web team/delete）。双保险防路径穿越：
+   * 1) team_id 白名单正则（禁路径分隔符与首字符点）；2) 解析路径必须仍在 teamsDir 内。
+   * 该团队遗留会话绑定一并清理（绑定库异常不阻断文件删除）。
+   */
+  async deleteTeam(teamId: string): Promise<{ team_id: string; path: string }> {
+    if (typeof teamId !== 'string' || !TEAM_ID_PATTERN.test(teamId)) {
+      throw new WeaveError('invalid_argument', `team_id 含非法字符: ${String(teamId)}`, { teamId })
+    }
+    const resolvedDir = resolve(this.teamsDir)
+    const resolvedFile = resolve(this.teamFile(teamId))
+    if (!resolvedFile.startsWith(resolvedDir + sep)) {
+      throw new WeaveError('invalid_argument', `拒绝路径穿越: ${teamId}`, { teamId })
+    }
+    if (!existsSync(resolvedFile)) {
+      throw new WeaveError('invalid_team', `未找到团队配置: ${resolvedFile}`, { teamId })
+    }
+    try {
+      unlinkSync(resolvedFile)
+    } catch (error) {
+      throw new WeaveError('configuration_error', `团队配置删除失败: ${resolvedFile}`, {
+        teamId,
+        cause: String(error),
+      })
+    }
+    if (this.persistence) {
+      try {
+        await this.persistence.core.run((db) => db.prepare('DELETE FROM team_bindings WHERE team_id = ?').run(teamId))
+      } catch {
+        // 绑定清理失败不阻断删除；selectTeam 对悬空绑定本就按 invalid_team 拒绝。
+      }
+    }
+    return { team_id: teamId, path: resolvedFile }
+  }
+
+  /** 解除会话绑定（Web team/unbind）；返回是否确实存在绑定。 */
+  async unbindTeam(sessionId: string): Promise<boolean> {
+    await this.#ensureBindings()
+    const result = (await this.persistence!.core.run((db) =>
+      db.prepare('DELETE FROM team_bindings WHERE session_id = ?').run(sessionId),
+    )) as unknown as { changes?: number }
+    return (result?.changes ?? 0) > 0
+  }
+
+  /** 全部会话绑定（core.db.team_bindings，按 session_id 排序）。 */
+  async listBindings(): Promise<Array<{ session_id: string; team_id: string; updated_at: string }>> {
+    await this.#ensureBindings()
+    return (await this.persistence!.core.run((db) =>
+      db.prepare('SELECT session_id, team_id, updated_at FROM team_bindings ORDER BY session_id').all(),
+    )) as Array<{ session_id: string; team_id: string; updated_at: string }>
   }
 }

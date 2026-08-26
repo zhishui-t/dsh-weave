@@ -16,7 +16,7 @@ import {
 /* ------------------------------- 夹具（与 doc 样例同构） ------------------------------- */
 
 const GOOD_TEAM = `schema_version: "1"
-team_id: alpha-squad
+team_id: alpha-team
 name: 阿尔法团队
 default: true
 
@@ -136,7 +136,7 @@ function expectCode(fn: () => unknown, code: string): WeaveError {
 describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () => {
   it('合法配置（GOOD_TEAM）解析并校验通过', () => {
     const team = manager(['codex', 'zcode']).parseTeam(GOOD_TEAM, 'fixture')
-    expect(team.team_id).toBe('alpha-squad')
+    expect(team.team_id).toBe('alpha-team')
     expect(team.roles).toHaveLength(3)
     expect(team.task_decomposition.default_difficulty).toBe('hard')
     expect(team.roles[0]?.stages).toEqual(['prepare', 'design'])
@@ -219,8 +219,9 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
 
 describe('TeamManager loadTeam/listTeams', () => {
   it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', () => {
-    writeTeam('alpha-squad', readFileSync(EXAMPLES_TEAM_YAML, 'utf8'))
-    const team = manager(['codex', 'zcode']).loadTeam('alpha-squad')
+    // 样例文件的 team_id(alpha-squad) 与本夹具文件名对齐后再加载，保持对样例结构的真实覆盖
+    writeTeam('alpha-team', readFileSync(EXAMPLES_TEAM_YAML, 'utf8').replace('team_id: alpha-squad', 'team_id: alpha-team'))
+    const team = manager(['codex', 'zcode']).loadTeam('alpha-team')
     expect(team.roles.map((r: TeamConfig['roles'][number]) => r.id)).toEqual(['designer', 'coder', 'reviewer'])
   })
 
@@ -229,14 +230,14 @@ describe('TeamManager loadTeam/listTeams', () => {
   })
 
   it('文件 team_id 与文件名不一致 → invalid_team', () => {
-    writeTeam('alpha-squad', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: other-squad'))
-    expectCode(() => manager(['codex', 'zcode']).loadTeam('alpha-squad'), 'invalid_team')
+    writeTeam('alpha-team', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: other-team'))
+    expectCode(() => manager(['codex', 'zcode']).loadTeam('alpha-team'), 'invalid_team')
   })
 
   it('listTeams 仅返回校验通过的团队（非法团队不进入调度）', () => {
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a'))
-    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-b').replace('executor: zcode', 'executor: ghost'))
-    writeTeam('team-c', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-c'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a'))
+    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b').replace('executor: zcode', 'executor: ghost'))
+    writeTeam('team-c', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-c'))
     const ids = manager(['codex', 'zcode']).listTeams().map((t) => t.team_id)
     expect(ids).toEqual(['team-a', 'team-c'])
   })
@@ -250,8 +251,8 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
   it('显式指定 > 会话绑定', async () => {
     const persistence = openPersistence()
     const mgr = manager(['codex', 'zcode'], persistence)
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a'))
-    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-b'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a'))
+    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b'))
     await mgr.bindTeam('s1', 'team-a')
     const chosen = await mgr.selectTeam('s1', 'team-b')
     expect(chosen?.team_id).toBe('team-b')
@@ -260,7 +261,7 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
   it('会话绑定生效且写入 core.db.team_bindings', async () => {
     const persistence = openPersistence()
     const mgr = manager(['codex', 'zcode'], persistence)
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a'))
     await mgr.bindTeam('s1', 'team-a')
     expect(await mgr.getBoundTeam('s1')).toBe('team-a')
     expect((await mgr.selectTeam('s1'))?.team_id).toBe('team-a')
@@ -270,8 +271,8 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
   it('重复绑定为 upsert（切换团队）', async () => {
     const persistence = openPersistence()
     const mgr = manager(['codex', 'zcode'], persistence)
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a'))
-    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-b'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a'))
+    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b'))
     await mgr.bindTeam('s1', 'team-a')
     await mgr.bindTeam('s1', 'team-b')
     expect(await mgr.getBoundTeam('s1')).toBe('team-b')
@@ -279,21 +280,21 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
 
   it('default 团队优先于普通团队', async () => {
     const mgr = manager(['codex', 'zcode'])
-    writeTeam('team-n', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-n').replace('default: true', 'default: false'))
-    writeTeam('team-d', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-d'))
+    writeTeam('team-n', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-n').replace('default: true', 'default: false'))
+    writeTeam('team-d', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-d'))
     expect((await mgr.selectTeam('s-x'))?.team_id).toBe('team-d')
   })
 
   it('仅一个团队时自动选择（无需 default）', async () => {
     const mgr = manager(['codex', 'zcode'])
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a').replace('default: true', 'default: false'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a').replace('default: true', 'default: false'))
     expect((await mgr.selectTeam('s-x'))?.team_id).toBe('team-a')
   })
 
   it('多团队且无绑定无默认 → 返回 null（提示选择）', async () => {
     const mgr = manager(['codex', 'zcode'])
-    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-a').replace('default: true', 'default: false'))
-    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: team-b').replace('default: true', 'default: false'))
+    writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a').replace('default: true', 'default: false'))
+    writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b').replace('default: true', 'default: false'))
     expect(await mgr.selectTeam('s-x')).toBeNull()
   })
 
@@ -310,14 +311,14 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
 describe('TeamManager importTeam（Web 创建团队）', () => {
   it('校验通过后写入 YAML，并可重新加载', () => {
     const mgr = manager(['codex', 'zcode'])
-    const team = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: imported'))
+    const team = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: imported'))
     expect(team.team_id).toBe('imported')
     expect(mgr.loadTeam('imported').team_id).toBe('imported')
   })
 
   it('已存在默认拒绝，overwrite=true 允许更新', () => {
     const mgr = manager(['codex', 'zcode'])
-    const yaml = GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: imported')
+    const yaml = GOOD_TEAM.replace('team_id: alpha-team', 'team_id: imported')
     mgr.importTeam(yaml)
     expectCode(() => mgr.importTeam(yaml), 'conflict')
     expect(mgr.importTeam(yaml, { overwrite: true }).team_id).toBe('imported')
@@ -325,11 +326,62 @@ describe('TeamManager importTeam（Web 创建团队）', () => {
 
   it('校验失败不落盘；路径非法直接拒绝', () => {
     const mgr = manager(['codex'])
-    expectCode(() => mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: bad')), 'executor_unavailable')
+    expectCode(() => mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: bad')), 'executor_unavailable')
     expect(existsSync(join(dir, 'bad.yaml'))).toBe(false)
     expectCode(
-      () => manager(['codex', 'zcode']).importTeam(GOOD_TEAM.replace('team_id: alpha-squad', 'team_id: ../bad')),
+      () => manager(['codex', 'zcode']).importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: ../bad')),
       'invalid_team',
     )
+  })
+})
+
+/* ------------------------------- Web RPC 支撑：deleteTeam / unbindTeam / listBindings ------------------------------- */
+
+describe('TeamManager deleteTeam / unbindTeam / listBindings（Web team/delete・unbind・bindings）', () => {
+  const openPersistence = (): WeavePersistence => new WeavePersistence({ inMemory: true })
+
+  it('deleteTeam 删除 YAML 并清理该团队遗留绑定', async () => {
+    const persistence = openPersistence()
+    const mgr = manager(['codex', 'zcode'], persistence)
+    mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: gone'))
+    await mgr.bindTeam('s9', 'gone')
+    expect(existsSync(join(dir, 'gone.yaml'))).toBe(true)
+
+    const result = await mgr.deleteTeam('gone')
+    expect(result.team_id).toBe('gone')
+    expect(existsSync(join(dir, 'gone.yaml'))).toBe(false)
+    // 指向已删团队的绑定被同步清理，不残留悬空行
+    expect(await mgr.listBindings()).toEqual([])
+  })
+
+  it('deleteTeam 团队不存在 → invalid_team；非法 team_id → invalid_argument', async () => {
+    const mgr = manager(['codex', 'zcode'])
+    await expect(mgr.deleteTeam('ghost')).rejects.toMatchObject({ code: 'invalid_team' })
+    for (const evil of ['../escape', '..' + String.fromCharCode(92) + 'escape', '.dot']) {
+      await expect(mgr.deleteTeam(evil)).rejects.toMatchObject({ code: 'invalid_argument' })
+    }
+    expect(existsSync(join(dir, 'escape.yaml'))).toBe(false)
+  })
+
+  it('listBindings 返回全部绑定并按 session_id 排序', async () => {
+    const persistence = openPersistence()
+    const mgr = manager(['codex', 'zcode'], persistence)
+    await mgr.bindTeam('s2', 'team-a')
+    await mgr.bindTeam('s1', 'team-b')
+    const bindings = await mgr.listBindings()
+    expect(bindings.map((b) => b.session_id)).toEqual(['s1', 's2'])
+    for (const binding of bindings) {
+      expect(typeof binding.team_id).toBe('string')
+      expect(typeof binding.updated_at).toBe('string')
+    }
+  })
+
+  it('unbindTeam 返回是否存在绑定；重复解绑返回 false', async () => {
+    const persistence = openPersistence()
+    const mgr = manager(['codex', 'zcode'], persistence)
+    await mgr.bindTeam('s1', 'team-a')
+    expect(await mgr.unbindTeam('s1')).toBe(true)
+    expect(await mgr.unbindTeam('s1')).toBe(false)
+    expect(await mgr.getBoundTeam('s1')).toBeNull()
   })
 })
