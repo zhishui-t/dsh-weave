@@ -2,6 +2,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
 import { registerWeaveRpc } from './rpc.js'
+import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
@@ -65,7 +66,7 @@ export function apply(ctx: Context): void {
     try {
       const deps = createDefaultCliDeps(runtime)
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
-      registerWeaveRpc(runtime, deps, async () => {
+      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps) }, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
       }, { version: WEAVE_VERSION })

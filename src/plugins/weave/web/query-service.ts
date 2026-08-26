@@ -1,9 +1,9 @@
-import { AUDIT_EVENT_TYPES, type AuditEventType, type AuditLog, type AuditQuery } from '../audit/audit-log.js'
-import type { SubmitTaskInput, WeaveMcp } from '../cli-mcp.js'
+import { AUDIT_EVENT_TYPES, DEFAULT_AUDIT_DIR, AuditLog, type AuditEventType, type AuditQuery } from '../audit/audit-log.js'
+import { WeaveMcp, type CliMcpDeps, type SubmitTaskInput } from '../cli-mcp.js'
 import { DagRepository } from '../dag/repository.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'
-import type { SessionTracker } from '../session-tracker.js'
+import { SessionTracker } from '../session-tracker.js'
 import { TASK_STATUSES, type TaskRecord } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import type { TeamManager } from '../team-manager.js'
@@ -426,4 +426,19 @@ export class WeaveQueryService {
         throw new WeaveError('invalid_argument', `未知 RPC endpoint: ${endpoint}`)
     }
   }
+}
+
+/**
+ * 生产接线工厂（t4）：从宿主已组装的 CliMcpDeps 派生 WeaveQueryService。
+ * mcp / 审计日志（目录与 KnowledgeReview 一致）/ 修订跟踪在此按需构造，
+ * 由 index.ts 注入 registerWeaveRpc 的 deps.queryService。
+ */
+export function createWeaveQueryServiceFromCliDeps(deps: CliMcpDeps): WeaveQueryService {
+  return new WeaveQueryService({
+    persistence: deps.persistence,
+    mcp: new WeaveMcp(deps),
+    auditLog: new AuditLog({ dir: DEFAULT_AUDIT_DIR }),
+    sessionTracker: new SessionTracker(deps.persistence.feedback),
+    teamManager: deps.teamManager,
+  })
 }

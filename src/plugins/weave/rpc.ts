@@ -5,6 +5,7 @@ import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import type { CliMcpDeps } from './cli-mcp.js'
 import type { ExecutorSessionConfig } from './executors/executor-provider.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
+import type { WeaveQueryService } from './web/query-service.js'
 import { WeaveError } from './state/weave-error.js'
 import type { TeamConfig } from './team-manager.js'
 
@@ -78,7 +79,13 @@ export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
  * persistence 可选——存在时 team/bind* 与 overview.bindings、settings.state_dir 才可用。
  */
 export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> &
-  Partial<Pick<CliMcpDeps, 'persistence'>>
+  Partial<Pick<CliMcpDeps, 'persistence'>> & {
+    /**
+     * t4：任务/知识/审计/会话四域查询服务。
+     * 可传实例或惰性工厂（部署侧延迟组装）；未注入时相应端点返回 configuration_error。
+     */
+    queryService?: WeaveQueryService | (() => WeaveQueryService | undefined)
+  }
 
 /** 部署侧注入的静态描述信息（settings/describe 用）。 */
 export interface WeaveRpcSettings {
@@ -253,6 +260,16 @@ export function createWeaveRpcHandler(
             registered: registeredZcode,
           },
         })
+      }
+
+      // 四域端点统一路由到 WeaveQueryService.dispatch（t4）；错误由外层 catch 映射为 RpcResult 信封。
+      if (['task/', 'knowledge/', 'audit/', 'session/'].some((prefix) => endpoint.startsWith(prefix))) {
+        const resolved = resolvedDeps.queryService
+        const queryService = typeof resolved === 'function' ? resolved() : resolved
+        if (!queryService) {
+          throw new WeaveError('configuration_error', 'queryService 未注入（四域查询端点不可用）')
+        }
+        return success(await queryService.dispatch(endpoint, payload))
       }
 
       throw new WeaveError('invalid_argument', `未知 RPC endpoint: ${endpoint}`)

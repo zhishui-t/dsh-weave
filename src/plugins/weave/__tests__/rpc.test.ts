@@ -6,6 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup } from '../team-manager'
 import { createWeaveRpcHandler, registerWeaveRpc, WEAVE_RPC_CHANNEL } from '../rpc'
+import { AuditLog } from '../audit/audit-log'
+import { WeaveMcp } from '../cli-mcp'
+import { DagRepository } from '../dag/repository'
+import { FeedbackRouter } from '../feedback-router'
+import { KnowledgeStore } from '../knowledge-model'
+import { KnowledgeReviewService } from '../knowledge-review'
+import { SessionTracker } from '../session-tracker'
+import { WeaveQueryService } from '../web/query-service'
 
 const lookup: ExecutorLookup = {
   get(id) {
@@ -309,5 +317,168 @@ describe('Weave Connection RPC：settings/describe 与协议约定', () => {
 
   it('无 inject 能力的宿主自动降级（返回 false，仅 MCP/CLI）', () => {
     expect(registerWeaveRpc({} as never, {} as never)).toBe(false)
+  })
+})
+
+describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () => {
+  interface QuadEnv {
+    call: ReturnType<typeof makeEnv>['call']
+    persistence: WeavePersistence
+    teamManager: TeamManager
+    auditLog: AuditLog
+    tracker: SessionTracker
+  }
+  const quadRoots: string[] = []
+  afterEach(() => {
+    for (const root of quadRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  function makeQuadEnv(withQueryService = true): QuadEnv {
+    const rootDir = mkdtempSync(join(tmpdir(), 'weave-rpc-quad-'))
+    quadRoots.push(rootDir)
+    const persistence = new WeavePersistence({ inMemory: true })
+    const teamManager = new TeamManager(lookup, { teamsDir: dir, persistence })
+    const auditLog = new AuditLog({ dir: join(rootDir, 'audit') })
+    const tracker = new SessionTracker(persistence.feedback)
+    const router = new FeedbackRouter({ tasks: persistence.tasks, feedback: persistence.feedback, sessionTracker: tracker })
+    const kstore = new KnowledgeStore({ rootDir: join(rootDir, 'knowledge'), metaDb: persistence.knowledgeMeta })
+    const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: auditLog })
+    const registryStub = { list: () => [EXECUTOR], get: (id: string) => (id === 'zcode' ? EXECUTOR : undefined) }
+    const mcp = new WeaveMcp({
+      persistence,
+      teamManager,
+      executorRegistry: registryStub as never,
+      feedbackRouter: router,
+      dagRepository: new DagRepository(persistence),
+      knowledgeReview: kreview,
+      knowledgeStore: kstore,
+    })
+    const queryService = new WeaveQueryService({ persistence, mcp, auditLog, sessionTracker: tracker, teamManager })
+    const call = createWeaveRpcHandler({
+      teamManager,
+      executorRegistry: registryStub,
+      persistence,
+      ...(withQueryService ? { queryService } : {}),
+    } as never)
+    return { call, persistence, teamManager, auditLog, tracker }
+  }
+
+  async function seedTask(env: QuadEnv, updatedAt: string): Promise<string> {
+    const id = `seed-${Math.random().toString(36).slice(2, 10)}`
+    await env.persistence.tasks.run((db) => {
+      db.prepare(
+        "INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage, dependencies, status, created_at, updated_at) VALUES (?, '', 's', 'rpc-team', 'proj', 'v1', '种子任务', '', '[]', 'WAITING', '2024-01-01T00:00:00.000Z', ?)",
+      ).run(id, updatedAt)
+    })
+    return id
+  }
+
+  const errCodeOf = async (call: QuadEnv['call'], endpoint: string, payload: unknown): Promise<string> => {
+    const result = (await call(endpoint, payload)) as { ok: boolean; error?: { code: string } }
+    return result.ok === false ? result.error!.code : 'unexpected-ok'
+  }
+
+  it('task/list：信封返回 total 与 updated_at 降序；分页生效', async () => {
+    const env = makeQuadEnv()
+    await seedTask(env, '2024-01-01T00:00:00.000Z')
+    await seedTask(env, '2024-01-02T00:00:00.000Z')
+    const all = (await env.call('task/list', {})) as { ok: true; value: { total: number; tasks: Array<{ updated_at: string }> } }
+    expect(all.value.total).toBe(2)
+    expect(all.value.tasks[0]!.updated_at).toBe('2024-01-02T00:00:00.000Z')
+    const page = (await env.call('task/list', { page: 2, pageSize: 1 })) as { ok: true; value: { total: number; tasks: unknown[] } }
+    expect(page.value.total).toBe(2)
+    expect(page.value.tasks).toHaveLength(1)
+  })
+
+  it('task/create → task/get 全链路；缺参与未知 id 报业务码', async () => {
+    const env = makeQuadEnv()
+    await importTeam(env.call, 'rpc-team')
+    const created = (await env.call('task/create', {
+      description: '信封联调任务',
+      project_id: 'proj-e2e',
+      version: 'v1',
+      team_id: 'rpc-team',
+    })) as { ok: true; value: { dag_id: string; status: string } }
+    expect(created.value.status).toBe('submitted')
+    const got = (await env.call('task/get', { dagId: created.value.dag_id })) as { ok: true; value: { tasks: unknown[] } }
+    expect(got.value.tasks).toHaveLength(1)
+    expect(await errCodeOf(env.call, 'task/create', { description: '', project_id: 'p', version: 'v' })).toBe('invalid_argument')
+    expect(await errCodeOf(env.call, 'task/get', { taskId: 'nope' })).toBe('task_not_found')
+  })
+
+  it('task/action：未知动作 invalid_argument；CANCELLED retry 经信封回 WAITING', async () => {
+    const env = makeQuadEnv()
+    await importTeam(env.call, 'rpc-team')
+    const created = (await env.call('task/create', { description: '动作联调', project_id: 'proj-a', version: 'v1', team_id: 'rpc-team' })) as {
+      ok: true
+      value: { tasks: Array<{ id: string }> }
+    }
+    const taskId = created.value.tasks[0]!.id
+    expect(await errCodeOf(env.call, 'task/action', { action: 'explode', taskId })).toBe('invalid_argument')
+    await env.persistence.tasks.run((db) => {
+      db.prepare("UPDATE tasks SET status = 'CANCELLED', updated_at = '2024-01-03T00:00:00.000Z' WHERE id = ?").run(taskId)
+    })
+    const retried = (await env.call('task/action', { action: 'retry', taskId })) as { ok: true; value: { status: string } }
+    expect(retried.value.status).toBe('WAITING')
+  })
+
+  it('knowledge/list 空队列；approve/reject 未知 id knowledge_not_found', async () => {
+    const env = makeQuadEnv()
+    const empty = (await env.call('knowledge/list', {})) as { ok: true; value: { candidates: unknown[] } }
+    expect(empty.value.candidates).toEqual([])
+    expect(await errCodeOf(env.call, 'knowledge/approve', { id: 'ghost' })).toBe('knowledge_not_found')
+    expect(await errCodeOf(env.call, 'knowledge/reject', { id: 'ghost' })).toBe('knowledge_not_found')
+  })
+
+  it('audit/list：真实事件过信封；坏类型与坏时间 invalid_argument', async () => {
+    const env = makeQuadEnv()
+    await env.auditLog.record({
+      type: 'task.status_changed',
+      task_id: 't1',
+      from: 'WAITING',
+      to: 'RUNNING',
+      by: 'tester',
+      occurred_at: '2024-05-01T00:00:00.000Z',
+    })
+    const listed = (await env.call('audit/list', {})) as { ok: true; value: { events: Array<{ type: string }> } }
+    expect(listed.value.events.map((e) => e.type)).toEqual(['task.status_changed'])
+    expect(await errCodeOf(env.call, 'audit/list', { types: ['not.a.type'] })).toBe('invalid_argument')
+    expect(await errCodeOf(env.call, 'audit/list', { from: 'yesterday-ish' })).toBe('invalid_argument')
+  })
+
+  it('session/bindings → set-binding → clear-binding 全链路；ghost 团队 invalid_team', async () => {
+    const env = makeQuadEnv()
+    await importTeam(env.call, 'rpc-team')
+    const empty = (await env.call('session/bindings', {})) as { ok: true; value: { bindings: unknown[] } }
+    expect(empty.value.bindings).toEqual([])
+    const bound = (await env.call('session/set-binding', { sessionId: 's9', teamId: 'rpc-team' })) as { ok: true; value: { session_id: string } }
+    expect(bound.value.session_id).toBe('s9')
+    const listed = (await env.call('session/bindings', {})) as { ok: true; value: { bindings: Array<{ team_id: string }> } }
+    expect(listed.value.bindings.map((b) => b.team_id)).toEqual(['rpc-team'])
+    expect(await errCodeOf(env.call, 'session/set-binding', { sessionId: 'sx', teamId: 'ghost-team' })).toBe('invalid_team')
+    const cleared = (await env.call('session/clear-binding', { sessionId: 's9' })) as { ok: true; value: { unbound: boolean } }
+    expect(cleared.value.unbound).toBe(true)
+  })
+
+  it('session/revisions：修订记录经信封返回；limit≤0 invalid_argument', async () => {
+    const env = makeQuadEnv()
+    await env.tracker.recordRevision('task-x', '第一轮意见', null)
+    const revs = (await env.call('session/revisions', {})) as { ok: true; value: { revisions: Array<{ task_id: string }> } }
+    expect(revs.value.revisions.map((r) => r.task_id)).toEqual(['task-x'])
+    expect(await errCodeOf(env.call, 'session/revisions', { limit: 0 })).toBe('invalid_argument')
+  })
+
+  it('未注入 queryService：四域端点 configuration_error 而非伪造数据', async () => {
+    const env = makeQuadEnv(false)
+    expect(await errCodeOf(env.call, 'task/list', {})).toBe('configuration_error')
+    expect(await errCodeOf(env.call, 'knowledge/list', {})).toBe('configuration_error')
+    expect(await errCodeOf(env.call, 'audit/list', {})).toBe('configuration_error')
+    expect(await errCodeOf(env.call, 'session/set-binding', { sessionId: 's', teamId: 't' })).toBe('configuration_error')
+  })
+
+  it('payload 非对象与未知端点均 invalid_argument', async () => {
+    const env = makeQuadEnv()
+    expect(await errCodeOf(env.call, 'task/get', null)).toBe('invalid_argument')
+    expect(await errCodeOf(env.call, 'task/nope', {})).toBe('invalid_argument')
   })
 })
