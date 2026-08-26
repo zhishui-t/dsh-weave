@@ -436,7 +436,11 @@ export function registerWeaveCommand(
     },
     handler: async (invocation: HostCommandInvocation): Promise<HostCommandResult> => {
       try {
-        const argv = tokenizeCommandLine(invocation.rawInput)
+        const tokenized = tokenizeCommandLine(invocation.rawInput)
+        const addMatch = invocation.rawInput.match(/^\s*provider\s+add(?:\s+)?([\s\S]*)$/i)
+        const argv = tokenized[0] === 'provider' && tokenized[1] === 'add' && addMatch
+          ? ['provider', 'add', addMatch[1]!.trim()]
+          : tokenized
         const result = await cli.run(argv)
         return result.exitCode === 0
           ? { kind: 'success', text: result.text }
