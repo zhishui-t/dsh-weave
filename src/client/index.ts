@@ -60,7 +60,7 @@ type Route =
 const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
   { key: 'overview', label: '总览', desc: '任务、知识与执行器的整体运行状态。' },
   { key: 'teams', label: '团队', desc: '查看团队并创建新的协作团队。' },
-  { key: 'tasks', label: '任务中心', desc: '任务 DAG、依赖状态与快速操作入口。' },
+  { key: 'tasks', label: '任务中心', desc: '任务依赖图、状态与快速操作入口。' },
   { key: 'knowledge', label: '知识库', desc: '知识导入、候选审核与注入管理。' },
   { key: 'executors', label: '执行器', desc: '实际注册的执行器与其能力。' },
   { key: 'sessions', label: '会话管理', desc: '会话绑定与修订上下文概览。' },
@@ -113,6 +113,16 @@ const TASK_ACTIONS_BY_STATUS: Record<string, Array<{ action: string; label: stri
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
 const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
 
+const EXECUTOR_LABELS: Record<string, string> = {
+  spawn: 'DSH 子代理',
+  fork: 'DSH 子代理',
+  dsh_subagent: 'DSH 子代理',
+  zcode: 'ZCode 执行器',
+  codex: 'Codex 执行器',
+  'claude-code': 'Claude Code',
+  claude_code: 'Claude Code',
+  acp: 'ACP 执行器',
+}
 const TASK_STATUS_LABELS: Record<string, string> = {
   WAITING: '等待中',
   BLOCKED: '已阻塞',
@@ -156,6 +166,7 @@ const AUDIT_EVENT_LABELS: Record<string, string> = {
 }
 const labelOf = (labels: Record<string, string>, value: unknown): string =>
   labels[String(value ?? '')] ?? String(value ?? '—')
+const executorLabel = (value: unknown): string => labelOf(EXECUTOR_LABELS, value)
 const AUDIT_EVENT_TYPES = [
   'task.status_changed',
   'task.feedback_received',
@@ -636,13 +647,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         }),
         Card({
           title: `任务总数（${data.tasks ?? '—'}）`,
-          meta: React.createElement('span', null, data.taskError ? missing : '进入任务中心查看 DAG 与状态。'),
+          meta: React.createElement('span', null, data.taskError ? missing : '进入任务中心查看依赖图与状态。'),
           onClick: () => navigate('tasks'),
           testId: 'overview-card-tasks',
         }),
         Card({
           title: `熔断/禁用任务（${data.banned ?? (data.tasks === undefined ? '—' : 0)}）`,
-          meta: React.createElement('span', null, data.taskError ? missing : 'BANNED 状态任务数量。'),
+          meta: React.createElement('span', null, data.taskError ? missing : '熔断状态任务数量。'),
           onClick: () => navigate('tasks'),
           testId: 'overview-card-banned',
         }),
@@ -900,7 +911,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 { className: 'weave-role-grid' },
                 roleField(index, '角色 ID', 'id', 'member'),
                 roleField(index, '名称', 'name', '成员'),
-                roleField(index, 'Bias', 'bias', 'dev'),
+                roleField(index, '角色倾向', 'bias', 'dev'),
                 React.createElement(
                   'label',
                   { className: 'weave-field' },
@@ -915,14 +926,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       ? executors.map((executor: ExecutorInfo) =>
                           React.createElement(
                             'option',
-                            { key: executor.id, value: executor.id },
-                            executor.kind ? `${executor.id} · ${executor.kind}` : executor.id,
+                            { key: executor.id, value: executor.id, title: executor.id },
+                            executorLabel(executor.id),
                           ),
                         )
                       : [React.createElement('option', { key: 'empty', value: '' }, '未发现执行器')]),
                   ),
                 ),
-                roleField(index, 'Stages（逗号分隔）', 'stages', DEFAULT_STAGES),
+                roleField(index, '阶段（逗号分隔）', 'stages', DEFAULT_STAGES),
                 roleField(index, '最大并发任务', 'maxConcurrent', '1', 'number'),
               ),
               roles[index]?.executor === 'zcode'
@@ -953,8 +964,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 : React.createElement(
                     'div',
                     { className: 'weave-role-grid' },
-                    roleField(index, 'Provider 覆盖', 'provider', '可选'),
-                    roleField(index, 'Model 覆盖', 'model', '可选'),
+                    roleField(index, '推理服务覆盖', 'provider', '可选'),
+                    roleField(index, '模型覆盖', 'model', '可选'),
                   ),
               roleField(index, '角色提示词', 'personality', '', 'textarea'),
             ),
@@ -1339,7 +1350,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             ? React.createElement(
                 'div',
                 { className: 'weave-panel', 'data-testid': 'task-detail' },
-                React.createElement('b', { className: 'weave-subh' }, `DAG 详情：${detailId}`),
+                React.createElement('b', { className: 'weave-subh' }, `依赖图详情：${detailId}`),
                 detail.loading || detail.error || !detail.data ? null : React.createElement(DagGraph, { dag: detail.data as TaskDagDetail, selectedId: detailId, onSelect: (next: string) => setDetailId(next) }),
                 detail.loading
                   ? React.createElement('span', { className: 'weave-muted' }, '正在加载...')
@@ -1351,13 +1362,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                         React.createElement(
                           'span',
                           { className: 'weave-muted' },
-                          `dag_id=${String(detail.data?.dag_id ?? '—')} · 状态 ${String(detail.data?.status ?? '—')}`,
+                          `依赖图 ID=${String(detail.data?.dag_id ?? '—')} · 状态 ${labelOf(TASK_STATUS_LABELS, detail.data?.status)}`,
                         ),
                         ...(detail.data?.edges ?? []).map((edge: { from: string; to: string }, index: number) =>
                           React.createElement('span', { className: 'weave-muted', key: `edge-${index}` }, `${edge.from} → ${edge.to}`),
                         ),
                         (detail.data?.edges ?? []).length === 0
-                          ? React.createElement('span', { className: 'weave-muted' }, '无依赖边（单任务 DAG 或早期记录）。')
+                          ? React.createElement('span', { className: 'weave-muted' }, '无依赖边（单任务依赖图或早期记录）。')
                           : null,
                         ...(detail.data?.tasks ?? []).map((task: TaskRow) =>
                           React.createElement(
@@ -1725,14 +1736,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       ? React.createElement(
           'div',
           { className: 'weave-panel', 'data-testid': 'providers-unavailable' },
-          React.createElement('b', { className: 'weave-subh' }, '动态 ACP Provider'),
+          React.createElement('b', { className: 'weave-subh' }, '动态 ACP 执行器'),
           React.createElement('span', { className: 'weave-muted' }, providers.error + '（providerStore 未注入时出现此提示）'),
         )
       : providerRows.length
         ? React.createElement(
             'div',
             { className: 'weave-panel', 'data-testid': 'providers-panel' },
-            React.createElement('b', { className: 'weave-subh' }, '动态 ACP Provider（providers.json，注册即生效）'),
+            React.createElement('b', { className: 'weave-subh' }, '动态 ACP 执行器（providers.json，注册即生效）'),
             ...providerRows.map((provider: ProviderRow) =>
               React.createElement(
                 'article',
@@ -1775,7 +1786,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       { className: 'weave-page', 'data-testid': 'page-executors' },
       React.createElement('h1', null, '执行器'),
       Note({
-        text: snapshot.loading ? '正在加载...' : snapshot.error || '以下为 runtime 实际注册的执行器；ZCode 目录仅在发现时展示。',
+        text: snapshot.loading ? '正在加载...' : snapshot.error || '以下为运行时实际注册的执行器；ZCode 目录仅在发现时展示。',
       }),
       snapshot.error ? Note({ text: snapshot.error, kind: 'error' }) : null,
       React.createElement(
@@ -1785,7 +1796,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           ? executors.map((executor: ExecutorInfo) =>
               React.createElement(Card, {
                 key: executor.id,
-                title: `${executor.id}${executor.kind ? ` · ${executor.kind}` : ''}`,
+                title: executorLabel(executor.id),
                 testId: `executor-card-${executor.id}`,
                 meta: React.createElement(
                   'span',
@@ -2086,7 +2097,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { key: 'audit_dir', label: '审计目录', placeholder: '默认 ~/.dsh/audit' },
     { key: 'knowledge_dir', label: '知识库目录', placeholder: '默认 ~/.dsh/knowledge' },
     { key: 'obsidian_dir', label: 'Obsidian Vault', placeholder: '默认 ~/.dsh/obsidian' },
-    { key: 'providers_file', label: 'Provider 配置来源', placeholder: '默认 ~/.dsh/weave/providers.json' },
+    { key: 'providers_file', label: '执行器配置来源', placeholder: '默认 ~/.dsh/weave/providers.json' },
   ]
   function SettingsPage() {
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
@@ -2132,7 +2143,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const providersSummary = React.createElement(
       'div',
       { className: 'weave-panel', 'data-testid': 'providers-summary' },
-      React.createElement('b', { className: 'weave-subh' }, 'Provider 配置'),
+      React.createElement('b', { className: 'weave-subh' }, '执行器配置'),
       React.createElement(
         'div',
         { className: 'weave-kv' },
