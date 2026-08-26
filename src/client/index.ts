@@ -1654,6 +1654,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [reasonDraft, setReasonDraft] = useState('')
     const [selectedNodeId, setSelectedNodeId] = useState('')
     const [copiedPath, setCopiedPath] = useState(false)
+    const [graphStatus, setGraphStatus] = useState('')
+    const [graphLayer, setGraphLayer] = useState('')
 
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
     const vaultPath = String(info.data?.obsidian_dir ?? '')
@@ -1666,8 +1668,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }, [status, layer])
     const items = list.data?.candidates ?? []
     const graph = useResource<KnowledgeGraphData>(
-      () => rpc('knowledge/graph') as Promise<KnowledgeGraphData>,
-      [],
+      async () => {
+        const payload: Json = { limit: 200 }
+        if (graphStatus !== '') payload.status = graphStatus
+        if (graphLayer !== '') payload.layer = graphLayer
+        return (await rpc('knowledge/graph', payload)) as KnowledgeGraphData
+      },
+      [graphStatus, graphLayer],
     )
     const graphNodes = graph.data?.nodes ?? []
 
@@ -1745,6 +1752,40 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               'div',
               { className: 'weave-panel' },
               React.createElement('b', { className: 'weave-subh' }, '知识图谱（双链预览）'),
+              React.createElement(
+                'div',
+                { className: 'weave-toolbar' },
+                React.createElement(
+                  'select',
+                  {
+                    className: 'weave-control',
+                    'data-testid': 'knowledge-graph-status-filter',
+                    value: graphStatus,
+                    onChange: (event: { target: { value: string } }) => setGraphStatus(event.target.value),
+                  },
+                  React.createElement('option', { value: '' }, '全部状态'),
+                  ...KNOWLEDGE_STATUSES.map((value: string) => React.createElement(
+                    'option',
+                    { key: value, value },
+                    labelOf(KNOWLEDGE_STATUS_LABELS, value),
+                  )),
+                ),
+                React.createElement(
+                  'select',
+                  {
+                    className: 'weave-control',
+                    'data-testid': 'knowledge-graph-layer-filter',
+                    value: graphLayer,
+                    onChange: (event: { target: { value: string } }) => setGraphLayer(event.target.value),
+                  },
+                  React.createElement('option', { value: '' }, '全部层级'),
+                  ...KNOWLEDGE_LAYERS.map((value: string) => React.createElement(
+                    'option',
+                    { key: value, value },
+                    labelOf(KNOWLEDGE_LAYER_LABELS, value),
+                  )),
+                ),
+              ),
               React.createElement(KnowledgeGraphView, {
                 graph: graph.data ?? {},
                 selectedId: selectedNodeId,

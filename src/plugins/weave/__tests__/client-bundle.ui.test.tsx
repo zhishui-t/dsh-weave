@@ -564,6 +564,11 @@ describe('t8 会话优先模型与治理化改造', () => {
     fireEvent.click(screen.getByTestId('knowledge-node-g-a'))
     await screen.findByTestId('knowledge-graph-detail')
     expect(screen.getByTestId('knowledge-graph-detail').textContent).toContain('A 指南')
+
+    fireEvent.change(screen.getByTestId('knowledge-graph-layer-filter'), { target: { value: 'project' } })
+    await waitFor(() => {
+      expect(fixture.calls.some((call) => call.endpoint === 'knowledge/graph' && (call.payload as Record<string, unknown>).layer === 'project')).toBe(true)
+    })
   })
 
   it('独立命令手册页展示全部 /weave 命令', async () => {
