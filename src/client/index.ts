@@ -885,14 +885,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           : []
       const thoughtValues = toValues(caps?.thoughtLevels)
       const modeValues = toValues(caps?.modes)
-      const out: Array<React.ReactElement> = []
-      if (caps?.thoughtControl === true) {
-        out.push(roleSelect(index, '思考深度', 'thoughtLevel', thoughtValues.length ? thoughtValues : ['off', 'high', 'max']))
-      }
-      if (caps?.modeControl === true) {
-        out.push(roleSelect(index, '模式', 'mode', modeValues.length ? modeValues : ['plan', 'build', 'edit', 'yolo', 'auto']))
-      }
-      return out
+      const thoughtSupported = caps?.thoughtControl === true
+      const modeSupported = caps?.modeControl === true
+      const disabledSelect = (label: string, unsupported: string): React.ReactElement =>
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, label),
+          React.createElement(
+            'select',
+            { className: 'weave-control', disabled: true, value: '' },
+            React.createElement('option', { value: '' }, unsupported),
+          ),
+        )
+      return [
+        thoughtSupported
+          ? roleSelect(index, '思考深度', 'thoughtLevel', thoughtValues.length ? thoughtValues : ['off', 'high', 'max'])
+          : disabledSelect('思考深度', '当前执行器不支持'),
+        modeSupported
+          ? roleSelect(index, '模式', 'mode', modeValues.length ? modeValues : ['plan', 'build', 'edit', 'yolo', 'auto'])
+          : disabledSelect('模式', '当前执行器不支持'),
+      ]
     }
 
     const roleLinkedModelFields = (index: number): Array<React.ReactElement> => {
