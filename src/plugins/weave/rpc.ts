@@ -140,6 +140,8 @@ function serializeTeam(team: TeamConfig) {
       ...(role.model !== undefined ? { model: role.model } : {}),
       ...(role.thought_level !== undefined ? { thought_level: role.thought_level } : {}),
       ...(role.mode !== undefined ? { mode: role.mode } : {}),
+      ...(role.fallback_provider !== undefined ? { fallback_provider: role.fallback_provider } : {}),
+      ...(role.fallback_model !== undefined ? { fallback_model: role.fallback_model } : {}),
     })),
     task_decomposition: team.task_decomposition,
     knowledge_injection: team.knowledge_injection,

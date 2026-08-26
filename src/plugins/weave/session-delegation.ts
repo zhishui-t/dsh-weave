@@ -172,13 +172,31 @@ export class SequentialSessionDelegator {
     for (const [index, step] of plan.entries()) {
       input.onStageStart?.({ index, total: plan.length, stage: step.stage, roleName: step.role.name })
       const task = synthesizeTaskRecord(input.sessionId, input.team.team_id, index + 1, input.text)
-      const output = await this.delegation.executeTask(task, step.role, input.team, {
-        parentAgent: input.parentAgent,
-        upstreamOutputs: [...upstreamOutputs],
-        outputRequirements:
-          `这是团队「${input.team.name}」（${input.team.team_id}）顺序流水线的第 ${index + 1}/${plan.length} 阶段「${step.stage}」。` +
-          '聚焦完成本阶段目标；后续阶段由后续角色基于你的产出继续。',
-      }, input.signal)
+      let output
+      try {
+        output = await this.delegation.executeTask(task, step.role, input.team, {
+          parentAgent: input.parentAgent,
+          upstreamOutputs: [...upstreamOutputs],
+          outputRequirements:
+            `这是团队「${input.team.name}」（${input.team.team_id}）顺序流水线的第 ${index + 1}/${plan.length} 阶段「${step.stage}」。` +
+            '聚焦完成本阶段目标；后续阶段由后续角色基于你的产出继续。',
+        }, input.signal)
+      } catch (error) {
+        if (!step.role.fallback_provider || !step.role.fallback_model) throw error
+        input.onStageStart?.({ index, total: plan.length, stage: step.stage, roleName: step.role.name })
+        const fallbackRole = {
+          ...step.role,
+          provider: step.role.fallback_provider,
+          model: step.role.fallback_model,
+        }
+        output = await this.delegation.executeTask(task, fallbackRole, input.team, {
+          parentAgent: input.parentAgent,
+          upstreamOutputs: [...upstreamOutputs],
+          outputRequirements:
+            `这是团队「${input.team.name}」（${input.team.team_id}）顺序流水线的第 ${index + 1}/${plan.length} 阶段「${step.stage}」（备用模型重试）。` +
+            '聚焦完成本阶段目标；后续阶段由后续角色基于你的产出继续。',
+        }, input.signal)
+      }
       const outputText = output.output.map((block) => block.text).join('')
       outcomes.push({
         stage: step.stage,

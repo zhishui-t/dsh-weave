@@ -70,6 +70,10 @@ export interface RoleConfig {
   thought_level?: string
   /** ACP/agent 模式；例如 code、architect、build。 */
   mode?: string
+  /** 备用推理服务；仅与 fallback_model 成对配置，委托失败时重试一次。 */
+  fallback_provider?: string
+  /** 备用模型；仅与 fallback_provider 成对配置，委托失败时重试一次。 */
+  fallback_model?: string
 }
 
 export interface TeamConfig {
@@ -193,6 +197,8 @@ export class TeamManager {
           ...(typeof r.model === 'string' && r.model !== '' ? { model: r.model } : {}),
           ...(typeof r.thought_level === 'string' && r.thought_level !== '' ? { thought_level: r.thought_level } : {}),
           ...(typeof r.mode === 'string' && r.mode !== '' ? { mode: r.mode } : {}),
+          ...(typeof r.fallback_provider === 'string' && r.fallback_provider !== '' ? { fallback_provider: r.fallback_provider } : {}),
+          ...(typeof r.fallback_model === 'string' && r.fallback_model !== '' ? { fallback_model: r.fallback_model } : {}),
         }
       }),
       task_decomposition: {
@@ -262,6 +268,15 @@ export class TeamManager {
       }
       if (role.mode !== undefined && role.mode.trim() === '') {
         throw new WeaveError('invalid_team', `角色 ${role.id} 的 mode 不能为空`, { role: role.id })
+      }
+      if ((role.fallback_provider !== undefined) !== (role.fallback_model !== undefined)) {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 fallback_provider 与 fallback_model 必须成对配置`, { role: role.id })
+      }
+      if (role.fallback_provider !== undefined && role.fallback_provider.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 fallback_provider 不能为空`, { role: role.id })
+      }
+      if (role.fallback_model !== undefined && role.fallback_model.trim() === '') {
+        throw new WeaveError('invalid_team', `角色 ${role.id} 的 fallback_model 不能为空`, { role: role.id })
       }
       if (!lookup.get(role.executor)) {
         throw new WeaveError('executor_unavailable', `角色 ${role.id} 的执行器未注册: ${role.executor}`, {

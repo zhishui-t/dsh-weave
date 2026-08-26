@@ -232,6 +232,8 @@ interface RoleDraft {
   model: string
   thoughtLevel: string
   mode: string
+  fallbackProvider: string
+  fallbackModel: string
 }
 
 interface TaskRow {
@@ -702,6 +704,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     model: '',
     thoughtLevel: '',
     mode: '',
+    fallbackProvider: '',
+    fallbackModel: '',
   })
 
   function TeamsPage() {
@@ -779,6 +783,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           } else {
             if (draft.provider) role.provider = draft.provider
             if (draft.model) role.model = draft.model
+          }
+          if (draft.fallbackProvider && draft.fallbackModel) {
+            role.fallback_provider = draft.fallbackProvider
+            role.fallback_model = draft.fallbackModel
           }
           return role
         })
@@ -905,6 +913,58 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         modeSupported
           ? roleSelect(index, '模式', 'mode', modeValues.length ? modeValues : ['plan', 'build', 'edit', 'yolo', 'auto'])
           : disabledSelect('模式', '继承当前会话默认（DSH 子代理不支持单独设置）'),
+      ]
+    }
+
+    const roleFallbackLinkedFields = (index: number): Array<React.ReactElement> => {
+      if (providerItems.length === 0) {
+        return [
+          roleField(index, '备用推理服务', 'fallbackProvider', '可选（无目录时手填）'),
+          roleField(index, '备用模型', 'fallbackModel', '可选（无目录时手填）'),
+        ]
+      }
+      const provider = roles[index]?.fallbackProvider ?? ''
+      const models = modelsByProvider[provider] ?? []
+      return [
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, '备用推理服务'),
+          React.createElement(
+            'select',
+            {
+              className: 'weave-control',
+              'data-testid': `fallback-provider-select-${index}`,
+              value: provider,
+              onChange: (event: { target: { value: string } }) => {
+                const value = event.target.value
+                const next = modelsByProvider[value] ?? []
+                const current = roles[index]?.fallbackModel ?? ''
+                updateRole(index, 'fallbackProvider', value)
+                updateRole(index, 'fallbackModel', next.includes(current) ? current : (next[0] ?? ''))
+              },
+            },
+            React.createElement('option', { value: '' }, '不启用'),
+            ...providerItems.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ),
+        ),
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, '备用模型'),
+          React.createElement(
+            'select',
+            {
+              className: 'weave-control',
+              'data-testid': `fallback-model-select-${index}`,
+              value: roles[index]?.fallbackModel ?? '',
+              disabled: provider === '',
+              onChange: (event: { target: { value: string } }) => updateRole(index, 'fallbackModel', event.target.value),
+            },
+            React.createElement('option', { value: '' }, provider === '' ? '先选备用推理服务' : '不启用'),
+            ...models.map((value: string) => React.createElement('option', { key: value, value }, value)),
+          ),
+        ),
       ]
     }
 
@@ -1070,12 +1130,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     ),
                     roleSelect(index, '思考深度', 'thoughtLevel', thoughts.length ? thoughts : ['off', 'high', 'max']),
                     roleSelect(index, '模式', 'mode', modes.length ? modes : ['plan', 'build', 'edit', 'yolo', 'auto']),
+                    ...roleFallbackLinkedFields(index),
                   )
                 : React.createElement(
                     'div',
                     { className: 'weave-role-grid' },
                     ...roleLinkedModelFields(index),
                     ...roleAdvancedFields(index),
+                    ...roleFallbackLinkedFields(index),
                   ),
               roleField(index, '角色提示词', 'personality', '', 'textarea'),
             ),
@@ -2216,7 +2278,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作' },
     { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
     { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
-    { cmd: '/weave provider add <JSON|JSON数组|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
+    { cmd: '/weave provider add <JSON|YAML|文件路径|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
     { cmd: '/weave knowledge review', desc: '知识候选队列' },

@@ -252,6 +252,8 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     expect(Array.from(providerSelect.options).map((option) => option.value)).toContain('prov-a')
     fireEvent.change(providerSelect, { target: { value: 'prov-a' } })
     expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('deepseek-v4-flash')
+    expect(screen.getByTestId('fallback-provider-select-0')).toBeTruthy()
+    expect(screen.getByTestId('fallback-model-select-0')).toBeTruthy()
   })
 
   it('团队页可通过 RPC 创建团队', async () => {
@@ -582,7 +584,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     fireEvent.click(screen.getByTestId('nav-manual'))
     await screen.findByTestId('page-manual')
     expect(screen.getByTestId('command-row-0').textContent).toContain('/weave team list')
-    expect(screen.getByText('/weave provider add <JSON|JSON数组|紧凑配置>')).toBeTruthy()
+    expect(screen.getByText('/weave provider add <JSON|YAML|文件路径|紧凑配置>')).toBeTruthy()
   })
 
   it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {

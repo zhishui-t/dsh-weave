@@ -255,6 +255,33 @@ describe('agent/pre-step 委托编排（t6 核心）', () => {
     expect(env.fake.calls).toHaveLength(3)
   })
 
+  it('主模型失败时使用备用模型重试一次并继续完成', async () => {
+    const env = makeHookEnv()
+    await env.manager.importTeam(stringifyYaml({
+      schema_version: '1',
+      ...TEAM,
+      roles: [
+        {
+          ...TEAM.roles[0]!,
+          fallback_provider: 'fb-provider',
+          fallback_model: 'fb-model',
+        },
+        ...TEAM.roles.slice(1),
+      ],
+    }), { overwrite: true })
+    await env.manager.bindTeam('sess-1', 'pipe-team')
+    env.fake.script = [{ throwInfra: true }, { text: '备用成功' }]
+    const { payload } = makePayload('fb1', '做一个需要备用模型的任务')
+    await env.hook(payload, nextOk)
+    await flushAsync()
+
+    expect(env.fake.calls.length).toBeGreaterThanOrEqual(2)
+    expect(env.fake.calls[0]!.roleId).toBe('researcher')
+    expect(env.fake.calls[1]!.roleId).toBe('researcher')
+    expect(env.notices.some((n) => n.text.includes('已完成本次任务委托'))).toBe(true)
+    expect(env.notices.some((n) => n.text.includes('任务委托失败'))).toBe(false)
+  })
+
   it('非 user 来源消息忽略；阶段失败落明确失败 notice 且 hook 不抛错', async () => {
     const env = makeHookEnv()
     await env.manager.bindTeam('sess-1', 'pipe-team')
