@@ -529,6 +529,27 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(screen.getByTestId('knowledge-graph-detail').textContent).toContain('A 指南')
   })
 
+  it('设置页展示 /weave 命令手册', async () => {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext({
+      'settings/describe': {
+        version: '9.9.9-test',
+        node_version: process.version,
+        state_dir: '/state',
+        teams_dir: '/teams',
+        audit_dir: '/audit',
+        obsidian_dir: '/obsidian',
+      },
+    })
+    exported.apply(fixture.ctx as never)
+    render(createElement(fixture.component!, { wide: true }))
+    fireEvent.click(screen.getByTestId('weave-open'))
+    fireEvent.click(screen.getByTestId('nav-settings'))
+    await screen.findByTestId('command-manual')
+    expect(screen.getByTestId('command-row-0').textContent).toContain('/weave team list')
+    expect(screen.getByText('/weave provider add <JSON|紧凑配置>')).toBeTruthy()
+  })
+
   it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({

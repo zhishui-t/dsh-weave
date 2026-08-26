@@ -2091,6 +2091,25 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ============================== 设置 ============================== */
 
+  const WEAVE_COMMAND_MANUAL: Array<{ cmd: string; desc: string }> = [
+    { cmd: '/weave team list', desc: '查看全部团队与角色' },
+    { cmd: '/weave team switch <team_id>', desc: '切换当前会话团队' },
+    { cmd: '/weave task submit <描述> --project <id> --version <v> [--team <id>]', desc: '提交任务（任务入口仍在当前 DSH 会话）' },
+    { cmd: '/weave task status --dag <dag_id> | --task <task_id>', desc: '查看任务/依赖图状态' },
+    { cmd: '/weave task revise <task_id> <反馈>', desc: '对保温期任务反馈返工' },
+    { cmd: '/weave task accept <task_id>', desc: '验收任务' },
+    { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作' },
+    { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
+    { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
+    { cmd: '/weave provider add <JSON|紧凑配置>', desc: '注册外部 ACP 执行器' },
+    { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
+    { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
+    { cmd: '/weave knowledge review', desc: '知识候选队列' },
+    { cmd: '/weave knowledge approve <id>', desc: '知识审核通过' },
+    { cmd: '/weave knowledge reject <id> <原因>', desc: '知识驳回' },
+    { cmd: '/weave ban list', desc: '查看熔断/冷却实体' },
+    { cmd: '启用 <团队ID> / 切换 <团队> / 关闭团队', desc: '当前会话自然语言启停团队（无需前缀）' },
+  ]
   const SETTINGS_DIR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
     { key: 'state_dir', label: '状态目录', placeholder: '默认 ~/.dsh/state' },
     { key: 'teams_dir', label: '团队目录', placeholder: '默认 ~/.dsh/teams' },
@@ -2234,6 +2253,28 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       ),
       providersSummary,
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'command-manual' },
+        React.createElement('b', { className: 'weave-subh' }, '/weave 命令手册'),
+        React.createElement(
+          'div',
+          { className: 'weave-list' },
+          ...WEAVE_COMMAND_MANUAL.map((entry: { cmd: string; desc: string }, index: number) =>
+            React.createElement(
+              'div',
+              { className: 'weave-list-item', key: entry.cmd, 'data-testid': `command-row-${index}` },
+              React.createElement('b', null, entry.cmd),
+              React.createElement('span', { className: 'weave-muted' }, entry.desc),
+            ),
+          ),
+        ),
+        React.createElement(
+          'span',
+          { className: 'weave-muted' },
+          '任务与团队启停由当前 DSH 会话负责；此手册与 CLI_HELP 命令集一致。',
+        ),
+      ),
     )
   }
 
