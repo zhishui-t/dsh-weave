@@ -194,7 +194,7 @@ export function createWeaveProviderCommandDefinitions(
         const lines: string[] = []
         for (const cfg of cfgs) {
           store.add(cfg)
-          const warn = await options.hotRegister?.(cfg) ?? hotRegister(cfg)
+          const warn = options.hotRegister ? await options.hotRegister(cfg) : hotRegister(cfg)
           const exts = cfg.declaredExtensions && cfg.declaredExtensions.length > 0 ? cfg.declaredExtensions.join(',') : '无'
           lines.push(`已注册执行器 ${cfg.name}（executor id=${cfg.name}，声明扩展=${exts}）`)
           lines.push(warn ? `提示：${warn}` : `  ${cfg.name} 已在本会话生效。`)
