@@ -495,4 +495,18 @@ export class TeamManager {
       db.prepare('SELECT session_id, team_id, updated_at FROM team_bindings ORDER BY session_id').all(),
     )) as Array<{ session_id: string; team_id: string; updated_at: string }>
   }
+
+  /**
+   * 读取会话当前团队选择（t6 会话任务入口）。
+   * 复用 core.db.team_bindings：绑定行存在 = 该会话已启用该团队（enabled ≡ row 存在），
+   * 绑定/解绑语义与 team/bind・team/unbind 完全一致；无选择返回 null。
+   */
+  async getSelection(sessionId: string): Promise<{ session_id: string; team_id: string; updated_at: string } | null> {
+    if (!this.persistence) return null
+    await this.#ensureBindings()
+    const row = await this.persistence!.core.run((db) =>
+      db.prepare('SELECT session_id, team_id, updated_at FROM team_bindings WHERE session_id = ?').get(sessionId),
+    ) as { session_id: string; team_id: string; updated_at: string } | undefined
+    return row ?? null
+  }
 }

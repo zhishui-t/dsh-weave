@@ -1,7 +1,17 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
-import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost, registerWeaveProviderCommands } from './host-wiring.js'
 import { registerWeaveRpc } from './rpc.js'
+import { KnowledgeEngine } from './knowledge-engine.js'
+import { ProcessLimiter } from './safety/process-limiter.js'
+import { DelegationService } from './delegation-service.js'
+import { SessionTracker } from './session-tracker.js'
+import {
+  SequentialSessionDelegator,
+  createPreStepDelegationHook,
+  notifySession,
+  type NoticeSessionLike,
+} from './session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
@@ -72,6 +82,49 @@ export function apply(ctx: Context): void {
       }, { version: WEAVE_VERSION })
       const bundle = registerWeaveHost(runtime, deps)
       runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
+
+      // t6：会话内任务委托编排——agent/pre-step 拦截用户消息，按会话启用的团队顺序委托。
+      // 委托唯一出口仍是 DelegationService.executeTask（内部 ctx.subagents.start）。
+      const delegation = new DelegationService(
+        { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
+        {
+          executorRegistry: deps.executorRegistry,
+          sessionTracker: new SessionTracker(deps.persistence.feedback),
+          processLimiter: new ProcessLimiter(),
+          knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
+        },
+      )
+      const hook = createPreStepDelegationHook({
+        getSelection: (sessionId) => deps.teamManager.getSelection(sessionId),
+        loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
+        delegator: new SequentialSessionDelegator(delegation),
+        notify: (sessionId, text, session?: NoticeSessionLike) => {
+          if (!session) {
+            console.warn('[dsh-weave] cannot notify session', sessionId, '- session surface unavailable')
+            return
+          }
+          try {
+            notifySession(session, text)
+          } catch (error) {
+            console.warn('[dsh-weave] notify session failed:', error)
+          }
+        },
+      })
+      const evented = runtime as Context & { on?(name: string, listener: unknown): unknown }
+      const offHook = evented.on?.('agent/pre-step', hook)
+      runtime.effect(() => () => {
+        if (typeof offHook === 'function') offHook()
+      }, 'dsh-weave pre-step delegation hook')
+
+      // t7：/weave-add-provider 与 /weave-provider 会话命令。
+      try {
+        const providerCommands = registerWeaveProviderCommands(runtime)
+        if (providerCommands.registeredAdd || providerCommands.registeredManage) {
+          runtime.effect(() => () => providerCommands.unregisterAll(), 'dsh-weave provider commands')
+        }
+      } catch (error) {
+        console.warn('[dsh-weave] provider command registration failed:', error)
+      }
     } catch (error) {
       console.warn('[dsh-weave] automatic host wiring failed:', error)
     }

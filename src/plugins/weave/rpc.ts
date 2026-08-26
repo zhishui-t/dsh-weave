@@ -238,6 +238,38 @@ export function createWeaveRpcHandler(
         objectPayload(payload)
         return success({ bindings: await resolvedDeps.teamManager.listBindings() })
       }
+      if (endpoint === 'session/team-selection/get') {
+        const input = objectPayload(payload)
+        // 不做任何默认（包括 cli-session）：前端必须显式携带当前会话 ID。
+        const sessionId = requireString(input, 'sessionId')
+        const selection = await resolvedDeps.teamManager.getSelection(sessionId)
+        return success({
+          session_id: sessionId,
+          enabled: selection !== null,
+          ...(selection ? { team_id: selection.team_id, updated_at: selection.updated_at } : { team_id: null }),
+        })
+      }
+
+      if (endpoint === 'session/team-selection/set') {
+        const input = objectPayload(payload)
+        if (typeof input.sessionId !== 'string' || input.sessionId.trim() === '') {
+          throw new WeaveError('invalid_argument', '必须显式传入当前会话 ID（sessionId）；服务端不会默认 cli-session')
+        }
+        const sessionId = input.sessionId
+        if (!('teamId' in input)) {
+          throw new WeaveError('invalid_argument', 'session/team-selection/set 需要 teamId 字段（非空字符串，或 null 表示清除选择）')
+        }
+        if (input.teamId === null) {
+          const existed = await resolvedDeps.teamManager.unbindTeam(sessionId)
+          return success({ session_id: sessionId, enabled: false, team_id: null, cleared: existed })
+        }
+        if (typeof input.teamId !== 'string' || input.teamId.trim() === '') {
+          throw new WeaveError('invalid_argument', 'teamId 必须为非空字符串或 null（清除选择）')
+        }
+        resolvedDeps.teamManager.loadTeam(input.teamId) // 启用前校验团队存在且可用（invalid_team/executor_unavailable 冒泡）
+        await resolvedDeps.teamManager.bindTeam(sessionId, input.teamId)
+        return success({ session_id: sessionId, enabled: true, team_id: input.teamId })
+      }
 
       if (endpoint === 'settings/describe') {
         objectPayload(payload)

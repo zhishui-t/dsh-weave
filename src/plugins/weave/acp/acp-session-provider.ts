@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
-import type { ExecutorProviderMetadata, ExecutorRun, ExecutorSessionConfig, ExecutorStartRequest } from '../executors/executor-provider.js'
+import { applyRuntimeIntents, BUILTIN_ACP_EXTENSIONS, negotiateExtensions, type AcpCapabilityApplication, type AcpExtensionCallContext, type AcpExtensionProbeInput, type AcpIntentKey, type AcpProviderExtension, type ExtensionNegotiationEntry } from './provider-extension.js'
+import type { ExecutorCapabilities, ExecutorProviderMetadata, ExecutorRun, ExecutorSessionConfig, ExecutorStartRequest } from '../executors/executor-provider.js'
 import type { DelegationRunLike } from '../delegation-service.js'
 
 export type AcpExecutorEventType =
@@ -97,6 +98,28 @@ export interface AcpSessionProviderConfig {
   cwd?: string
   env?: Record<string, string>
   permission?: 'allow' | 'reject'
+  /**
+   * t7：声明该 provider 支持的扩展名。协商要求「声明 ∧ initialize 探测」双命中，
+   * 未命中（未声明/探测失败/未知名）一律降级并在 status 事件中报告原因。
+   * 缺省视为 ['zcode'] 以保持既有行为；显式空数组表示纯标准 ACP。
+   */
+  declaredExtensions?: string[]
+}
+
+/** t7 运行时挂钩：把扩展协商 / update 变换注入协议内核。 */
+export interface AcpProviderRuntimeHooks {
+  resolveExtensions(probe: AcpExtensionProbeInput): { active: AcpProviderExtension[]; report: ExtensionNegotiationEntry[] }
+  transformUpdate?(update: AcpSessionUpdate): Array<Omit<AcpExecutorEvent, 'at'>> | undefined
+}
+
+/** 默认挂钩：按 config.declaredExtensions 对内置扩展注册表协商（缺省 ['zcode']）。 */
+export function defaultRuntimeHooks(declaredExtensions?: readonly string[]): AcpProviderRuntimeHooks {
+  const declared = declaredExtensions ?? ['zcode']
+  return {
+    resolveExtensions(probe) {
+      return negotiateExtensions(declared, BUILTIN_ACP_EXTENSIONS, probe)
+    },
+  }
 }
 
 interface SpawnedProcess {
@@ -130,7 +153,7 @@ export interface AcpSessionConnection {
   newSession?: AcpConnectionLike['newSession']
 }
 
-interface AcpSessionUpdate {
+export interface AcpSessionUpdate {
   sessionId?: string
   sessionUpdate?: string
   content?: { type?: string; text?: string }
@@ -189,6 +212,8 @@ export interface AcpSessionRun extends Omit<DelegationRunLike, 'result'> {
   result: Promise<{
     output: Array<{ type: string; text?: string }>
     stopReason: 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal'
+    /** t7：经扩展框架应用后的逐意图可观测报告（键为 model/thought/mode/tools）。 */
+    intentApplied?: Partial<Record<AcpIntentKey, AcpCapabilityApplication>>
     applied?: {
       model?: { requested?: unknown; effective?: unknown; supported: boolean }
       thinking?: { requested?: unknown; effective?: unknown; supported: boolean }
@@ -204,6 +229,8 @@ export interface AcpSessionRun extends Omit<DelegationRunLike, 'result'> {
   configOptions?: AcpConfigOption[]
   providerMetadata?: ExecutorProviderMetadata
   sessionConfig?: ExecutorSessionConfig
+  /** t7：意图应用报告（同步快照；与 result 内一致）。 */
+  intentApplied?: Partial<Record<AcpIntentKey, AcpCapabilityApplication>>
 }
 
 async function disposeProcess(process: SpawnedProcess, eofGraceMs: number): Promise<void> {
@@ -243,10 +270,14 @@ export class AcpSessionProvider {
   readonly #runs = new Map<string, RunController>()
   #sessionCatalog?: AcpSessionNewResponse
 
+  readonly #hooks: AcpProviderRuntimeHooks
+  readonly #declaredExtensions: readonly string[]
+
   constructor(
     config: AcpSessionProviderConfig,
     spawn: AcpSpawn['spawn'],
     connect?: (cwd: string, key: string) => Promise<AcpSessionFactoryConnection>,
+    hooks?: AcpProviderRuntimeHooks,
   ) {
     this.name = config.name
     this.#command = config.command
@@ -256,6 +287,9 @@ export class AcpSessionProvider {
     this.#permission = config.permission ?? 'reject'
     this.#spawn = spawn
     this.#connect = connect
+    this.#declaredExtensions = config.declaredExtensions ?? ['zcode']
+    // 显式 hooks 优先；否则按声明对内置注册表协商（探测失败自动降级）。
+    this.#hooks = hooks ?? defaultRuntimeHooks(this.#declaredExtensions)
   }
 
   async start(request: AcpSessionStartRequest): Promise<AcpSessionRun> {
@@ -287,25 +321,47 @@ export class AcpSessionProvider {
     const runId = `acp-${sessionId}`
     const controller = this.#startRunController(runId)
 
-    if (weave.modelProvider !== undefined || weave.model !== undefined) {
-      const providerId = weave.modelProvider
-      const modelId = weave.model
-      if (!modelId) throw new Error(`${this.name}: model is required`)
-      const modelValue = providerId ? [providerId, modelId].join(String.fromCharCode(92)) : modelId
-      await connection.conn.extMethod('session/setModel', { sessionId, modelId: modelValue })
-      this.#emit(controller, { type: 'status', text: `model=${modelValue}` })
+    // t7：扩展协商（声明 ∧ initialize 探测）→ 意图应用 → 逐项可观测降级。
+    if ((weave.modelProvider !== undefined || weave.model !== undefined) && !weave.model) {
+      throw new Error(`${this.name}: model is required`)
     }
-
-    if (weave.thoughtLevel !== undefined) {
-      const thoughtLevel = weave.thoughtLevel
-      await connection.conn.extMethod('session/setThoughtLevel', { sessionId, thoughtLevel })
-      this.#emit(controller, { type: 'status', text: `thought=${thoughtLevel}` })
+    const probe: AcpExtensionProbeInput = connection.initializeResponse
+      ? {
+          agentInfo: connection.initializeResponse.agentInfo,
+          agentCapabilities: connection.initializeResponse.agentCapabilities,
+          meta: connection.initializeResponse._meta,
+        }
+      : {}
+    const negotiation = this.#hooks.resolveExtensions(probe)
+    const extCtx: AcpExtensionCallContext = {
+      extMethod: (method, params) => connection.conn.extMethod(method, params),
     }
-
-    if (weave.mode !== undefined) {
-      const mode = weave.mode
-      await connection.conn.extMethod('session/setMode', { sessionId, mode })
-      this.#emit(controller, { type: 'status', text: `mode=${mode}` })
+    const { applied } = await applyRuntimeIntents(
+      negotiation.active,
+      {
+        sessionId,
+        ...(weave.modelProvider !== undefined ? { modelProvider: weave.modelProvider } : {}),
+        ...(weave.model !== undefined ? { model: weave.model } : {}),
+        ...(weave.thoughtLevel !== undefined ? { thoughtLevel: weave.thoughtLevel } : {}),
+        ...(weave.mode !== undefined ? { mode: weave.mode } : {}),
+      },
+      extCtx,
+    )
+    const activeNames = negotiation.active.map((extension) => extension.name)
+    const degraded = negotiation.report.filter((entry) => entry.status === 'inactive')
+    this.#emit(controller, {
+      type: 'status',
+      text:
+        `extensions=${activeNames.length > 0 ? activeNames.join(',') : 'none'}` +
+        (degraded.length > 0 ? ` (${degraded.map((d) => `${d.name}:${d.reason}`).join('; ')})` : ''),
+    })
+    for (const [key, item] of Object.entries(applied)) {
+      if (!item) continue
+      if (item.supported) {
+        this.#emit(controller, { type: 'status', text: `${key}=${String(item.effective ?? '')}` })
+      } else {
+        this.#emit(controller, { type: 'status', text: `${key} unsupported (fallback; ${item.detail ?? 'no detail'})` })
+      }
     }
 
     const previous = this.#prompts.get(sessionKey) ?? Promise.resolve()
@@ -317,6 +373,7 @@ export class AcpSessionProvider {
       return {
         output: [...controller.output],
         stopReason: normalizeAcpStopReason(result.stopReason),
+        ...(Object.keys(applied).length > 0 ? { intentApplied: applied } : {}),
       }
     })
 
@@ -336,6 +393,7 @@ export class AcpSessionProvider {
       id: runId,
       localAgent: undefined,
       result,
+      ...(Object.keys(applied).length > 0 ? { intentApplied: applied } : {}),
       dispose: async () => {
         cancel()
         await result.catch(() => undefined)
@@ -390,6 +448,23 @@ export class AcpSessionProvider {
     if (update.sessionId) connection.sessions.add(update.sessionId)
     const controller = this.#runs.get(`acp-${update.sessionId}`)
     if (!controller) return
+
+    // t7：provider-specific update 变换优先；未处理时回落协议内核默认映射。
+    const custom = this.#hooks.transformUpdate?.(update)
+    if (custom && custom.length > 0) {
+      for (const event of custom) {
+        const full: AcpExecutorEvent = { ...event, at: Date.now() }
+        controller.events.push(full)
+        for (const listener of controller.listeners) {
+          try {
+            listener(full)
+          } catch {
+            // 观察者异常不阻断主链路。
+          }
+        }
+      }
+      return
+    }
 
     const push = (event: Omit<AcpExecutorEvent, 'at'>) => {
       const full: AcpExecutorEvent = { ...event, at: Date.now() }
@@ -635,6 +710,8 @@ export function registerAcpSessionProvider(
 export interface ZcodeAcpExecutorProviderOptions {
   /** 可被角色引用的 executor id；默认 `zcode`。 */
   executorIds?: string[]
+  /** t7：按扩展声明覆盖默认能力面（未指定项沿用 ZCode 基线）。 */
+  capabilitiesOverride?: Partial<ExecutorCapabilities>
 }
 
 /**
@@ -648,27 +725,13 @@ export class ZcodeAcpExecutorProvider {
   readonly name = 'ZCode ACP'
   readonly kind = 'acp'
 
-  readonly capabilities = {
-    liveOutput: true,
-    sessionReuse: true,
-    sessionResume: true,
-    modelSelection: true,
-    providerSelection: true,
-    thoughtControl: true,
-    thoughtLevels: ['off', 'low', 'medium', 'high', 'max'],
-    modeControl: true,
-    modes: ['build', 'plan', 'edit', 'ask', 'yolo'],
-    tools: {
-      externalRuntime: true,
-      filtering: 'none',
-      permission: 'reject',
-    },
-  } as const
+  readonly capabilities: ExecutorCapabilities
 
   constructor(provider: AcpSessionProvider, options: ZcodeAcpExecutorProviderOptions = {}) {
     this.#provider = provider
     this.#executorIds = new Set(options.executorIds ?? [provider.name])
     this.id = provider.name
+    this.capabilities = { ...ZCODE_BASE_CAPABILITIES, ...(options.capabilitiesOverride ?? {}) }
   }
 
   supports(executor: string): boolean {
@@ -717,28 +780,26 @@ export class ZcodeAcpExecutorProvider {
       sessionId: event.sessionId ?? sessionId,
     })
 
+    // t7：扩展框架真实报告优先；底层为 mock/无意图时回落既有默认（兼容旧契约）。
+    const report = run.intentApplied
     const applied = {
-      model: {
-        requested: request.runtime?.model,
-        effective: request.runtime?.model,
-        supported: true,
-      },
-      thinking: {
-        requested: request.runtime?.thoughtLevel,
-        effective: request.runtime?.thoughtLevel,
-        supported: true,
-      },
-      mode: {
-        requested: request.runtime?.mode,
-        effective: request.runtime?.mode,
-        supported: true,
-      },
-      tools: {
-        requested: request.runtime?.tools,
-        effective: { management: 'external', permission: 'reject' },
-        supported: false,
-        fallback: true,
-      },
+      model:
+        report?.model ??
+        { requested: request.runtime?.model, effective: request.runtime?.model, supported: true },
+      thinking:
+        report?.thought ??
+        { requested: request.runtime?.thoughtLevel, effective: request.runtime?.thoughtLevel, supported: true },
+      mode:
+        report?.mode ??
+        { requested: request.runtime?.mode, effective: request.runtime?.mode, supported: true },
+      tools:
+        report?.tools ??
+        {
+          requested: request.runtime?.tools,
+          effective: { management: 'external', permission: 'reject' },
+          supported: false,
+          fallback: true,
+        },
     }
 
     const init = run.initializeResponse
@@ -762,4 +823,36 @@ export class ZcodeAcpExecutorProvider {
       } : undefined,
     }
   }
+}
+
+/** ZCode 基线能力面（t7 起可被 capabilitiesOverride 按声明收窄）。 */
+export const ZCODE_BASE_CAPABILITIES: ExecutorCapabilities = {
+  liveOutput: true,
+  sessionReuse: true,
+  sessionResume: true,
+  modelSelection: true,
+  providerSelection: true,
+  thoughtControl: true,
+  thoughtLevels: ['off', 'low', 'medium', 'high', 'max'],
+  modeControl: true,
+  modes: ['build', 'plan', 'edit', 'ask', 'yolo'],
+  tools: {
+    externalRuntime: true,
+    filtering: 'none',
+    permission: 'reject',
+  },
+}
+
+/**
+ * t7：providers.json 动态 provider 的统一包装。
+ * 能力面由调用方按 declaredExtensions 推导（zcode 命中才声明模型/思考/模式控制）。
+ */
+export function createStoredAcpExecutorProvider(
+  provider: AcpSessionProvider,
+  capabilitiesOverride?: Partial<ExecutorCapabilities>,
+): ZcodeAcpExecutorProvider {
+  return new ZcodeAcpExecutorProvider(provider, {
+    executorIds: [provider.name],
+    ...(capabilitiesOverride !== undefined ? { capabilitiesOverride } : {}),
+  })
 }

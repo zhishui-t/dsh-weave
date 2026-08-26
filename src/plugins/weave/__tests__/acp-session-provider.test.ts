@@ -147,6 +147,8 @@ describe('AcpSessionProvider', () => {
     expect(output.stopReason).toBe('completed')
     expect(run.id).toBe('acp-acp-session-1')
     expect(run.readOutput().map((event) => [event.type, event.text])).toEqual([
+      // t7：扩展协商先产出 extensions 可观测事件，再逐意图 status。
+      ['status', 'extensions=zcode'],
       ['status', 'model=' + 'provider-id' + String.fromCharCode(92) + 'deepseek-v4-flash-vision-exp'],
       ['status', 'thought=max'],
       ['output', 'live '],
