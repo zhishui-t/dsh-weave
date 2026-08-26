@@ -95,7 +95,10 @@ export interface RegisterStoredAcpProvidersOptions extends LoadProviderConfigsOp
 export interface RegisterStoredAcpProvidersResult {
   registered: string[]
   failed: Array<{ name: string; error: string }>
+  /** 全部 disposer 的聚合视图，便于插件一次性卸载。 */
   disposers: Array<() => void>
+  /** 按 provider 名隔离的 disposer，供 remove 精确注销。 */
+  disposersByName: Record<string, Array<() => void>>
 }
 
 /**
@@ -105,7 +108,7 @@ export interface RegisterStoredAcpProvidersResult {
 export function registerStoredAcpProviders(
   options: RegisterStoredAcpProvidersOptions = {},
 ): RegisterStoredAcpProvidersResult {
-  const result: RegisterStoredAcpProvidersResult = { registered: [], failed: [], disposers: [] }
+  const result: RegisterStoredAcpProvidersResult = { registered: [], failed: [], disposers: [], disposersByName: {} }
   if (!options.subagents || !options.subprocess) {
     result.failed.push({
       name: '*',
@@ -119,9 +122,18 @@ export function registerStoredAcpProviders(
   for (const cfg of configs) {
     try {
       const stack = createAcpProviderFromConfig(cfg, (spec) => options.subprocess!.spawn(spec) as never)
-      const dispose = options.subagents.registerProvider?.(stack.acp)
-      if (dispose) result.disposers.push(dispose)
-      options.registry?.register(stack.wrapper, { override: true })
+      const namedDisposers: Array<() => void> = []
+      const subagentsDisposer = options.subagents.registerProvider?.(stack.acp)
+      if (subagentsDisposer) namedDisposers.push(subagentsDisposer)
+      try {
+        const registryDisposer = options.registry?.register(stack.wrapper, { override: true })
+        if (registryDisposer) namedDisposers.push(registryDisposer)
+      } catch (error) {
+        for (const dispose of namedDisposers.reverse()) dispose()
+        throw error
+      }
+      result.disposers.push(...namedDisposers)
+      result.disposersByName[cfg.name] = namedDisposers
       result.registered.push(cfg.name)
     } catch (error) {
       result.failed.push({ name: cfg.name, error: String(error) })
@@ -214,7 +226,7 @@ export function createWeaveProviderCommandDefinitions(
         const removed = store.remove(name)
         if (!removed) return { kind: 'error', text: `未找到动态 provider: ${name}` }
         options.onRemove?.(name)
-        return { kind: 'success', text: `已从配置移除 ${name}（当前会话已注册实例保持可用，重启后不再加载）` }
+        return { kind: 'success', text: `已移除并注销 ${name}` }
       }
       return { kind: 'error', text: `未知子命令: ${command}（可用: list | remove）` }
     },

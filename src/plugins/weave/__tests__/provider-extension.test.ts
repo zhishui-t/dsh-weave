@@ -22,7 +22,7 @@ import {
 } from '../acp/provider-extension'
 import type { AcpProviderExtension } from '../acp/provider-extension'
 import { ProviderStore, parseProviderInput } from '../acp/provider-store'
-import { createWeaveProviderCommandDefinitions } from '../acp/dynamic-provider'
+import { createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from '../acp/dynamic-provider'
 
 const roots: string[] = []
 afterEach(() => {
@@ -278,6 +278,66 @@ describe('providers.json 存储与入参解析', () => {
     })
     const json = parseProviderInput('{"name":"j1","transport":"stdio","command":"py","protocol":"acp"}')
     expect(json.name).toBe('j1')
+  })
+})
+
+describe('registerStoredAcpProviders 生命周期', () => {
+  function makeLifecycleEnv() {
+    const root = tmpRoot()
+    const store = new ProviderStore({ file: join(root, 'providers.json') })
+    store.add({ name: 'p1', transport: 'stdio', command: 'node', protocol: 'acp' })
+    store.add({ name: 'p2', transport: 'stdio', command: 'node', protocol: 'acp' })
+    const lowLevelCalls: string[] = []
+    const wrapperCalls: string[] = []
+    return { root, store, lowLevelCalls, wrapperCalls }
+  }
+
+  it('按 provider 名隔离 disposers，remove 一个不影响另一个', () => {
+    const env = makeLifecycleEnv()
+    const result = registerStoredAcpProviders({
+      providersFile: join(env.root, 'providers.json'),
+      subagents: { registerProvider: (provider) => {
+        const name = (provider as { name: string }).name
+        env.lowLevelCalls.push(`register-${name}`)
+        return () => { env.lowLevelCalls.push(`dispose-${name}`) }
+      } },
+      subprocess: { spawn: () => ({}) },
+      registry: { register: (provider) => {
+        const name = (provider as { id: string }).id
+        env.wrapperCalls.push(`register-${name}`)
+        return () => { env.wrapperCalls.push(`dispose-${name}`) }
+      } },
+    })
+
+    expect(result.registered).toEqual(['p1', 'p2'])
+    expect(Object.keys(result.disposersByName).sort()).toEqual(['p1', 'p2'])
+    expect(result.disposersByName.p1).toHaveLength(2)
+    expect(result.disposersByName.p2).toHaveLength(2)
+
+    for (const dispose of [...(result.disposersByName.p1 ?? [])].reverse()) dispose()
+    expect(env.wrapperCalls).toContain('dispose-p1')
+    expect(env.lowLevelCalls).toContain('dispose-p1')
+    expect(env.wrapperCalls).not.toContain('dispose-p2')
+    expect(env.lowLevelCalls).not.toContain('dispose-p2')
+  })
+
+  it('registry 注册失败时回滚低层 provider，且不误报成功', () => {
+    const env = makeLifecycleEnv()
+    const result = registerStoredAcpProviders({
+      providersFile: join(env.root, 'providers.json'),
+      names: ['p1'],
+      subagents: { registerProvider: (provider) => {
+        const name = (provider as { name: string }).name
+        env.lowLevelCalls.push(`register-${name}`)
+        return () => { env.lowLevelCalls.push(`dispose-${name}`) }
+      } },
+      subprocess: { spawn: () => ({}) },
+      registry: { register: () => { throw new Error('registry boom') } },
+    })
+
+    expect(result.registered).toEqual([])
+    expect(result.failed[0]).toMatchObject({ name: 'p1' })
+    expect(env.lowLevelCalls).toEqual(['register-p1', 'dispose-p1'])
   })
 })
 

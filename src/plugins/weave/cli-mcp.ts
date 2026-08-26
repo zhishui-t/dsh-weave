@@ -471,7 +471,7 @@ export class WeaveCli {
       return { json: CLI_HELP, data: null }
     }
     if (domain === 'addProvider' || domain === 'provider') {
-      const args = domain === 'addProvider' ? ['add', ...rest] : rest
+      const args = domain === 'addProvider' ? ['add', ...argv.slice(1)] : argv.slice(1)
       const result = await this.#providerCommand?.(args) ?? {
         kind: 'error' as const,
         text: '动态 provider 管理未接入',

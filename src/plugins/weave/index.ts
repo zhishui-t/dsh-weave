@@ -69,6 +69,7 @@ export function apply(ctx: Context): void {
   ctx.inject(['subagents', 'commands', 'tools', 'connection'], (scoped) => {
     const runtime = scoped as Context
 
+    const dynamicProviderDisposers = new Map<string, Array<() => void>>()
     try {
       service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
       // 启动即加载用户通过 /weave addProvider 持久化的外部 harness。
@@ -76,9 +77,14 @@ export function apply(ctx: Context): void {
         ...acpRegistryContextFrom(runtime),
         registry: service.executorProviders,
       })
-      if (storedProviders.failed.length > 0) {
-        console.warn('[dsh-weave] dynamic provider registration failed:', storedProviders.failed)
+      for (const name of storedProviders.registered) {
+        dynamicProviderDisposers.set(name, storedProviders.disposersByName[name] ?? [])
       }
+      runtime.effect(() => () => {
+        for (const disposers of dynamicProviderDisposers.values()) {
+          for (const dispose of disposers) dispose()
+        }
+      }, 'dsh-weave dynamic provider lifecycle')
     } catch (error) {
       console.warn('[dsh-weave] executor provider registration failed:', error)
     }
@@ -86,6 +92,7 @@ export function apply(ctx: Context): void {
     try {
       const deps = createDefaultCliDeps(runtime)
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
+      const refreshExecutorSnapshot = () => deps.executorRegistry.load(runtime)
       const providerCommands = createWeaveProviderCommandDefinitions({
         hotRegister: (config) => {
           const result = registerStoredAcpProviders({
@@ -94,7 +101,17 @@ export function apply(ctx: Context): void {
             names: [config.name],
           })
           const failed = result.failed.find((item) => item.name === config.name)
-          return failed ? failed.error : null
+          if (failed) return failed.error
+          dynamicProviderDisposers.set(config.name, result.disposersByName[config.name] ?? [])
+          refreshExecutorSnapshot()
+          return null
+        },
+        onRemove: (name) => {
+          const disposers = dynamicProviderDisposers.get(name)
+          if (!disposers) return
+          dynamicProviderDisposers.delete(name)
+          for (const dispose of [...disposers].reverse()) dispose()
+          refreshExecutorSnapshot()
         },
       })
       registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps), providerStore: new ProviderStore() }, async () => {

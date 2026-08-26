@@ -513,3 +513,36 @@ describe('WeaveCli 补充命令（t36）', () => {
     expect(parsed.data.bans).toHaveLength(1)
   })
 })
+
+describe('WeaveCli 动态 provider 路由', () => {
+  it('addProvider 映射为 add；provider list/remove 原样传参', async () => {
+    const calls: string[][] = []
+    const cli = new WeaveCli({} as WeaveMcp, async (args) => {
+      calls.push(args)
+      return { kind: 'success', text: `ok:${args.join('|')}` }
+    })
+
+    const added = await cli.run(['addProvider', '{"name":"agent-x"}'])
+    expect(calls.at(-1)).toEqual(['add', '{"name":"agent-x"}'])
+    expect(added.exitCode).toBe(0)
+    const addedJson = JSON.parse(added.json) as { data: { text: string } }
+    expect(addedJson.data.text).toBe('ok:add|{"name":"agent-x"}')
+
+    await cli.run(['provider', 'list'])
+    expect(calls.at(-1)).toEqual(['list'])
+
+    await cli.run(['provider', 'remove', 'agent-x'])
+    expect(calls.at(-1)).toEqual(['remove', 'agent-x'])
+  })
+
+  it('provider 命令失败时返回结构化错误和 exitCode=1', async () => {
+    const cli = new WeaveCli({} as WeaveMcp, async () => ({ kind: 'error', text: 'registry boom' }))
+    const result = await cli.run(['provider', 'list'])
+    expect(result.exitCode).toBe(1)
+    expect(result.text).toContain('internal_error: registry boom')
+    const parsed = JSON.parse(result.json) as { ok: boolean; error: { code: string; message: string } }
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error.code).toBe('internal_error')
+    expect(parsed.error.message).toBe('registry boom')
+  })
+})
