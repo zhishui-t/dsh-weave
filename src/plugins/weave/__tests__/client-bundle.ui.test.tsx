@@ -582,7 +582,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     fireEvent.click(screen.getByTestId('nav-manual'))
     await screen.findByTestId('page-manual')
     expect(screen.getByTestId('command-row-0').textContent).toContain('/weave team list')
-    expect(screen.getByText('/weave provider add <JSON|紧凑配置>')).toBeTruthy()
+    expect(screen.getByText('/weave provider add <JSON|JSON数组|紧凑配置>')).toBeTruthy()
   })
 
   it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {
