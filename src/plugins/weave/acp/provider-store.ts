@@ -220,7 +220,9 @@ export function parseProviderInputs(raw: string | unknown): StoredProviderConfig
   if (typeof raw !== 'string') {
     return normalizeProviderCandidates(raw)
   }
-  const trimmed = raw.trim()
+  const rawTrimmed = raw.trim()
+  const prefixMatch = rawTrimmed.match(/^(?:provider\s+)?add\s+([\s\S]*)$/i)
+  const trimmed = (prefixMatch?.[1] ?? rawTrimmed).trim()
   if (trimmed === '') invalid('provider 配置不能为空')
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     let parsed: unknown

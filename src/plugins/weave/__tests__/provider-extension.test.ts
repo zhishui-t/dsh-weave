@@ -339,6 +339,11 @@ describe('providers.json 存储与入参解析', () => {
     expect(singleLine[0]?.args).toEqual(['s.js'])
     expect(singleLine[0]?.declaredExtensions).toEqual(['zcode'])
 
+    const withAddPrefix = parseProviderInputs('provider add {"name":"prefix-agent","command":"node"}')
+    expect(withAddPrefix[0]?.name).toBe('prefix-agent')
+    const withBareAdd = parseProviderInputs('add {"name":"bare-add-agent","command":"node"}')
+    expect(withBareAdd[0]?.name).toBe('bare-add-agent')
+
     expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
     expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
   })
