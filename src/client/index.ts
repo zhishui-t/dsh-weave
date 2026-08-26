@@ -114,8 +114,8 @@ const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] a
 const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
 
 const EXECUTOR_LABELS: Record<string, string> = {
-  spawn: 'DSH 子代理',
-  fork: 'DSH 子代理',
+  spawn: 'DSH 子代理（新启）',
+  fork: 'DSH 子代理（分支）',
   dsh_subagent: 'DSH 子代理',
   zcode: 'ZCode 执行器',
   codex: 'Codex 执行器',
