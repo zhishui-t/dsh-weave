@@ -21,7 +21,7 @@ import {
   negotiateExtensions,
 } from '../acp/provider-extension'
 import type { AcpProviderExtension } from '../acp/provider-extension'
-import { ProviderStore, parseProviderInput } from '../acp/provider-store'
+import { ProviderStore, parseProviderInput, parseProviderInputs } from '../acp/provider-store'
 import { createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from '../acp/dynamic-provider'
 
 const roots: string[] = []
@@ -279,6 +279,40 @@ describe('providers.json 存储与入参解析', () => {
     const json = parseProviderInput('{"name":"j1","transport":"stdio","command":"py","protocol":"acp"}')
     expect(json.name).toBe('j1')
   })
+
+  it('parseProviderInputs：支持数组、providers/servers/mcpServers、env 数组与缺省 transport/protocol', () => {
+    const arr = parseProviderInputs([
+      { name: 'm1', command: 'node', args: ['a.js'] },
+      { name: 'm2', command: 'python', args: ['b.py'] },
+    ])
+    expect(arr.map((c) => c.name)).toEqual(['m1', 'm2'])
+    expect(arr[0]?.transport).toBe('stdio')
+    expect(arr[0]?.protocol).toBe('acp')
+
+    const providers = parseProviderInputs('{"providers":[{"name":"p1","command":"node","args":["x.js"]}]}')
+    expect(providers).toHaveLength(1)
+    expect(providers[0]?.name).toBe('p1')
+
+    const mcp = parseProviderInputs({
+      mcpServers: [
+        {
+          name: 'acp-tool',
+          type: 'stdio',
+          command: '/usr/bin/acp-tool',
+          args: ['--serve'],
+          env: [{ name: 'TOKEN', value: 'secret' }, { name: 'MODE', value: 'x' }],
+        },
+      ],
+    })
+    expect(mcp[0]?.command).toBe('/usr/bin/acp-tool')
+    expect(mcp[0]?.env).toEqual({ TOKEN: 'secret', MODE: 'x' })
+
+    const idFallback = parseProviderInputs('{"servers":[{"id":"fallback-agent","command":"npx","args":["agent.js"]}]}')
+    expect(idFallback[0]?.name).toBe('fallback-agent')
+
+    expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
+    expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
+  })
 })
 
 describe('registerStoredAcpProviders 生命周期', () => {
@@ -366,6 +400,24 @@ describe('/weave provider add/list/remove 命令', () => {
     const bad = await add.handler('{ broken')
     expect(bad.kind).toBe('error')
     expect(env.store.get('agent8')).toBeUndefined()
+  })
+
+  it('add-provider：JSON 数组与 mcpServers 协议可一次注册多个', async () => {
+    const env = makeCommandEnv()
+    const add = env.add!
+    const ok = await add.handler(
+      '{"mcpServers":[{"name":"alpha","command":"node","args":["a.js"]},{"name":"beta","command":"python","args":["b.py"],"env":[{"name":"K","value":"v"}]}]}',
+    )
+    expect(ok.kind).toBe('success')
+    expect(ok.text).toContain('已注册执行器 alpha')
+    expect(ok.text).toContain('已注册执行器 beta')
+    expect(env.store.get('alpha')?.command).toBe('node')
+    expect(env.store.get('beta')?.env).toEqual({ K: 'v' })
+    expect(env.hotCalls).toEqual(['alpha', 'beta'])
+
+    const arr = await add.handler('[{"name":"gamma","command":"deno","args":["g.ts"]}]')
+    expect(arr.kind).toBe('success')
+    expect(env.store.get('gamma')?.args).toEqual(['g.ts'])
   })
 
   it('list/remove 子命令；remove 未知名报错', async () => {
