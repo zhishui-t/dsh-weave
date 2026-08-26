@@ -874,6 +874,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       )
 
+    const roleAdvancedFields = (index: number): Array<React.ReactElement> => {
+      const executorId = roles[index]?.executor ?? ''
+      const caps = executors.find((item: ExecutorInfo) => item.id === executorId)?.capabilities as
+        | { thoughtControl?: boolean; modeControl?: boolean; thoughtLevels?: unknown[]; modes?: unknown[] }
+        | undefined
+      const toValues = (list: unknown[] | undefined): string[] =>
+        Array.isArray(list)
+          ? list.map((item) => typeof item === 'string' ? item : String((item as SelectOption).value ?? ''))
+          : []
+      const thoughtValues = toValues(caps?.thoughtLevels)
+      const modeValues = toValues(caps?.modes)
+      const out: Array<React.ReactElement> = []
+      if (caps?.thoughtControl === true) {
+        out.push(roleSelect(index, '思考深度', 'thoughtLevel', thoughtValues.length ? thoughtValues : ['off', 'high', 'max']))
+      }
+      if (caps?.modeControl === true) {
+        out.push(roleSelect(index, '模式', 'mode', modeValues.length ? modeValues : ['plan', 'build', 'edit', 'yolo', 'auto']))
+      }
+      return out
+    }
+
     const roleLinkedModelFields = (index: number): Array<React.ReactElement> => {
       if (providerItems.length === 0) {
         return [
@@ -1041,6 +1062,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     'div',
                     { className: 'weave-role-grid' },
                     ...roleLinkedModelFields(index),
+                    ...roleAdvancedFields(index),
                   ),
               roleField(index, '角色提示词', 'personality', '', 'textarea'),
             ),
