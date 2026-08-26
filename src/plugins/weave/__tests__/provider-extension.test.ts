@@ -328,6 +328,11 @@ describe('providers.json 存储与入参解析', () => {
     expect(loose[0]?.args).toEqual(['--serve', '--port', '8080'])
     expect(loose[0]?.declaredExtensions).toEqual(['zcode'])
 
+    const singleLine = parseProviderInputs('name: single-agent command: node args: s.js extensions: zcode')
+    expect(singleLine[0]?.name).toBe('single-agent')
+    expect(singleLine[0]?.args).toEqual(['s.js'])
+    expect(singleLine[0]?.declaredExtensions).toEqual(['zcode'])
+
     expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
     expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
   })
