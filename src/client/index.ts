@@ -56,6 +56,7 @@ type Route =
   | 'sessions'
   | 'audit'
   | 'settings'
+  | 'manual'
 
 const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
   { key: 'overview', label: '总览', desc: '任务、知识与执行器的整体运行状态。' },
@@ -66,6 +67,7 @@ const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
   { key: 'sessions', label: '会话管理', desc: '会话绑定与修订上下文概览。' },
   { key: 'audit', label: '审计日志', desc: '核心事件与恢复操作审计。' },
   { key: 'settings', label: '设置', desc: 'Weave 本地配置与运行参数。' },
+  { key: 'manual', label: '命令手册', desc: '/weave 命令与自然语言团队控制速查。' },
 ]
 
 /* ------------------------------- 领域常量 ------------------------------- */
@@ -1815,7 +1817,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             ]),
       ),
       providersBlock,
-      capabilities
+      capabilities && (
+          (capabilities.models?.length ?? 0) > 0 ||
+          (capabilities.modes?.length ?? 0) > 0 ||
+          (capabilities.thoughtLevels?.length ?? 0) > 0 ||
+          capabilities.currentModel || capabilities.currentMode || capabilities.currentThoughtLevel
+        )
         ? React.createElement(
             'div',
             { className: 'weave-panel', 'data-testid': 'zcode-catalog' },
@@ -2253,31 +2260,30 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       ),
       providersSummary,
+    )
+  }
+
+
+  function ManualPage() {
+    return React.createElement(
+      'section',
+      { className: 'weave-page', 'data-testid': 'page-manual' },
+      React.createElement('h1', null, '命令手册'),
+      Note({ text: '以下命令与当前 DSH 会话的 /weave 命令一致；团队启停也可用自然语言。' }),
       React.createElement(
         'div',
-        { className: 'weave-panel', 'data-testid': 'command-manual' },
-        React.createElement('b', { className: 'weave-subh' }, '/weave 命令手册'),
-        React.createElement(
-          'div',
-          { className: 'weave-list' },
-          ...WEAVE_COMMAND_MANUAL.map((entry: { cmd: string; desc: string }, index: number) =>
-            React.createElement(
-              'div',
-              { className: 'weave-list-item', key: entry.cmd, 'data-testid': `command-row-${index}` },
-              React.createElement('b', null, entry.cmd),
-              React.createElement('span', { className: 'weave-muted' }, entry.desc),
-            ),
+        { className: 'weave-list' },
+        ...WEAVE_COMMAND_MANUAL.map((entry: { cmd: string; desc: string }, index: number) =>
+          React.createElement(
+            'article',
+            { className: 'weave-list-item', key: entry.cmd, 'data-testid': `command-row-${index}` },
+            React.createElement('b', null, entry.cmd),
+            React.createElement('span', { className: 'weave-muted' }, entry.desc),
           ),
-        ),
-        React.createElement(
-          'span',
-          { className: 'weave-muted' },
-          '任务与团队启停由当前 DSH 会话负责；此手册与 CLI_HELP 命令集一致。',
         ),
       ),
     )
   }
-
 
   /* ============================== 壳与入口 ============================== */
 
@@ -2293,6 +2299,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       sessions: React.createElement(SessionsPage),
       audit: React.createElement(AuditPage),
       settings: React.createElement(SettingsPage),
+      manual: React.createElement(ManualPage),
     }
     const def = ROUTES.find((item) => item.key === route) ?? ROUTES[0]!
     const content = React.createElement(

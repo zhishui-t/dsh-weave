@@ -112,15 +112,7 @@ function makeClientContext(endpointValues: Record<string, unknown> = {}) {
                 ok: true,
                 value: {
                   teams: [],
-                  executors: [{ id: 'zcode' }, { id: 'spawn' }],
-                  zcodeCapabilities: {
-                    models: [{ value: ['provider-id', 'deepseek-v4-flash'].join(SEP), name: 'deepseek › deepseek-v4-flash' }],
-                    currentModel: ['provider-id', 'deepseek-v4-flash'].join(SEP),
-                    modes: [{ value: 'plan' }, { value: 'build' }, { value: 'yolo' }],
-                    currentMode: 'build',
-                    thoughtLevels: [{ value: 'off' }, { value: 'high' }, { value: 'max' }],
-                    currentThoughtLevel: 'max',
-                  },
+                  executors: [{ id: 'spawn' }, { id: 'fork' }],
                 },
               }
             }
@@ -174,7 +166,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
             async call(_channel: string, endpoint: string, payload: unknown) {
               calls.push({ endpoint, payload })
               if (endpoint === 'snapshot') {
-                return { ok: true, value: { teams: [], executors: [{ id: 'zcode' }, { id: 'spawn' }] } }
+                return { ok: true, value: { teams: [], executors: [{ id: 'spawn' }, { id: 'fork' }] } }
               }
               return { ok: true, value: { team_id: 'my-team', name: '我的团队', roles: 1 } }
             },
@@ -239,12 +231,25 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
-    const fixture = makeClientContext()
+    const fixture = makeClientContext({
+      snapshot: {
+        teams: [],
+        executors: [{ id: 'zcode' }, { id: 'spawn' }],
+        zcodeCapabilities: {
+          models: [{ value: ['provider-id', 'deepseek-v4-flash'].join(SEP), name: 'deepseek › deepseek-v4-flash' }],
+          currentModel: ['provider-id', 'deepseek-v4-flash'].join(SEP),
+          modes: [{ value: 'plan' }, { value: 'build' }, { value: 'yolo' }],
+          currentMode: 'build',
+          thoughtLevels: [{ value: 'off' }, { value: 'high' }, { value: 'max' }],
+          currentThoughtLevel: 'max',
+        },
+      },
+    })
     exported.apply(fixture.ctx as never)
 
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
- fireEvent.click(screen.getByTestId('nav-teams'))
+    fireEvent.click(screen.getByTestId('nav-teams'))
 
     const page = await screen.findByTestId('page-teams')
     await waitFor(() => {
@@ -272,7 +277,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     await screen.findByText('已保存：my-team（1 个角色）')
   })
 
-  it('Dashboard 内部导航可切换 8 个页面，关闭按钮可退出', async () => {
+  it('Dashboard 内部导航可切换 9 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
       if (id === 'react-dom') return ReactDOM
@@ -316,7 +321,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings']) {
+    for (const route of ['teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings', 'manual']) {
       fireEvent.click(screen.getByTestId(`nav-${route}`))
       expect(screen.getByTestId(`page-${route}`)).toBeTruthy()
       expect(screen.getByTestId(`nav-${route}`).getAttribute('data-active')).toBe('true')
@@ -529,7 +534,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(screen.getByTestId('knowledge-graph-detail').textContent).toContain('A 指南')
   })
 
-  it('设置页展示 /weave 命令手册', async () => {
+  it('独立命令手册页展示全部 /weave 命令', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({
       'settings/describe': {
@@ -544,8 +549,8 @@ describe('t8 会话优先模型与治理化改造', () => {
     exported.apply(fixture.ctx as never)
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-settings'))
-    await screen.findByTestId('command-manual')
+    fireEvent.click(screen.getByTestId('nav-manual'))
+    await screen.findByTestId('page-manual')
     expect(screen.getByTestId('command-row-0').textContent).toContain('/weave team list')
     expect(screen.getByText('/weave provider add <JSON|紧凑配置>')).toBeTruthy()
   })

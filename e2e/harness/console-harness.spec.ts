@@ -30,12 +30,7 @@ function defaultScenario(): Record<string, RpcEnvelope> {
       ok: true,
       value: {
         teams: [{ id: 'seed-team', name: '种子团队', roles: 1 }],
-        executors: [{ id: 'zcode', kind: 'zcode' }, { id: 'spawn', kind: 'spawn' }],
-        zcodeCapabilities: {
-          models: [{ value: 'prov|deepseek-v4-flash', name: 'deepseek › deepseek-v4-flash' }],
-          modes: [{ value: 'plan' }, { value: 'build' }],
-          thoughtLevels: [{ value: 'off' }, { value: 'high' }, { value: 'max' }],
-        },
+        executors: [{ id: 'spawn', kind: 'dsh_subagent' }, { id: 'fork', kind: 'dsh_subagent' }],
       },
     },
     'team/delete': { ok: true, value: { existed: true } },
@@ -150,16 +145,16 @@ window.__ModuleLoader__ = { load(reg){ window.__WEAVE_REG__ = reg } };</script>
 }
 
 test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
-  test('shell+nav: 八页可达且 data-active 正确切换', async ({ page }) => {
+  test('shell+nav: 九页可达且 data-active 正确切换', async ({ page }) => {
     await openHarnessPage(page)
     await page.getByTestId('weave-open').click()
     await expect(page.getByTestId('weave-dashboard')).toBeVisible()
-    for (const key of ['overview', 'teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings'] as const) {
+    for (const key of ['overview', 'teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings', 'manual'] as const) {
       await page.getByTestId(`nav-${key}`).click()
       await expect(page.getByTestId(`page-${key}`)).toBeVisible()
       await expect(page.getByTestId(`nav-${key}`)).toHaveAttribute('data-active', 'true')
     }
-    await expect(page.locator('.weave-title')).toContainText('Weave 控制台 · 设置')
+    await expect(page.locator('.weave-title')).toContainText('Weave 控制台 · 命令手册')
   })
 
   test('teams: 创建按钮文案随角色数变化，执行器下拉来自 snapshot', async ({ page }) => {
