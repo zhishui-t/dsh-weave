@@ -147,7 +147,12 @@ function tryExtractProviderText(text: string): Record<string, unknown> | undefin
   const env: Record<string, string> = {}
   let currentListKey: string | undefined
   let inEnv = false
-  for (const rawLine of text.split(/\r?\n/)) {
+  // 兼容换行被斜杠命令压成单行的情况：在下一个已知字段前插入换行。
+  const normalized = text.replace(
+    /\s(?=(?:name|id|command|args|cwd|env|protocol|transport|declaredExtensions|extensions)\s*[:=])/g,
+    '\n',
+  )
+  for (const rawLine of normalized.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#') || line.startsWith('//')) continue
     const listItem = line.match(/^-\s+(.+)$/)
@@ -249,6 +254,9 @@ export function parseProviderInputs(raw: string | unknown): StoredProviderConfig
   const extracted = tryExtractProviderText(trimmed)
   if (extracted) {
     return [parseProviderInput(normalizeProviderRecord(extracted))]
+  }
+  if (/^[A-Za-z]:[\\/]/.test(trimmed) || /^\.{0,2}[\\/]/.test(trimmed) || /^@/.test(trimmed) || /^file:\/\//i.test(trimmed)) {
+    invalid(`文件不存在或无法读取: ${trimmed}`)
   }
   return [parseProviderInput(trimmed)]
 }
