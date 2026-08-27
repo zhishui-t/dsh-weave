@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import { Readable, Writable } from 'node:stream'
 
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
@@ -106,6 +107,13 @@ export interface AcpSessionProviderConfig {
    * 缺省视为 ['zcode'] 以保持既有行为；显式空数组表示纯标准 ACP。
    */
   declaredExtensions?: string[]
+  /**
+   * sessionKey→acpSid 持久索引文件（iso-1 会话隔离）。
+   * 缺省关闭（纯内存隔离，与既有行为一致）；生产接线传 DEFAULT_ACP_SESSION_INDEX_FILE，
+   * 使桥接/插件重启后同 sessionKey 仍续接同一占位符（进而同一 zcode 会话），
+   * 不同 sessionKey 各自独立会话、互不阻塞互不染上下文。
+   */
+  sessionIndexFile?: string
 }
 
 /** t7 运行时挂钩：把扩展协商 / update 变换注入协议内核。 */
@@ -182,6 +190,55 @@ export interface AcpSessionFactoryConnection {
 interface SessionRecord {
   sessionId: string
   connectionKey: string
+}
+
+/** sessionKey 维度持久索引单条记录。 */
+export interface SessionKeyIndexRecord {
+  acpSid: string
+  updatedAt: number
+}
+
+/** 索引文件形态：version 兜底前向兼容；只增改不删，旧数据兼容不丢。 */
+export interface SessionKeyIndexFile {
+  version: 1
+  keys: Record<string, SessionKeyIndexRecord>
+}
+
+/** 生产缺省索引路径（~/.dsh/weave/acp-session-index.json）；构造时可覆盖。 */
+export const DEFAULT_ACP_SESSION_INDEX_FILE = join(homedir(), '.dsh', 'weave', 'acp-session-index.json')
+
+/** 读持久索引（best-effort：任何异常按无记录处理，绝不阻断委托）。 */
+function readSessionIndexFile(file: string | undefined, sessionKey: string): SessionKeyIndexRecord | undefined {
+  if (!file) return undefined
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
+    const record = raw?.keys?.[sessionKey]
+    return typeof record?.acpSid === 'string' && record.acpSid !== '' ? { acpSid: record.acpSid, updatedAt: Number(record.updatedAt) || 0 } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 写持久索引（读改写合并；失败仅吞掉——别名库本身在桥接侧另有 durable 副本）。 */
+function writeSessionIndexFile(file: string | undefined, sessionKey: string, acpSid: string): void {
+  if (!file) return
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    let base: SessionKeyIndexFile = { version: 1, keys: {} }
+    try {
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
+      if (raw && typeof raw === 'object' && raw.keys && typeof raw.keys === 'object') {
+        base = { version: 1, keys: raw.keys as Record<string, SessionKeyIndexRecord> }
+      }
+    } catch {
+      // 首次写或旧文件损坏：从空表起写。
+    }
+    base.version = 1
+    base.keys[sessionKey] = { acpSid, updatedAt: Date.now() }
+    writeFileSync(file, `${JSON.stringify(base, null, 2)}\n`, 'utf8')
+  } catch {
+    // 索引写失败不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
+  }
 }
 
 interface StartOptions {
@@ -275,6 +332,7 @@ export class AcpSessionProvider {
 
   readonly #hooks: AcpProviderRuntimeHooks
   readonly #declaredExtensions: readonly string[]
+  readonly #sessionIndexFile?: string
 
   constructor(
     config: AcpSessionProviderConfig,
@@ -292,6 +350,8 @@ export class AcpSessionProvider {
     this.#spawn = spawn
     this.#connect = connect
     this.#declaredExtensions = config.declaredExtensions ?? ['zcode']
+    // iso-1：sessionKey→acpSid 持久索引（可选）。缺省关闭以保持既有纯内存行为。
+    this.#sessionIndexFile = config.sessionIndexFile
     // 显式 hooks 优先；否则按声明对内置注册表协商（探测失败自动降级）。
     this.#hooks = hooks ?? defaultRuntimeHooks(this.#declaredExtensions)
   }
@@ -306,20 +366,38 @@ export class AcpSessionProvider {
 
     const sessionKey = request.sessionKey
     const connection = await this.#acquireConnection(cwd)
-    let sessionId = weave.resumeSessionId ?? this.#sessions.get(sessionKey)?.sessionId
+    // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
+    // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，
+    // 已带 zcodeSid 的记录直达同一后端会话），不同 sessionKey 天然各得独立会话。
+    let sessionId =
+      weave.resumeSessionId ??
+      this.#sessions.get(sessionKey)?.sessionId ??
+      readSessionIndexFile(this.#sessionIndexFile, sessionKey)?.acpSid
     let sessionResponse: AcpSessionNewResponse | undefined
     const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
 
     if (sessionId === undefined || !knownInConnection) {
       if (sessionId !== undefined && connection.conn.loadSession) {
-        const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: this.#mcpServers })
-        sessionResponse = loaded as AcpSessionNewResponse
-      } else {
+        try {
+          const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: this.#mcpServers })
+          sessionResponse = loaded as AcpSessionNewResponse
+        } catch {
+          // 索引指向的占位符已失效（30d TTL 清理/跨机迁移/记录损坏）：
+          // 自愈回退到新建会话，并让下方索引写入覆盖掉失效映射。
+          sessionId = undefined
+          this.#sessions.delete(sessionKey)
+        }
+      }
+      if (sessionId === undefined) {
         const created = await connection.conn.newSession({ cwd, mcpServers: this.#mcpServers })
         sessionId = created.sessionId
         sessionResponse = created
       }
       this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
+      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId)
+    } else {
+      // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键缺失）。
+      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId)
     }
 
     const runId = `acp-${sessionId}`

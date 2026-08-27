@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 const ACP_MODEL_SEPARATOR = String.fromCharCode(92)
 
@@ -9,7 +12,10 @@ import {
   type AcpConfigOption,
 } from '../acp/acp-session-provider'
 
-function makeFixtures() {
+function makeFixtures(
+  overrides?: Partial<AcpSessionProviderConfig>,
+  options?: { loadSessionError?: Error },
+) {
   const connections: AcpSessionFactoryConnection[] = []
   const spawned: unknown[] = []
   const never = new Promise(() => {})
@@ -30,6 +36,7 @@ function makeFixtures() {
     command: 'node',
     args: ['zcode-acp-server.js'],
     permission: 'reject',
+    ...overrides,
   }
 
   let sessionSequence = 0
@@ -83,7 +90,9 @@ function makeFixtures() {
           ],
         }
       }),
-      loadSession: vi.fn(),
+      loadSession: options?.loadSessionError
+        ? vi.fn().mockRejectedValue(options.loadSessionError)
+        : vi.fn(),
       prompt: vi.fn().mockImplementation(async (params: { sessionId: string }) => {
         connection.handleSessionUpdate?.({
           sessionId: params.sessionId,
@@ -175,5 +184,119 @@ describe('AcpSessionProvider', () => {
     expect(connections[0]!.newSession).toHaveBeenCalledTimes(2)
     expect(first.id).toBe(second.id)
     expect(third.id).not.toBe(first.id)
+  })
+
+  /* ---- iso-1：sessionKey→acpSid 持久索引（跨实例隔离与续接） ---- */
+
+  describe('sessionKey 持久索引（iso-1）', () => {
+    let dir = ''
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), 'weave-acp-idx-'))
+    })
+    afterAll(() => {
+      rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('验收1：两个不同 sessionKey 各自获得独立会话并落索引；同键复用同一 sid', async () => {
+      const indexFile = join(dir, 'idx-isolation.json')
+      const { provider, connections } = makeFixtures({ sessionIndexFile: indexFile })
+      const request = {
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        prompt: [{ type: 'text', text: 'hello' }],
+      }
+
+      const dev1 = await provider.start({ ...request, sessionKey: 'changan:developer-1:session:v0' })
+      await dev1.result
+      const fe1 = await provider.start({ ...request, sessionKey: 'changan:frontend-1:session:v0' })
+      await fe1.result
+
+      expect(dev1.id).toBe('acp-acp-session-1')
+      expect(fe1.id).toBe('acp-acp-session-2')
+      expect(dev1.id).not.toBe(fe1.id)
+
+      // 同键再次启动：复用（不新建占位符）。
+      const again = await provider.start({ ...request, sessionKey: 'changan:developer-1:session:v0' })
+      await again.result
+      expect(again.id).toBe(dev1.id)
+
+      expect(connections[0]!.newSession).toHaveBeenCalledTimes(2)
+      const persisted = JSON.parse(readFileSync(indexFile, 'utf8')) as {
+        version: number
+        keys: Record<string, { acpSid: string; updatedAt: number }>
+      }
+      expect(persisted.version).toBe(1)
+      expect(persisted.keys['changan:developer-1:session:v0']?.acpSid).toBe('acp-session-1')
+      expect(persisted.keys['changan:frontend-1:session:v0']?.acpSid).toBe('acp-session-2')
+    })
+
+    it('验收2：跨实例（模拟插件重启）同键经 loadSession 续接原占位符，不新建', async () => {
+      const indexFile = join(dir, 'idx-resume.json')
+      const first = makeFixtures({ sessionIndexFile: indexFile })
+      const boot = await first.provider.start({
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        sessionKey: 'changan:developer-2:session:v0',
+        prompt: [{ type: 'text', text: 'bootstrap' }],
+      })
+      await boot.result
+      expect(first.connections[0]!.newSession).toHaveBeenCalledTimes(1)
+
+      // 新 provider 实例（内存表为空），共享同一持久索引 ⇒ 必须走 loadSession 续接。
+      const second = makeFixtures({ sessionIndexFile: indexFile })
+      const resumed = await second.provider.start({
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        sessionKey: 'changan:developer-2:session:v0',
+        prompt: [{ type: 'text', text: 'continue across restart' }],
+      })
+      await resumed.result
+      expect(resumed.id).toBe(boot.id)
+      expect(second.connections[0]!.newSession).not.toHaveBeenCalled()
+      expect(second.connections[0]!.loadSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'acp-session-1' }),
+      )
+    })
+
+    it('边界：索引指向失效占位符时自愈新建并覆盖索引', async () => {
+      const indexFile = join(dir, 'idx-stale.json')
+      writeFileSync(
+        indexFile,
+        JSON.stringify({ version: 1, keys: { 'changan:tester-1:x': { acpSid: 'ghost-session', updatedAt: 1 } } }),
+        'utf8',
+      )
+      const { provider, connections } = makeFixtures({ sessionIndexFile: indexFile }, {
+        loadSessionError: new Error('placeholder evicted'),
+      })
+
+      const run = await provider.start({
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        sessionKey: 'changan:tester-1:x',
+        prompt: [{ type: 'text', text: 'retry after stale alias' }],
+      })
+      await run.result
+
+      expect(connections[0]!.loadSession).toHaveBeenCalledTimes(1)
+      expect(connections[0]!.newSession).toHaveBeenCalledTimes(1)
+      expect(run.id).toBe('acp-acp-session-1')
+      const persisted = JSON.parse(readFileSync(indexFile, 'utf8')) as {
+        keys: Record<string, { acpSid: string }>
+      }
+      expect(persisted.keys['changan:tester-1:x']?.acpSid).toBe('acp-session-1')
+    })
+
+    it('兼容：未配置索引文件时保持既有纯内存行为（零副作用）', async () => {
+      const { provider, connections } = makeFixtures()
+      const run = await provider.start({
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        sessionKey: 'legacy-key',
+        prompt: [{ type: 'text', text: 'legacy path' }],
+      })
+      await run.result
+      expect(run.id).toBe('acp-acp-session-1')
+      expect(connections[0]!.newSession).toHaveBeenCalledTimes(1)
+    })
   })
 })

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 
 import {
   AcpSessionProvider,
+  DEFAULT_ACP_SESSION_INDEX_FILE,
   createStoredAcpExecutorProvider,
   ZcodeAcpExecutorProvider,
   type AcpSessionProviderConfig,
@@ -64,6 +65,8 @@ export function createAcpProviderFromConfig(config: StoredProviderConfig, spawn:
     permission: 'reject',
     ...(config.mcp_servers !== undefined ? { mcpServers: config.mcp_servers } : {}),
     ...(config.declaredExtensions !== undefined ? { declaredExtensions: config.declaredExtensions } : {}),
+    // iso-1：动态 provider 同样启用 sessionKey→acpSid 持久索引（默认路径集中管理）。
+    sessionIndexFile: DEFAULT_ACP_SESSION_INDEX_FILE,
   }
   const acp = new AcpSessionProvider(acpConfig, spawn as never)
   return {

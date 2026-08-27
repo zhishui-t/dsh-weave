@@ -17,7 +17,7 @@ import { SessionTracker } from './session-tracker.js'
 import { TeamManager } from './team-manager.js'
 import { ExecutorProviderRegistry } from './executors/executor-provider.js'
 import { DshSubagentExecutorProvider } from './executors/dsh-subagent-executor-provider.js'
-import { AcpSessionProvider, ZcodeAcpExecutorProvider, zcodeAcpProviderConfigFromEnvironment, type AcpSessionProviderConfig } from './acp/acp-session-provider.js'
+import { AcpSessionProvider, DEFAULT_ACP_SESSION_INDEX_FILE, ZcodeAcpExecutorProvider, zcodeAcpProviderConfigFromEnvironment, type AcpSessionProviderConfig } from './acp/acp-session-provider.js'
 
 /**
  * P0-PLUGIN-WIRE —— DSH 宿主接线模块（t37）。
@@ -612,7 +612,14 @@ export function createDefaultExecutorProviderRegistry(
   const subprocess = runtimeCtx.subprocess
 
   if (zcodeConfig && subprocess) {
-    const acp = new AcpSessionProvider(zcodeConfig, (spec) => subprocess.spawn(spec) as never)
+    const acp = new AcpSessionProvider(
+      {
+        ...zcodeConfig,
+        // iso-1：sessionKey→acpSid 持久索引，跨重启保持「同键续接、异键隔离」。
+        sessionIndexFile: DEFAULT_ACP_SESSION_INDEX_FILE,
+      },
+      (spec) => subprocess.spawn(spec) as never,
+    )
     // 同时注册到 ctx.subagents，保证 ExecutorRegistry / 执行器列表可以发现 zcode。
     subagents?.registerProvider?.(acp)
     registry.register(new ZcodeAcpExecutorProvider(acp))

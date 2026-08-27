@@ -250,6 +250,9 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-teams'))
     await screen.findByTestId('page-teams')
+    // 重构后表单移入「新建团队」模态，先打开编辑器再断言字段联动。
+    fireEvent.click(screen.getByTestId('team-new-btn'))
+    await screen.findByTestId('role-editor-0')
     const providerSelect = screen.getByTestId('provider-select-0') as HTMLSelectElement
     const modelSelect = screen.getByTestId('model-select-0') as HTMLSelectElement
     expect(Array.from(providerSelect.options).map((option) => option.value)).toContain('prov-a')
@@ -286,9 +289,12 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-teams'))
 
-    const page = await screen.findByTestId('page-teams')
+    await screen.findByTestId('page-teams')
+    // 重构后表单在「新建团队」模态内；先开编辑器，等执行器默认值填充。
+    fireEvent.click(screen.getByTestId('team-new-btn'))
+    const editor = await screen.findByTestId('team-editor')
     await waitFor(() => {
-      expect((page.querySelector('select') as HTMLSelectElement).value).toBe('zcode')
+      expect((editor.querySelector('select') as HTMLSelectElement).value).toBe('zcode')
     })
     expect(screen.getByTestId('model-select').textContent).toContain('deepseek-v4-flash')
 
@@ -396,6 +402,9 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-teams'))
     await screen.findByTestId('page-teams')
+    // 重构后多角色编辑器位于「新建团队」模态内。
+    fireEvent.click(screen.getByTestId('team-new-btn'))
+    await screen.findByTestId('role-editor-0')
     expect(screen.getByTestId('role-editor-0')).toBeTruthy()
     fireEvent.click(screen.getByTestId('team-add-role'))
     expect(screen.getByTestId('role-editor-1')).toBeTruthy()

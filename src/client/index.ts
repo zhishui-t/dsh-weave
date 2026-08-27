@@ -911,9 +911,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       setRoleOpen([true])
     }
 
-    /** 新建模式：空白草稿（高级配置默认值与原提交硬编码一致）。 */
+    /** 新建模式：空白草稿（高级配置默认值与原提交硬编码一致）；执行器直接取当前已注册的首个，避免依赖只在快照首次到达时运行的补默认 effect。 */
     const openCreate = (): void => {
       resetEditorForm()
+      const firstExecutorId = (executors[0] as ExecutorInfo | undefined)?.id ?? ''
+      if (firstExecutorId !== '') {
+        setRoles([{ ...blankRole(), executor: firstExecutorId }])
+      }
       setEditorMode('create')
       setDetailTeamId(null)
     }
@@ -935,7 +939,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       setRoles((current: RoleDraft[]) => current.filter((_role, i) => i !== index))
     }
 
-    // 快照到达后，为尚未选择执行器的角色补默认值（取实际注册的第一个执行器，有什么显示什么，不强制 ZCode）。
+    // 快照到达后（或编辑器打开时），为尚未选择执行器的角色补默认值（取实际注册的第一个执行器，有什么显示什么，不强制 ZCode）。
+    // editorMode 入依赖：新建/载入产生的新角色需要重新兜底，不能只在快照首次到达时运行一次。
     useEffect(() => {
       const firstExecutor = ((snapshot.data?.executors ?? [])[0] as ExecutorInfo | undefined)?.id ?? ''
       if (firstExecutor === '') return
@@ -944,7 +949,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           ? current.map((role: RoleDraft) => (role.executor === '' ? { ...role, executor: firstExecutor } : role))
           : current,
       )
-    }, [snapshot.data])
+    }, [snapshot.data, editorMode])
 
     /* ---- 提交（唯一写入路径）：create 全新构建；edit 以 team/get 全量为基底展开，
        只覆写表单可见字段，matchers/executor_limits 等未编辑内容原样保留（评审 C1）。 ---- */
@@ -1601,7 +1606,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             },
             React.createElement(
               'div',
-              { className: 'weave-dialog weave-dialog-wide', role: 'dialog', 'aria-modal': 'true', 'data-testid': 'team-editor' },
+              {
+                className: 'weave-dialog weave-dialog-wide',
+                role: 'dialog',
+                'aria-modal': 'true',
+                'data-testid': 'team-editor',
+              },
               React.createElement(
                 'b',
                 { className: 'weave-dialog-title' },
@@ -3249,7 +3259,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const now = Date.now()
     const events: ExecutorEventRow[] = []
     for (let i = 0; i < capped; i += 1) {
-      const kind = kinds[(seed + i) % kinds.length]
+      const kind = kinds[(seed + i) % kinds.length] ?? 'status'
       const withTool = kind === 'tool_call' || kind === 'tool_result'
       const withText = kind === 'output' || kind === 'reasoning' || kind === 'tool_call'
       events.push({

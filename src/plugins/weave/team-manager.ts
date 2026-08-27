@@ -100,6 +100,8 @@ export interface TeamConfig {
 /** 执行器存在性查询的最小契约；ExecutorRegistry（P0-REG-002）结构上满足。 */
 export interface ExecutorLookup {
   get(id: string): ExecutorInfo | undefined
+  /** 已注册执行器列表（ExecutorRegistry.load 后非空；区分“未加载”与“确无此执行器”）。 */
+  list?(...args: unknown[]): unknown[]
 }
 
 export interface TeamManagerOptions {
@@ -306,7 +308,12 @@ export class TeamManager {
       if (role.fallback_model !== undefined && role.fallback_model.trim() === '') {
         throw new WeaveError('invalid_team', `角色 ${role.id} 的 fallback_model 不能为空`, { role: role.id })
       }
-      if (!lookup.get(role.executor)) {
+      // iso-1-hotfix: registry 尚未 load（宿主启动时序）或执行器名单波动时，
+      // 不应让整个团队从 listTeams 消失——降级为跳过该校验，委派期再由
+      // DelegationService/executorRegistry 兜底报 executor_unavailable。
+      const executorList = (lookup?.list?.() ?? []) as Array<string | { id?: string }>
+      const executorIds = executorList.map((item) => (typeof item === 'string' ? item : String(item?.id ?? '')))
+      if (executorIds.length > 0 && !executorIds.includes(role.executor)) {
         throw new WeaveError('executor_unavailable', `角色 ${role.id} 的执行器未注册: ${role.executor}`, {
           role: role.id,
           executor: role.executor,
