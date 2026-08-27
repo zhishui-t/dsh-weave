@@ -2126,7 +2126,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const height = maxRows * DAG_CELL_H + Math.max(0, maxRows - 1) * DAG_ROW_GAP
     return React.createElement(
       'div',
-      { className: 'weave-dag-wrap', 'data-testid': 'dag-panel' },
+      { className: 'weave-dag-wrap', 'data-testid': 'dag-panel', style: { height: `${height}px` } },
       React.createElement(
         'svg',
         { width, height, style: { position: 'absolute', inset: 0, pointerEvents: 'none' }, 'data-testid': 'dag-edges' },
