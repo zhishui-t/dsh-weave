@@ -148,6 +148,7 @@ export interface KnowledgeEngineLike {
     version: string
     roleId: string
     limit: KnowledgeInjectionLimits
+    slim?: boolean
   }): Promise<KnowledgeInjectionEntryLike[]>
 }
 
@@ -578,6 +579,7 @@ export class DelegationService {
           version: task.version,
           roleId: role.id,
           limit: team.knowledge_injection,
+          slim: true,
         })
       } catch {
         // 注入失败不阻断主链路（降级为无知识，P0 最小可用）

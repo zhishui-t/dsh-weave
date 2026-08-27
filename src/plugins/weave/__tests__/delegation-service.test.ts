@@ -172,7 +172,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       expect(output.duration_ms).toBeGreaterThanOrEqual(0)
       expect(output.weave).toEqual({ errorType: null, status: 'COMPLETED', countBreaker: false })
       expect(knowledge.calls).toEqual([
-        { taskId: 'task-1', projectId: 'proj-weave', version: 'v0.2.0', roleId: 'coder', limit: BASE_TEAM.knowledge_injection },
+        { taskId: 'task-1', projectId: 'proj-weave', version: 'v0.2.0', roleId: 'coder', limit: BASE_TEAM.knowledge_injection, slim: true },
       ])
     }
   })

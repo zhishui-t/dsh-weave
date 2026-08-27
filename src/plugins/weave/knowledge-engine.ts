@@ -38,6 +38,8 @@ export interface InjectionSearchParams {
   version: string
   roleId: string
   limit: KnowledgeInjectionLimits
+  /** true 时只注入首段/短摘要，避免初始 prompt 过大；全文由 knowledge_search 按需查。 */
+  slim?: boolean
 }
 
 export interface KnowledgeReviewFilter {
@@ -125,6 +127,11 @@ export class KnowledgeEngine {
       const file = this.#readFile(meta.id)
       if (!file) continue // 文件缺失/frontmatter 非法 → 跳过该条（优雅降级）
       let content = file.body.trim()
+      if (params.slim === true) {
+        const newline = String.fromCharCode(10)
+        const paragraphEnd = content.indexOf(newline + newline)
+        content = paragraphEnd >= 0 ? content.slice(0, paragraphEnd) : content.slice(0, 200)
+      }
       if (content.length > maxCharsPerEntry) {
         content = `${content.slice(0, maxCharsPerEntry)}…`
       }
