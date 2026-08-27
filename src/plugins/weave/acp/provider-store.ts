@@ -26,11 +26,13 @@ export interface StoredProviderConfig {
   protocol: 'acp'
   /** 声明支持的扩展名；协商时需 ∧ initialize 探测命中。 */
   declaredExtensions?: string[]
+  /** ACP 会话创建时挂载的 MCP 服务器配置列表。 */
+  mcp_servers?: unknown[]
 }
 
 export const PROVIDER_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/
 
-const COMPACT_KEYS = ['name', 'transport', 'command', 'args', 'cwd', 'env', 'protocol', 'declaredExtensions'] as const
+const COMPACT_KEYS = ['name', 'transport', 'command', 'args', 'cwd', 'env', 'protocol', 'declaredExtensions', 'mcp_servers'] as const
 
 function invalid(message: string, details?: Record<string, unknown>): never {
   throw new WeaveError('invalid_argument', message, details)
@@ -102,6 +104,10 @@ export function validateProviderConfig(input: unknown): StoredProviderConfig {
   if (cwd !== undefined) config.cwd = cwd
   if (env !== undefined) config.env = env
   if (declaredExtensions !== undefined) config.declaredExtensions = declaredExtensions
+  if (raw['mcp_servers'] !== undefined) {
+    if (!Array.isArray(raw['mcp_servers'])) invalid('mcp_servers 必须是数组', { mcp_servers: raw['mcp_servers'] })
+    config.mcp_servers = raw['mcp_servers'] as unknown[]
+  }
   return config
 }
 

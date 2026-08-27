@@ -98,6 +98,8 @@ export interface AcpSessionProviderConfig {
   cwd?: string
   env?: Record<string, string>
   permission?: 'allow' | 'reject'
+  /** ACP 会话创建时挂载的 MCP 服务器列表；缺省不挂载。 */
+  mcpServers?: unknown[]
   /**
    * t7：声明该 provider 支持的扩展名。协商要求「声明 ∧ initialize 探测」双命中，
    * 未命中（未声明/探测失败/未知名）一律降级并在 status 事件中报告原因。
@@ -262,6 +264,7 @@ export class AcpSessionProvider {
   readonly #configuredCwd?: string
   readonly #env: Record<string, string>
   readonly #permission: 'allow' | 'reject'
+  readonly #mcpServers: unknown[]
   readonly #spawn: AcpSpawn['spawn']
   readonly #connect?: (cwd: string, key: string) => Promise<AcpSessionFactoryConnection>
   readonly #connections = new Map<string, AcpSessionConnection>()
@@ -285,6 +288,7 @@ export class AcpSessionProvider {
     this.#configuredCwd = config.cwd
     this.#env = config.env ?? {}
     this.#permission = config.permission ?? 'reject'
+    this.#mcpServers = config.mcpServers ?? []
     this.#spawn = spawn
     this.#connect = connect
     this.#declaredExtensions = config.declaredExtensions ?? ['zcode']
@@ -308,10 +312,10 @@ export class AcpSessionProvider {
 
     if (sessionId === undefined || !knownInConnection) {
       if (sessionId !== undefined && connection.conn.loadSession) {
-        const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+        const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: this.#mcpServers })
         sessionResponse = loaded as AcpSessionNewResponse
       } else {
-        const created = await connection.conn.newSession({ cwd, mcpServers: [] })
+        const created = await connection.conn.newSession({ cwd, mcpServers: this.#mcpServers })
         sessionId = created.sessionId
         sessionResponse = created
       }
@@ -429,7 +433,7 @@ export class AcpSessionProvider {
     const connection = await this.#acquireConnection(targetCwd)
     const response = await connection.conn.newSession({
       cwd: targetCwd,
-      mcpServers: [],
+      mcpServers: this.#mcpServers,
     }) as AcpSessionNewResponse
     this.#sessionCatalog = response
     return response

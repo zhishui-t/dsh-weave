@@ -62,6 +62,7 @@ export function createAcpProviderFromConfig(config: StoredProviderConfig, spawn:
     ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
     ...(config.env !== undefined ? { env: config.env } : {}),
     permission: 'reject',
+    ...(config.mcp_servers !== undefined ? { mcpServers: config.mcp_servers } : {}),
     ...(config.declaredExtensions !== undefined ? { declaredExtensions: config.declaredExtensions } : {}),
   }
   const acp = new AcpSessionProvider(acpConfig, spawn as never)
