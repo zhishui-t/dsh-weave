@@ -84,5 +84,8 @@
       ],
       "platform": "web"
     }
+  },
+  "bin": {
+    "dsh-mcp-knowledge": "./dist/plugins/weave/mcp/knowledge-mcp.js"
   }
 }
