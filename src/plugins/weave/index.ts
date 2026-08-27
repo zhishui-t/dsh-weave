@@ -206,7 +206,7 @@ export function apply(ctx: Context): void {
         getAgentById: (id) => agentsRegistry?.get(id as never),
       })
 
-      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }), providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
+      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }), executorRuns: delegation, providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
         if (!zcodeProvider) return undefined
         return await zcodeProvider.describeSession(process.cwd())
       }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })

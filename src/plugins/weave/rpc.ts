@@ -86,10 +86,16 @@ export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
  * createWeaveRpcHandler 最小依赖：团队/执行器必选；
  * persistence 可选——存在时 team/bind* 与 overview.bindings、settings.state_dir 才可用。
  */
+export interface ExecutorRunsQuery {
+    getExecutorRun(runId: string): { events: Array<{ type: string; text?: string; name?: string }>; state: string } | undefined
+    listExecutorRuns(): Array<{ runId: string; taskId: string; executor: string; state: string; startedAt: number; events: Array<{ type: string; text?: string; name?: string }> }>
+}
 export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> &
   Partial<Pick<CliMcpDeps, 'persistence'>> & {
     /** settings.json 目录覆盖文件路径；settings/describe 与 settings/update 用。 */
     settingsFile?: string
+    /** 执行器运行快照查询（P3 实时输出）；由 DelegationService 提供。 */
+    executorRuns?: ExecutorRunsQuery
 
     /**
      * t4：任务/知识/审计/会话四域查询服务。
@@ -246,6 +252,25 @@ export function createWeaveRpcHandler(
         const input = objectPayload(payload)
         const teamId = requireString(input, 'teamId')
         return success(resolvedDeps.teamManager.setDefaultTeam(teamId))
+      }
+
+      if (endpoint === 'executor/run-events') {
+        const input = objectPayload(payload)
+        const runs = resolvedDeps.executorRuns
+        if (!runs) return success({ runs: [], detail: undefined })
+        const runId = typeof input.runId === 'string' ? input.runId : undefined
+        const taskId = typeof input.taskId === 'string' ? input.taskId : undefined
+        const tail = typeof input.tail === 'number' ? Math.min(input.tail, 200) : 50
+        if (runId) {
+          const snap = runs.getExecutorRun(runId)
+          if (!snap) return success({ detail: undefined, runs: [] })
+          return success({ detail: { ...snap, events: snap.events.slice(-tail) }, runs: [] })
+        }
+        const all = runs.listExecutorRuns()
+        const filtered = taskId ? all.filter((r) => r.taskId === taskId) : all
+        const withTails = filtered.map((r) => ({ ...r, events: r.events.slice(-tail) }))
+        if (taskId && withTails.length > 0) return success({ detail: withTails[0], runs: withTails })
+        return success({ detail: undefined, runs: withTails })
       }
 
       if (endpoint === 'team/get') {
