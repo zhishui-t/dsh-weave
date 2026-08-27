@@ -1,0 +1,232 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { stringify as stringifyYaml } from 'yaml'
+
+import { WeavePersistence } from '../persistence/persistence'
+import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
+import { TeamPlanner, assertAcyclic, createPlanTasksHandler } from '../planner'
+
+const lookup: ExecutorLookup = {
+  get(id) {
+    return id === 'codex'
+      ? { id, name: id, kind: 'codex', capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false } }
+      : undefined
+  },
+}
+
+const TEAM: TeamConfig = {
+  team_id: 'alpha',
+  name: '阿尔法小队',
+  default: false,
+  roles: [
+    { id: 'designer', name: '设计师', bias: 'design', executor: 'codex', stages: ['design'], max_concurrent_tasks: 1, personality: '设计' },
+    { id: 'coder', name: '程序员', bias: 'dev', executor: 'codex', stages: ['implement'], max_concurrent_tasks: 2, personality: '实现' },
+    { id: 'reviewer', name: '审核员', bias: 'review', executor: 'codex', stages: ['review'], max_concurrent_tasks: 1, personality: '审核' },
+  ],
+  task_decomposition: {
+    matchers: [],
+    default_difficulty: 'hard',
+    dag_templates: { hard: ['design', 'implement', 'review'] },
+  },
+  knowledge_injection: { max_entries: 1, max_chars_per_entry: 100, max_total_chars: 300, priority: 'freshness_first' },
+  feedback: { feedback_timeout_seconds: 60, max_revisions: 2, reopen_window_seconds: 60 },
+}
+
+let dir = ''
+let persistence: WeavePersistence
+let manager: TeamManager
+let planner: TeamPlanner
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'weave-planner-'))
+  persistence = new WeavePersistence({ inMemory: true })
+  manager = new TeamManager(lookup, { teamsDir: dir, persistence })
+  manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+  planner = new TeamPlanner({ persistence, teamManager: manager })
+})
+
+afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+describe('TeamPlanner.plan', () => {
+  it('按依赖落库三表：无依赖 WAITING、有依赖 BLOCKED，边与依赖一致', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const output = await planner.plan({
+      session_id: 'sess-1',
+      goal: '上线登录功能',
+      tasks: [
+        { id: 'a', description: '设计方案', assignee: 'designer' },
+        { id: 'b', description: '实现代码\n第二行说明', assignee: 'coder', depends_on: ['a'] },
+        { id: 'c', description: '审核代码', assignee: 'coder', depends_on: ['b'] },
+      ],
+    })
+
+    expect(output.dag_id).toMatch(/^dag-session-adhoc-\d+$/)
+    expect(output.team_id).toBe('alpha')
+    expect(output.tasks.map((task) => [task.id.split('-').pop(), task.status])).toEqual([
+      ['a', 'WAITING'],
+      ['b', 'BLOCKED'],
+      ['c', 'BLOCKED'],
+    ])
+
+    const dag = await new (await import('../dag/repository')).DagRepository(persistence).loadDag(output.dag_id)
+    expect(dag.tasks).toHaveLength(3)
+    expect(dag.tasks.map((task) => task.status)).toEqual(['WAITING', 'BLOCKED', 'BLOCKED'])
+    // 真实边集合：a→b→c
+    const ids = output.tasks.map((task) => task.id)
+    expect(dag.edges.map((edge) => [edge.from, edge.to].join('=>'))).toEqual([
+      [ids[0], ids[1]].join('=>'),
+      [ids[1], ids[2]].join('=>'),
+    ])
+    expect(dag.tasks[1]!.dependencies).toEqual([ids[0]])
+  })
+
+  it('零仪式解析：未绑定时自动回退默认/唯一团队', async () => {
+    // 目录里只有一个团队 alpha（无 default 标记）→ 唯一团队自动生效，无需启用
+    const out = await planner.plan({
+      session_id: 'fresh-session',
+      tasks: [{ description: '直接开工', assignee: 'coder' }],
+    })
+    expect(out.team_id).toBe('alpha')
+  })
+
+  it('多团队且无默认且未绑定 → invalid_team 并给出启用指引', async () => {
+    manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
+    await expect(planner.plan({
+      session_id: 'nobody',
+      tasks: [{ description: 'x', assignee: 'coder' }],
+    })).rejects.toMatchObject({
+      code: 'invalid_team',
+      message: expect.stringContaining('启用'),
+    })
+  })
+
+  it('assignee 不是团队角色 → invalid_argument 并列出可用角色', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      tasks: [{ description: 'x', assignee: 'ghost' }],
+    })).rejects.toMatchObject({
+      code: 'invalid_argument',
+      message: expect.stringContaining('designer, coder, reviewer'),
+    })
+  })
+
+  it('assignee 允许角色名精确匹配', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const output = await planner.plan({
+      session_id: 'sess-1',
+      tasks: [{ description: '画原型', assignee: '设计师' }],
+    })
+    expect(output.tasks[0]!.assignee_role).toBe('designer')
+  })
+
+  it('依赖引用计划外任务 → invalid_argument；成环 → invalid_argument', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      tasks: [{ description: 'x', assignee: 'coder', depends_on: ['missing'] }],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('missing') })
+
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      tasks: [
+        { id: 'a', description: 'x', assignee: 'coder', depends_on: ['b'] },
+        { id: 'b', description: 'y', assignee: 'coder', depends_on: ['a'] },
+      ],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('成环') })
+  })
+
+  it('id 缺省自动编号 tN 且持久化为 ${dagId}-tN；重复 id 拒绝', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const output = await planner.plan({
+      session_id: 'sess-1',
+      tasks: [
+        { description: '第一步', assignee: 'coder' },
+        { description: '第二步', assignee: 'reviewer', depends_on: ['t1'] },
+      ],
+    })
+    expect(output.tasks[0]!.id.endsWith('-t1')).toBe(true)
+    expect(output.tasks[1]!.depends_on).toEqual(['t1'])
+
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      tasks: [
+        { id: 'same', description: 'x', assignee: 'coder' },
+        { id: 'same', description: 'y', assignee: 'coder' },
+      ],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('重复') })
+  })
+
+  it('空 tasks / 空 description / 空 session → invalid_argument', async () => {
+    await expect(planner.plan({ session_id: 's', tasks: [] })).rejects.toMatchObject({ code: 'invalid_argument' })
+    await manager.bindTeam('sess-1', 'alpha')
+    await expect(planner.plan({ session_id: 'sess-1', tasks: [{ description: '', assignee: 'coder' }] }))
+      .rejects.toMatchObject({ code: 'invalid_argument' })
+    await expect(planner.plan({ session_id: '', tasks: [{ description: 'x', assignee: 'coder' }] }))
+      .rejects.toMatchObject({ code: 'invalid_argument' })
+  })
+
+  it('序号分配器随计划递增（同 project/version 内 dag 命名连续）', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    const second = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '二', assignee: 'coder' }] })
+    const seqOf = (dagId: string): number => Number(dagId.split('-').pop())
+    expect(seqOf(second.dag_id)).toBe(seqOf(first.dag_id) + 1)
+  })
+})
+
+describe('assertAcyclic', () => {
+  it('非环通过，环拒绝并列出参与节点', () => {
+    expect(() => assertAcyclic([
+      { refId: 'a', dependsOn: [] },
+      { refId: 'b', dependsOn: ['a'] },
+    ])).not.toThrow()
+    expect(() => assertAcyclic([
+      { refId: 'a', dependsOn: ['c'] },
+      { refId: 'b', dependsOn: ['a'] },
+      { refId: 'c', dependsOn: ['b'] },
+    ])).toThrow(/成环/)
+  })
+})
+
+describe('createPlanTasksHandler', () => {
+  it('从 exec.agent.id 解析会话，规划成功即触发 schedulerStart', async () => {
+    await manager.bindTeam('sess-exec', 'alpha')
+    const started: Array<{ dagId: string; sessionId: string }> = []
+    const handler = createPlanTasksHandler({
+      planner,
+      schedulerStart: async (input) => { started.push(input) },
+    })
+    const output = await handler(
+      { goal: 'g', tasks: [{ description: '写代码', assignee: 'coder' }] },
+      { agent: { id: 'sess-exec' }, signal: new AbortController().signal },
+    )
+    expect(output.session_id).toBe('sess-exec')
+    expect(started).toEqual([{ dagId: output.dag_id, sessionId: 'sess-exec', parentAgent: { id: 'sess-exec' } }])
+  })
+
+  it('exec.agent 缺失且无显式 session_id → invalid_argument；args 显式 session_id 可覆盖', async () => {
+    const handler = createPlanTasksHandler({ planner, schedulerStart: async () => {} })
+    await expect(handler({ tasks: [{ description: 'x', assignee: 'coder' }] }, undefined))
+      .rejects.toMatchObject({ code: 'invalid_argument' })
+
+    await manager.bindTeam('explicit-sess', 'alpha')
+    const output = await handler(
+      { session_id: 'explicit-sess', tasks: [{ description: 'x', assignee: 'coder' }] },
+      { agent: { id: 'other' } },
+    )
+    expect(output.session_id).toBe('explicit-sess')
+  })
+
+  it('schedulerStart 抛错不冒泡（调度失败经日志观察）', async () => {
+    await manager.bindTeam('sess-x', 'alpha')
+    const handler = createPlanTasksHandler({
+      planner,
+      schedulerStart: async () => { throw new Error('start-boom') },
+    })
+    await expect(handler({ tasks: [{ description: 'x', assignee: 'coder' }] }, { agent: { id: 'sess-x' } }))
+      .resolves.toMatchObject({ team_name: '阿尔法小队' })
+  })
+})

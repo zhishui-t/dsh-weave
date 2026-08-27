@@ -242,6 +242,12 @@ export function createWeaveRpcHandler(
         return success({ teams: resolvedDeps.teamManager.listTeams().map(serializeTeam) })
       }
 
+      if (endpoint === 'team/set-default') {
+        const input = objectPayload(payload)
+        const teamId = requireString(input, 'teamId')
+        return success(resolvedDeps.teamManager.setDefaultTeam(teamId))
+      }
+
       if (endpoint === 'team/get') {
         const input = objectPayload(payload)
         const teamId = requireString(input, 'teamId')

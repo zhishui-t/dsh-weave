@@ -1,7 +1,7 @@
 /**
  * t2 —— Web 真实数据查询/操作服务测试。
  *
- * 覆盖：task/list 分页过滤排序、task/get 双入口、task/create 复用 MCP、
+ * 覆盖：task/list 分页/过滤（含 sessionId）/排序、task/get 双入口、下发通道已删除（队长模式）、
  * task/action 六动作状态机路径、knowledge 三端点、audit/list 过滤校验、
  * 会话绑定直读与复用 TeamManager、session/revisions 最近优先、依赖缺失
  * configuration_error 与 endpoint 分发器。
@@ -177,6 +177,32 @@ async function seedTask(env: Env, overrides: SeedOverrides = {}): Promise<string
   return id
 }
 
+/** 带真实 dags 行的单任务 DAG 种子（单队长计划落库形状）。 */
+async function seedDag(
+  env: Env,
+  overrides: { description?: string; session_id?: string } = {},
+): Promise<{ dag_id: string; tasks: Array<{ id: string }> }> {
+  const n = Math.random().toString(36).slice(2, 8)
+  const dagId = `dag-webseed-${n}`
+  const taskId = `${dagId}-t1`
+  const now = new Date().toISOString()
+  await env.p.tasks.run((db) => {
+    db.prepare(
+      `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
+       VALUES (?, 'alpha-squad', 'proj-web', 'v1', 'captain', 'created', ?, ?)`,
+    ).run(dagId, now, now)
+    db.prepare(
+      `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
+       dependencies, assigned_agent, executor, status, revision_count, max_revisions,
+       feedback_timeout_seconds, feedback_expires_at, skip_override, skip_reason, fail_count,
+       result, error_type, created_at, updated_at)
+       VALUES (?, ?, ?, 'alpha-squad', 'proj-web', 'v1', ?, '', '[]', 'coder', 'zcode', 'WAITING',
+       0, 5, 1800, NULL, 0, NULL, 0, NULL, NULL, ?, ?)`,
+    ).run(taskId, dagId, overrides.session_id ?? 'sess-web', overrides.description ?? '实现 Web 查询服务', now, now)
+  })
+  return { dag_id: dagId, tasks: [{ id: taskId }] }
+}
+
 async function forceStatus(env: Env, taskId: string, status: string): Promise<void> {
   await env.p.tasks.run((db) => {
     db.prepare("UPDATE tasks SET status = ?, result = COALESCE(result, '上一版输出'), updated_at = ? WHERE id = ?").run(
@@ -200,7 +226,6 @@ const errorCodeOf = async (fn: () => Promise<unknown>): Promise<string> => {
   }
 }
 
-const SUBMIT_INPUT = { description: '实现 Web 查询服务', project_id: 'proj-web', version: 'v1' }
 
 /* --------------------------------- 任务域 --------------------------------- */
 
@@ -254,7 +279,7 @@ describe('WeaveQueryService task 域', () => {
 
   it('task/get：dagId/taskId 双入口同结果；早期无 dag_id 行降级单任务视图；缺参与未知 id 报错', async () => {
     const env = await newEnv()
-    const submitted = await env.mcp.submitTask(SUBMIT_INPUT)
+    const submitted = await seedDag(env)
     const byDag = await env.svc.taskGet({ dagId: submitted.dag_id })
     expect(byDag.dag_id).toBe(submitted.dag_id)
     expect(byDag.tasks.map((t) => t.id)).toEqual(submitted.tasks.map((t) => t.id))
@@ -273,22 +298,28 @@ describe('WeaveQueryService task 域', () => {
     expect(await errorCodeOf(() => env.svc.taskGet({ taskId: 'nope' }))).toBe('task_not_found')
   })
 
-  it('task/create：经 dispatch 复用 submitTask 真实落库', async () => {
+  it('task/create 下发通道已删除：dispatch 返回 invalid_argument（唯一入口为 weave_plan_tasks）', async () => {
     const env = await newEnv()
-    const out = (await env.svc.dispatch('task/create', { ...SUBMIT_INPUT, team_id: 'alpha-squad' })) as {
-      dag_id: string
-      status: string
-    }
-    expect(out.status).toBe('submitted')
-    const rows = await env.p.tasks.run((db) => db.prepare('SELECT id, status FROM tasks WHERE dag_id = ?').all(out.dag_id))
-    expect(rows).toHaveLength(1)
+    expect(await errorCodeOf(() => env.svc.dispatch('task/create', { description: 'x' }))).toBe('invalid_argument')
+  })
+
+  it('task/list：sessionId 过滤只返回本会话任务', async () => {
+    const env = await newEnv()
+    await seedDag(env, { session_id: 'sess-A', description: 'A 会话任务' })
+    await seedDag(env, { session_id: 'sess-B', description: 'B 会话任务' })
+    const mineA = await env.svc.taskList({ sessionId: 'sess-A' })
+    expect(mineA.total).toBe(1)
+    expect(mineA.tasks[0]!.description).toBe('A 会话任务')
+    const mineB = await env.svc.taskList({ sessionId: 'sess-B' })
+    expect(mineB.total).toBe(1)
+    expect(await errorCodeOf(() => env.svc.taskList({}))).toBe('no-error')
   })
 
   it('task/action：六动作走真实状态机；未知动作与非法转移报错', async () => {
     const env = await newEnv()
 
     // revise：AWAITING_FEEDBACK → REVISION_RUNNING，revision_count+1
-    const rev = (await env.mcp.submitTask(SUBMIT_INPUT)).tasks[0]!.id
+    const rev = (await seedDag(env)).tasks[0]!.id
     await forceStatus(env, rev, 'AWAITING_FEEDBACK')
     const revised = (await env.svc.taskAction({ action: 'revise', taskId: rev, feedback: '改成暗色主题' })) as {
       status: string
@@ -299,25 +330,25 @@ describe('WeaveQueryService task 域', () => {
     expect(await errorCodeOf(() => env.svc.taskAction({ action: 'revise', taskId: rev }))).toBe('invalid_argument')
 
     // accept：AWAITING_FEEDBACK → CLOSED；reopen：CLOSED → AWAITING_FEEDBACK（窗口内）
-    const acc = (await env.mcp.submitTask(SUBMIT_INPUT)).tasks[0]!.id
+    const acc = (await seedDag(env)).tasks[0]!.id
     await forceStatus(env, acc, 'AWAITING_FEEDBACK')
     expect(((await env.svc.taskAction({ action: 'accept', taskId: acc })) as { status: string }).status).toBe('CLOSED')
     expect(((await env.svc.taskAction({ action: 'reopen', taskId: acc })) as { status: string }).status).toBe('AWAITING_FEEDBACK')
 
     // retry：FAILED → WAITING
-    const ret = (await env.mcp.submitTask(SUBMIT_INPUT)).tasks[0]!.id
+    const ret = (await seedDag(env)).tasks[0]!.id
     await forceStatus(env, ret, 'FAILED')
     expect(((await env.svc.taskAction({ action: 'retry', taskId: ret })) as { status: string }).status).toBe('WAITING')
 
     // skip：FAILED → SKIPPED，skip_override=1 落库
-    const skp = (await env.mcp.submitTask(SUBMIT_INPUT)).tasks[0]!.id
+    const skp = (await seedDag(env)).tasks[0]!.id
     await forceStatus(env, skp, 'FAILED')
     expect(((await env.svc.taskAction({ action: 'skip', taskId: skp })) as { status: string }).status).toBe('SKIPPED')
     const skpRow = await env.p.tasks.run((db) => db.prepare('SELECT skip_override FROM tasks WHERE id = ?').get(skp)) as { skip_override: number }
     expect(skpRow.skip_override).toBe(1)
 
     // cancel：WAITING → CANCELLED（DagRepository 快速取消）
-    const cxl = (await env.mcp.submitTask(SUBMIT_INPUT)).tasks[0]!.id
+    const cxl = (await seedDag(env)).tasks[0]!.id
     expect(((await env.svc.taskAction({ action: 'cancel', taskId: cxl })) as { status: string }).status).toBe('CANCELLED')
 
     // CANCELLED 在 taskRetry 白名单内（#29）：retry 合法回到 WAITING
@@ -533,6 +564,117 @@ describe('WeaveQueryService session 域', () => {
   })
 })
 
+describe('WeaveQueryService session 域：session/status', () => {
+  function makeStubScheduler(active: Array<{ role_id: string; task_id: string; subject: string; started_at: string }>) {
+    return { memberRuntime: (sessionId: string) => (sessionId === 'sess-live' ? active : []) }
+  }
+
+  function buildSvc(base: Env, scheduler?: unknown): WeaveQueryService {
+    return new WeaveQueryService({
+      persistence: base.p,
+      mcp: base.mcp,
+      sessionTracker: base.tracker,
+      teamManager: base.teams,
+      ...(scheduler ? { scheduler: scheduler as never } : {}),
+      knowledgeStore: base.store,
+    })
+  }
+
+  it('零仪式解析链：默认/唯一自动生效；多团队无默认才为 null；缺 sessionId 报 invalid_argument', async () => {
+    const base = await newEnv()
+    const svcNoScheduler = buildSvc(base)
+    // 唯一配置的团队就是默认团队 → 任意会话自动生效
+    const auto = (await svcNoScheduler.sessionStatus({ sessionId: 'sess-ghost' })) as {
+      team: { team_id: string } | null
+      resolved_via?: string | null
+    }
+    expect(auto.team).toMatchObject({ team_id: 'alpha-squad' })
+    expect(auto.resolved_via).toBe('default')
+    expect(await errorCodeOf(() => svcNoScheduler.sessionStatus({}))).toBe('invalid_argument')
+
+    // 独立最小环境验证「唯一非默认团队」与「多团队无默认」两条分支
+    const multiDir = mkdtempSync(join(tmpdir(), 'weave-query-multi-'))
+    try {
+      const minimalYaml = (teamId: string): string =>
+        [
+          'schema_version: "1"',
+          `team_id: ${teamId}`,
+          `name: ${teamId}`,
+          'default: false',
+          '',
+          'roles:',
+          '  - id: solo',
+          '    name: 独行成员',
+          '    bias: dev',
+          '    executor: zcode',
+          '    stages: [execute]',
+          '    max_concurrent_tasks: 1',
+          '    personality: 单干。',
+          '',
+          'task_decomposition:',
+          '  matchers: []',
+          '  default_difficulty: hard',
+          '  dag_templates:',
+          '    hard: ["execute"]',
+          '',
+          'knowledge_injection: { max_entries: 5, max_chars_per_entry: 500, max_total_chars: 2500, priority: freshness_first }',
+          'feedback: { feedback_timeout_seconds: 1800, max_revisions: 5, reopen_window_seconds: 86400 }',
+        ].join(String.fromCharCode(10))
+      writeFileSync(join(multiDir, 'solo-a.yaml'), minimalYaml('solo-a'))
+      const p2 = openPersistence({ inMemory: true })
+      const reg2 = new ExecutorRegistry()
+      reg2.load({ subagents: new MockSubagentsContext() } as never)
+      const mgrSolo = new TeamManager(reg2, { teamsDir: multiDir, persistence: p2 })
+      const soloSvc = new WeaveQueryService({ persistence: p2, teamManager: mgrSolo })
+      const single = (await soloSvc.sessionStatus({ sessionId: 'anyone' })) as { team: { team_id: string } | null; resolved_via?: string | null }
+      expect(single.team).toMatchObject({ team_id: 'solo-a' })
+      expect(single.resolved_via).toBe('single')
+
+      writeFileSync(join(multiDir, 'solo-b.yaml'), minimalYaml('solo-b'))
+      const stuck = (await soloSvc.sessionStatus({ sessionId: 'anyone' })) as { team: unknown; resolved_via: unknown }
+      expect(stuck.team).toBeNull()
+      expect(stuck.resolved_via).toBeNull()
+    } finally {
+      rmSync(multiDir, { recursive: true, force: true })
+    }
+  })
+
+  it('绑定后返回角色列表：执行中优先于上次结果，静态成员全覆盖', async () => {
+    const stub = makeStubScheduler([{ role_id: 'coder', task_id: 't-running', subject: '写登录页', started_at: '2024-01-03T00:00:00.000Z' }])
+    const base = await newEnv()
+    await base.teams.bindTeam('sess-live', 'alpha-squad')
+    const svc2 = buildSvc(base, stub)
+    const p = base.p
+    // coder 的最近任务 COMPLETED；reviewer 最近一条 FAILED
+    await seedDag({ p } as Env, { session_id: 'sess-live', description: '已完成任务' }).then(async (dag) => {
+      await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(dag.tasks[0]!.id))
+    })
+    await seedDag({ p } as Env, { session_id: 'sess-live', description: '失败任务' }).then(async (dag) => {
+      const row = dag.tasks[0]!
+      await p.tasks.run((db) => db.prepare("UPDATE tasks SET assigned_agent = 'reviewer', status = 'FAILED' WHERE id = ?").run(row.id))
+    })
+
+    const result = (await svc2.sessionStatus({ sessionId: 'sess-live' })) as {
+      team: { team_id: string }
+      resolved_via?: string | null
+      members: Array<{ role_id: string; status: string; subject?: string; last_status?: string }>
+    }
+    expect(result.team.team_id).toBe('alpha-squad')
+    expect(result.resolved_via).toBe('binding')
+    const byRole = new Map(result.members.map((m) => [m.role_id, m]))
+    expect(byRole.get('designer')).toMatchObject({ status: 'idle' })
+    expect(byRole.get('coder')).toMatchObject({ status: 'running', subject: '写登录页' })
+    expect(byRole.get('reviewer')!.status).toBe('failed')
+
+    // 无调度器占用时 coder 回落到最近结果
+    const quiet = (await buildSvc(base).sessionStatus({ sessionId: 'sess-live' })) as {
+      members: Array<{ role_id: string; status: string }>
+    }
+    const byRoleQuiet = new Map(quiet.members.map((m) => [m.role_id, m]))
+    expect(byRoleQuiet.get('coder')).toMatchObject({ status: 'completed' })
+  })
+})
+
 /* ------------------------------- 分发器与依赖缺失 ------------------------------- */
 
 describe('WeaveQueryService dispatch 与依赖降级', () => {
@@ -547,7 +689,7 @@ describe('WeaveQueryService dispatch 与依赖降级', () => {
     const p = openPersistence({ inMemory: true })
     try {
       const bare = new WeaveQueryService({ persistence: p })
-      expect(await errorCodeOf(() => bare.taskCreate(SUBMIT_INPUT))).toBe('configuration_error')
+      expect(await errorCodeOf(() => bare.dispatch('task/create', {}))).toBe('invalid_argument')
       expect(await errorCodeOf(() => bare.taskAction({ action: 'accept', taskId: 'x' }))).toBe('configuration_error')
       expect(await errorCodeOf(() => bare.knowledgeList({}))).toBe('configuration_error')
       expect(await errorCodeOf(() => bare.auditList({}))).toBe('configuration_error')

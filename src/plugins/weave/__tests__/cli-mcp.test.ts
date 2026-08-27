@@ -135,64 +135,44 @@ async function newEnv(registry?: ExecutorRegistry): Promise<Env> {
   return env
 }
 
-const SUBMIT = { description: '实现 CLI', project_id: 'proj-cli', version: 'v1' }
-
-describe('WeaveMcp（MCP Tool 层）', () => {
-  it('submitTask：单任务 DAG 落库（WAITING、stage=execute、角色 coder→executor zcode）', async () => {
-    const { mcp, p } = await newEnv()
-    const out = await mcp.submitTask(SUBMIT)
-    expect(out.status).toBe('submitted')
-    expect(out.dag_id).toMatch(/^dag-proj-cli-v1-1$/)
-    expect(out.tasks).toHaveLength(1)
-    const task = out.tasks[0]!
-    expect(task).toMatchObject({ executor: 'zcode', assigned_agent: 'coder', status: 'WAITING', revision_count: 0 })
-    const rows = await p.tasks.run((db) => {
-      const dag = db.prepare('SELECT * FROM dags WHERE dag_id = ?').get(out.dag_id) as Record<string, unknown>
-      const taskRow = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task.id) as Record<string, unknown>
-      return { dag, taskRow }
-    })
-    expect(rows.dag).toMatchObject({ team_id: 'alpha-squad', difficulty: 'hard', status: 'created' })
-    expect(rows.taskRow).toMatchObject({ stage: 'execute', status: 'WAITING' })
+/**
+ * 队长模式下发已收敛到 weave_plan_tasks（planner.test 覆盖）；本文件只测 MCP 治理命令，
+ * 用 seedTask 直接落一条单任务 DAG 作为夹具（等价旧 submitTask 的产物形状）。
+ */
+const seedCounters = new WeakMap<object, { n: number }>()
+async function seedTask(
+  p: WeavePersistence,
+  overrides: { description?: string; project_id?: string; version?: string } = {},
+): Promise<{ dag_id: string; tasks: Array<{ id: string }> }> {
+  const projectId = overrides.project_id ?? 'proj-cli'
+  const counter = seedCounters.get(p.tasks as object) ?? { n: 0 }
+  const n = (counter.n += 1)
+  seedCounters.set(p.tasks as object, counter)
+  const version = overrides.version ?? 'v1'
+  const dagId = `dag-${projectId}-${version}-${n}`
+  const taskId = `${dagId}-t1`
+  const now = new Date().toISOString()
+  await p.tasks.run((db) => {
+    db.prepare(
+      `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
+       VALUES (?, 'alpha-squad', ?, ?, 'hard', 'created', ?, ?)`,
+    ).run(dagId, projectId, version, now, now)
+    db.prepare(
+      `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
+       dependencies, assigned_agent, executor, status, revision_count, max_revisions,
+       feedback_timeout_seconds, feedback_expires_at, skip_override, skip_reason, fail_count,
+       result, error_type, created_at, updated_at)
+       VALUES (?, ?, 'cli-session', 'alpha-squad', ?, ?, ?, '', '[]', 'coder', 'zcode', 'WAITING',
+       0, 5, 1800, NULL, 0, NULL, 0, NULL, NULL, ?, ?)`,
+    ).run(taskId, dagId, projectId, version, overrides.description ?? '实现 CLI', now, now)
   })
+  return { dag_id: dagId, tasks: [{ id: taskId }] }
+}
 
-  it('submitTask 入参校验：description/project_id/version 缺失 → invalid_argument', async () => {
-    const { mcp } = await newEnv()
-    await expect(mcp.submitTask({ description: '', project_id: 'p', version: 'v' })).rejects.toMatchObject({ code: 'invalid_argument' })
-    await expect(mcp.submitTask({ description: 'd', project_id: '  ', version: 'v' })).rejects.toMatchObject({ code: 'invalid_argument' })
-    await expect(mcp.submitTask({ description: 'd', project_id: 'p', version: '' })).rejects.toMatchObject({ code: 'invalid_argument' })
-  })
-
-  it('submitTask：team 不存在 → invalid_team；执行器未注册 → executor_unavailable（校验前置）', async () => {
-    const { mcp } = await newEnv()
-    await expect(mcp.submitTask({ ...SUBMIT, team_id: 'ghost' })).rejects.toMatchObject({ code: 'invalid_team' })
-    const { mcp: mcp2 } = await newEnv(new ExecutorRegistry())
-    await expect(mcp2.submitTask({ ...SUBMIT, team_id: 'alpha-squad' })).rejects.toMatchObject({ code: 'executor_unavailable' })
-  })
-
-  it('submitTask 依赖：上游未完成 → BLOCKED；已完成 → WAITING；依赖不存在 → task_not_found', async () => {
-    const { mcp, p } = await newEnv()
-    const a = await mcp.submitTask({ ...SUBMIT, description: '上游 A' })
-    const aId = a.tasks[0]!.id
-    const b = await mcp.submitTask({ ...SUBMIT, description: '下游 B', dependencies: [{ task_id: aId }] })
-    expect(b.tasks[0]!.status).toBe('BLOCKED')
-    await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(aId))
-    const c = await mcp.submitTask({ ...SUBMIT, description: '下游 C', dependencies: [{ task_id: aId }] })
-    expect(c.tasks[0]!.status).toBe('WAITING')
-    await expect(mcp.submitTask({ ...SUBMIT, dependencies: [{ task_id: 'ghost-dep' }] })).rejects.toMatchObject({ code: 'task_not_found' })
-  })
-
-  it('任务 ID 连续且递增（task_sequences 按 project+version）', async () => {
-    const { mcp } = await newEnv()
-    const one = await mcp.submitTask(SUBMIT)
-    const two = await mcp.submitTask(SUBMIT)
-    expect(one.dag_id).toMatch(/-1$/)
-    expect(two.dag_id).toMatch(/-2$/)
-    expect(one.tasks[0]!.id).not.toBe(two.tasks[0]!.id)
-  })
-
+describe('WeaveMcp（MCP Tool 层，治理面）', () => {
   it('getStatus：按 dag_id / task_id；缺参数 invalid_argument；未找到 task_not_found', async () => {
-    const { mcp } = await newEnv()
-    const { dag_id, tasks } = await mcp.submitTask(SUBMIT)
+    const { mcp, p } = await newEnv()
+    const { dag_id, tasks } = await seedTask(p)
     const byDag = await mcp.getStatus({ dag_id })
     expect(byDag.tasks).toHaveLength(1)
     const byTask = await mcp.getStatus({ task_id: tasks[0]!.id })
@@ -204,7 +184,7 @@ describe('WeaveMcp（MCP Tool 层）', () => {
 
   it('reviseTask / acceptTask：保温期流转与非法状态拒绝（复用 FeedbackRouter）', async () => {
     const { mcp, p } = await newEnv()
-    const { tasks } = await mcp.submitTask(SUBMIT)
+    const { tasks } = await seedTask(p)
     const id = tasks[0]!.id
     await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(id))
     // 非保温态：revise/accept 均 invalid_status_transition
@@ -212,7 +192,7 @@ describe('WeaveMcp（MCP Tool 层）', () => {
     await expect(mcp.acceptTask({ task_id: id })).rejects.toMatchObject({ code: 'invalid_status_transition' })
     await expect(mcp.reviseTask({ task_id: id, feedback: '  ' })).rejects.toMatchObject({ code: 'invalid_argument' })
     // 进入保温期
-    const router = new (await import('../feedback-router')).FeedbackRouter({
+    const router = new FeedbackRouter({
       tasks: p.tasks,
       feedback: p.feedback,
       sessionTracker: new SessionTracker(p.feedback),
@@ -225,6 +205,38 @@ describe('WeaveMcp（MCP Tool 层）', () => {
     await router.enterAwaitingFeedback(id)
     const accepted = await mcp.acceptTask({ task_id: id })
     expect(accepted.status).toBe('CLOSED')
+  })
+
+  it('下发通道不存在：MCP 层已无任务创建入口（队长模式唯一入口为 weave_plan_tasks 工具）', async () => {
+    const { mcp } = await newEnv()
+    expect((mcp as unknown as Record<string, unknown>).submitTask).toBeUndefined()
+  })
+
+  it('executionHooks.cancelTask / resumeTask：taskCancel 与 taskRetry 触发联动', async () => {
+    const { p } = await newEnv()
+    const cancelled: string[] = []
+    const resumed: string[] = []
+    // WeaveMcp 在动作时读取 deps.executionHooks —— 通过构建同款实例注入 spy。
+    const hookMcp = new WeaveMcp({
+      persistence: p,
+      teamManager: new (await import('../team-manager')).TeamManager(new ExecutorRegistry(), { teamsDir: '/nonexistent', persistence: p }),
+      executorRegistry: new ExecutorRegistry(),
+      feedbackRouter: new FeedbackRouter({ tasks: p.tasks, feedback: p.feedback, sessionTracker: new SessionTracker(p.feedback) }),
+      dagRepository: new DagRepository(p),
+      executionHooks: {
+        cancelTask: async (taskId) => { cancelled.push(taskId) },
+        resumeTask: async (taskId) => { resumed.push(taskId) },
+      },
+    })
+    const a = await seedTask(p, { project_id: 'hookp', version: 'v1' })
+    await hookMcp.taskCancel(a.tasks[0]!.id)
+    expect(cancelled).toEqual([a.tasks[0]!.id])
+
+    const b = await seedTask(p, { project_id: 'hookp', version: 'v2' })
+    await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'FAILED' WHERE id = ?").run(b.tasks[0]!.id))
+    const retried = await hookMcp.taskRetry(b.tasks[0]!.id)
+    expect(retried.status).toBe('WAITING')
+    expect(resumed).toEqual([b.tasks[0]!.id])
   })
 })
 
@@ -278,22 +290,25 @@ describe('WeaveCli（/weave 命令）', () => {
     expect(result.text).toContain('claude-code（claude_code）')
   })
 
-  it('task submit/status：参数解析与 DAG 展示', async () => {
-    const { cli } = await newEnv()
-    const submitted = await cli.run(['task', 'submit', '修复登录超时', '--project', 'proj-x', '--version', 'v2'])
-    expect(submitted.exitCode).toBe(0)
-    expect(submitted.text).toContain('已提交 DAG dag-proj-x-v2-1')
+  it('task status：DAG 状态展示；task submit 已移除（下发只走对话）', async () => {
+    const { cli, p } = await newEnv()
+    await seedTask(p, { description: '修复登录超时', project_id: 'proj-x', version: 'v2' })
     const status = await cli.run(['task', 'status', '--dag', 'dag-proj-x-v2-1'])
     expect(status.text).toContain('[WAITING]')
     expect(status.text).toContain('修复登录超时')
+
+    // 命令式提交通道已删除：未知命令报错，帮助文本不再出现 submit
+    const submitted = await cli.run(['task', 'submit', '修复登录超时'])
+    expect(submitted.exitCode).toBe(1)
+    expect(submitted.text).toContain('invalid_argument')
+    const help = await cli.run([])
+    expect(help.text).not.toContain('task submit')
   })
 
   it('task revise/accept：保温期命令文本输出', async () => {
     const { cli, p } = await newEnv()
-    const submit = await cli.run(['task', 'submit', '任务', '--project', 'proj-r', '--version', 'v1'])
-    const dagId = /dag-[\w-]+-\d+/.exec(submit.text)?.[0] ?? ''
-    const status = await cli.run(['task', 'status', '--dag', dagId])
-    const taskId = /^- (\S+)/m.exec(status.text)?.[1] ?? ''
+    const seeded = await seedTask(p, { description: '任务', project_id: 'proj-r', version: 'v1' })
+    const taskId = seeded.tasks[0]!.id
     await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(taskId))
     const router = new (await import('../feedback-router')).FeedbackRouter({
       tasks: p.tasks,
@@ -375,7 +390,7 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
 
   it('taskRetry：FAILED/CANCELLED → WAITING；RUNNING → invalid_status_transition', async () => {
     const env = await newEnv()
-    const { tasks } = await env.mcp.submitTask(SUBMIT)
+    const { tasks } = await seedTask(env.p)
     const id = tasks[0]!.id
     await env.p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'FAILED' WHERE id = ?").run(id))
     expect((await env.mcp.taskRetry(id)).status).toBe('WAITING')
@@ -387,7 +402,7 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
 
   it('taskSkip：FAILED → SKIPPED+skip_override；COMPLETED → invalid_status_transition', async () => {
     const env = await newEnv()
-    const { tasks } = await env.mcp.submitTask(SUBMIT)
+    const { tasks } = await seedTask(env.p)
     const id = tasks[0]!.id
     await env.p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'FAILED' WHERE id = ?").run(id))
     const skipped = await env.mcp.taskSkip(id)
@@ -400,7 +415,7 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
 
   it('taskCancel：提交后取消 → CANCELLED（DagRepository 路径）；未知任务 → task_not_found', async () => {
     const env = await newEnv()
-    const { tasks } = await env.mcp.submitTask(SUBMIT)
+    const { tasks } = await seedTask(env.p)
     const id = tasks[0]!.id
     const cancelled = await env.mcp.taskCancel(id)
     expect(cancelled.status).toBe('CANCELLED')
@@ -409,7 +424,7 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
 
   it('taskReopen：关闭后 24h 内 → AWAITING_FEEDBACK；非 CLOSED → invalid_status_transition', async () => {
     const env = await newEnv()
-    const { tasks } = await env.mcp.submitTask(SUBMIT)
+    const { tasks } = await seedTask(env.p)
     const id = tasks[0]!.id
     await env.p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(id))
     await env.router.enterAwaitingFeedback(id)
@@ -477,10 +492,8 @@ describe('WeaveCli 补充命令（t36）', () => {
 
   it('task retry/skip/cancel/reopen：文本输出与 --json', async () => {
     const env = await newEnv()
-    const submit = await env.cli.run(['task', 'submit', '运维任务', '--project', 'proj-ops', '--version', 'v1'])
-    const dagId = /dag-[\w-]+-\d+/.exec(submit.text)?.[0] ?? ''
-    const status = await env.cli.run(['task', 'status', '--dag', dagId])
-    const taskId = /^- (\S+)/m.exec(status.text)?.[1] ?? ''
+    const seeded = await seedTask(env.p, { description: '运维任务', project_id: 'proj-ops', version: 'v1' })
+    const taskId = seeded.tasks[0]!.id
     // retry（先置 FAILED）
     await env.p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'FAILED' WHERE id = ?").run(taskId))
     const retried = await env.cli.run(['task', 'retry', taskId])

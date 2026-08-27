@@ -390,30 +390,36 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
     expect(page.value.tasks).toHaveLength(1)
   })
 
-  it('task/create → task/get 全链路；缺参与未知 id 报业务码', async () => {
+  it('task/create 通道已删除；task/get 未知 id 报业务码', async () => {
     const env = makeQuadEnv()
     await importTeam(env.call, 'rpc-team')
-    const created = (await env.call('task/create', {
-      description: '信封联调任务',
-      project_id: 'proj-e2e',
-      version: 'v1',
-      team_id: 'rpc-team',
-    })) as { ok: true; value: { dag_id: string; status: string } }
-    expect(created.value.status).toBe('submitted')
-    const got = (await env.call('task/get', { dagId: created.value.dag_id })) as { ok: true; value: { tasks: unknown[] } }
-    expect(got.value.tasks).toHaveLength(1)
-    expect(await errCodeOf(env.call, 'task/create', { description: '', project_id: 'p', version: 'v' })).toBe('invalid_argument')
+    // 队长模式下发唯一入口为 weave_plan_tasks 工具，RPC 层不再提供 task/create
+    expect(await errCodeOf(env.call, 'task/create', { description: 'x' })).toBe('invalid_argument')
+    expect(await errCodeOf(env.call, 'task/get', { dagId: 'nope-dag' })).toBe('task_not_found')
     expect(await errCodeOf(env.call, 'task/get', { taskId: 'nope' })).toBe('task_not_found')
   })
 
   it('task/action：未知动作 invalid_argument；CANCELLED retry 经信封回 WAITING', async () => {
     const env = makeQuadEnv()
     await importTeam(env.call, 'rpc-team')
-    const created = (await env.call('task/create', { description: '动作联调', project_id: 'proj-a', version: 'v1', team_id: 'rpc-team' })) as {
-      ok: true
-      value: { tasks: Array<{ id: string }> }
-    }
-    const taskId = created.value.tasks[0]!.id
+    // 种子一条单任务 DAG（下发不在 RPC 层）
+    const now = new Date().toISOString()
+    const dagId = 'dag-proj-a-v1-seed'
+    const taskId = `${dagId}-t1`
+    await env.persistence.tasks.run((db) => {
+      db.prepare(
+        `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
+         VALUES (?, 'rpc-team', 'proj-a', 'v1', 'captain', 'created', ?, ?)`,
+      ).run(dagId, now, now)
+      db.prepare(
+        `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
+         dependencies, assigned_agent, executor, status, revision_count, max_revisions,
+         feedback_timeout_seconds, feedback_expires_at, skip_override, skip_reason, fail_count,
+         result, error_type, created_at, updated_at)
+         VALUES (?, ?, 'sess-rpc', 'rpc-team', 'proj-a', 'v1', '动作联调', '', '[]', 'coder', 'zcode', 'WAITING',
+         0, 5, 1800, NULL, 0, NULL, 0, NULL, NULL, ?, ?)`,
+      ).run(taskId, dagId, now, now)
+    })
     expect(await errCodeOf(env.call, 'task/action', { action: 'explode', taskId })).toBe('invalid_argument')
     await env.persistence.tasks.run((db) => {
       db.prepare("UPDATE tasks SET status = 'CANCELLED', updated_at = '2024-01-03T00:00:00.000Z' WHERE id = ?").run(taskId)

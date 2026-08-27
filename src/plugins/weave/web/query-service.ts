@@ -1,10 +1,10 @@
 import { AUDIT_EVENT_TYPES, DEFAULT_AUDIT_DIR, AuditLog, type AuditEventType, type AuditQuery } from '../audit/audit-log.js'
-import { WeaveMcp, type CliMcpDeps, type SubmitTaskInput } from '../cli-mcp.js'
+import { WeaveMcp, type CliMcpDeps } from '../cli-mcp.js'
 import { DagRepository } from '../dag/repository.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'
 import { SessionTracker } from '../session-tracker.js'
-import { TASK_STATUSES, type TaskRecord } from '../state/types.js'
+import { TASK_STATUSES, type TaskRecord, type TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge-model.js'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -12,16 +12,19 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../import-pipeline.js'
 import type { TeamManager } from '../team-manager.js'
+import type { WeaveScheduler } from '../scheduler.js'
 import { buildKnowledgeGraph } from './knowledge-graph.js'
 
 /**
  * Web 真实数据查询/操作服务（t2）——供 RPC 层（rpc.ts 由 weave-dev-api 接线）调用的
  * 任务、知识库、审计、会话四域能力。全部读写真实持久化层：
- * - 任务列表/DAG 详情：tasks.db（tasks/dags/edges 表）；
- * - 任务创建与动作：复用 WeaveMcp（submitTask / revise / accept / retry / skip / cancel / reopen）；
+ * - 任务列表/DAG 详情：tasks.db（tasks/dags/edges 表）；任务按会话过滤（session_id）；
+ * - 任务动作：复用 WeaveMcp（revise / accept / retry / skip / cancel / reopen）；
+ *   任务下发不在本层——唯一入口是会话内的 weave_plan_tasks（队长模式，planner.ts）；
  * - 知识：复用 WeaveMcp.knowledgeReview / approve / reject（candidate 队列 + 元数据状态查询）；
  * - 审计：AuditLog.query（JSONL 追加日志，无 fake 数据路径）；
  * - 会话绑定：core.db team_bindings 直读；set/clear 复用 TeamManager 现有方法；
+ * - 会话状态：WeaveScheduler.memberRuntime（成员实时占用）+ 最近 DAG 派生最近结果；
  * - 修订记录：SessionTracker.listRevisions（feedback.db revision_records，最近优先）。
  *
  * 本文件只提供服务方法与 endpoint 分发器；不做任何数据伪造，
@@ -95,10 +98,20 @@ function rowToTask(row: TaskRowLike): TaskRecord {
   return { ...(row as unknown as Omit<TaskRecord, 'dependencies' | 'skip_override'>), dependencies, skip_override: row.skip_override === 1 }
 }
 
+/** 成员状态徽标用小写状态（idle/running/completed/failed/...）。 */
+function statusLabel(status: TaskStatus): string {
+  return status.toLowerCase()
+}
+
+function subjectOf(description: string): string {
+  const firstLine = String(description ?? '').split('\n')[0]?.trim() ?? ''
+  return firstLine.slice(0, 60)
+}
+
 export interface QueryServiceDeps {
   /** 五库持久化句柄（tasks/core/feedback/knowledgeMeta/imports）。 */
   persistence: WeavePersistence
-  /** MCP 层：task/create、task/action、knowledge/* 复用；缺省时相应端点 configuration_error。 */
+  /** MCP 层：task/action、knowledge/* 复用；缺省时相应端点 configuration_error。 */
   mcp?: WeaveMcp
   /** 审计日志：audit/list 用。 */
   auditLog?: AuditLog
@@ -106,6 +119,8 @@ export interface QueryServiceDeps {
   sessionTracker?: SessionTracker
   /** 团队管理：session/set-binding、clear-binding 复用现有绑定方法。 */
   teamManager?: TeamManager
+  /** 队长调度器：session/status 的成员实时占用数据源。 */
+  scheduler?: WeaveScheduler
   /** 知识仓库：knowledge/graph 只读真实知识文件与 [[双链]]。 */
   knowledgeStore?: KnowledgeStore
   /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
@@ -122,6 +137,7 @@ export class WeaveQueryService {
   private readonly auditLog?: AuditLog
   private readonly sessionTracker?: SessionTracker
   private readonly teamManager?: TeamManager
+  private readonly scheduler?: WeaveScheduler
   private readonly knowledgeStore?: KnowledgeStore
   private readonly importPipeline?: ImportPipeline
   private readonly dagRepository: DagRepository
@@ -132,6 +148,7 @@ export class WeaveQueryService {
     this.auditLog = deps.auditLog
     this.sessionTracker = deps.sessionTracker
     this.teamManager = deps.teamManager
+    this.scheduler = deps.scheduler
     this.knowledgeStore = deps.knowledgeStore
     this.importPipeline = deps.importPipeline
     this.dagRepository = new DagRepository(deps.persistence)
@@ -143,8 +160,10 @@ export class WeaveQueryService {
    * task/list：分页 + 过滤（teamId/projectId/status/search），updated_at 降序。
    * 分页两种形态二选一：page(+pageSize 默认 20) 或 limit(默认 50)+offset(默认 0)，混用报错。
    * search 对 description/id 做 LIKE 包含匹配（%/_/\ 转义）。
+   * 回退：未传 sessionId 且显式传 teamId 时按 team_id 维度返回该团队最近活跃任务
+   * （响应带 fallback_used:true）——供「会话 id 与落库不一致」时期待面板兜底取数。
    */
-  async taskList(input: unknown): Promise<{ total: number; tasks: TaskRecord[] }> {
+  async taskList(input: unknown): Promise<{ total: number; tasks: TaskRecord[]; fallback_used?: boolean }> {
     const p = asPayload(input)
     const page = optionalPositiveInt(p, 'page')
     const pageSizeRaw = optionalPositiveInt(p, 'pageSize')
@@ -176,6 +195,11 @@ export class WeaveQueryService {
 
     const where: string[] = []
     const params: string[] = []
+    const sessionId = optionalString(p, 'sessionId', 'session_id')
+    if (sessionId !== undefined) {
+      where.push('session_id = ?')
+      params.push(sessionId)
+    }
     const teamId = optionalString(p, 'teamId', 'team_id')
     if (teamId !== undefined) {
       where.push('team_id = ?')
@@ -199,6 +223,8 @@ export class WeaveQueryService {
       params.push(`%${escaped}%`, `%${escaped}%`)
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+    // 回退标记：仅在「无 sessionId 过滤 + 显式 teamId」时为 true（§REDESIGN C 兜底语义）。
+    const teamFallbackUsed = sessionId === undefined && teamId !== undefined
 
     return this.persistence.tasks.run((db) => {
       const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM tasks ${whereSql}`).get(...params) as
@@ -214,6 +240,7 @@ export class WeaveQueryService {
       return {
         total: Number(totalRow?.total ?? 0),
         tasks: rows.map(rowToTask),
+        ...(teamFallbackUsed ? { fallback_used: true } : {}),
       }
     })
   }
@@ -248,14 +275,6 @@ export class WeaveQueryService {
       return this.dagRepository.loadDag(rowDagId)
     }
     return { dag_id: '', tasks: [task], edges: [], status: 'created' }
-  }
-
-  /** task/create：完全复用 WeaveMcp.submitTask（团队校验/序号/DAG 落库均在其内）。 */
-  async taskCreate(input: unknown): Promise<{ dag_id: string; tasks: TaskRecord[]; status: 'submitted' }> {
-    if (!this.mcp) {
-      throw new WeaveError('configuration_error', 'mcp 未注入（task/create 需要 WeaveMcp）')
-    }
-    return this.mcp.submitTask(asPayload(input) as unknown as SubmitTaskInput)
   }
 
   /** task/action：revise/accept/retry/skip/cancel/reopen 全部转发 WeaveMcp 现有实现。 */
@@ -469,6 +488,93 @@ export class WeaveQueryService {
     return { session_id: sessionId, unbound }
   }
 
+  /**
+   * session/status：会话视图面板数据源——绑定团队 + 成员实时状态。
+   * 状态派生：调度器占用表（执行中）> 本会话最近任务持久化状态（completed/failed 等）> idle。
+   */
+  async sessionStatus(input: unknown): Promise<{
+    session_id: string
+    team: { team_id: string; name: string } | null
+    /** 团队解析来源：binding=显式启用/绑定；default/single=零仪式自动解析。 */
+    resolved_via?: 'binding' | 'default' | 'single' | null
+    members: Array<{
+      role_id: string
+      name: string
+      executor: string
+      status: 'idle' | 'running' | string
+      task_id?: string
+      subject?: string
+      started_at?: string
+      last_task_id?: string
+      last_status?: TaskStatus
+      last_subject?: string
+    }>
+  }> {
+    if (!this.teamManager) {
+      throw new WeaveError('configuration_error', 'teamManager 未注入（session/status 需要 TeamManager）')
+    }
+    const p = asPayload(input)
+    const sessionId = requireString(p, 'sessionId', 'session_id')
+    // 零仪式：与 planner 同一条优先级链（绑定 > 默认 > 唯一）；未配置任何团队才为 null。
+    const resolved = await this.teamManager.resolveSessionTeam(sessionId)
+    if (!resolved.team) {
+      return { session_id: sessionId, team: null, resolved_via: null, members: [] }
+    }
+    const team = resolved.team
+
+    // 本会话最近的任务（跨 DAG，按创建时间倒序取一批），每个角色取最近一条做“上次结果”。
+    const recent = await this.persistence.tasks.run((db) => {
+      return db
+        .prepare(
+          `SELECT id, dag_id, description, assigned_agent AS assignedAgent, status, created_at AS createdAt
+           FROM tasks WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50`,
+        )
+        .all(sessionId) as unknown as Array<{
+        id: string
+        dag_id: string
+        description: string
+        assignedAgent: string | null
+        status: TaskStatus
+        createdAt: string
+      }>
+    })
+    const lastByRole = new Map<string, (typeof recent)[number]>()
+    for (const row of recent) {
+      const roleId = row.assignedAgent ?? ''
+      if (roleId !== '' && !lastByRole.has(roleId)) lastByRole.set(roleId, row)
+    }
+
+    const runtime = this.scheduler?.memberRuntime(sessionId) ?? []
+    const runtimeByRole = new Map(runtime.map((item) => [item.role_id, item]))
+
+    const members = team.roles.map((role) => {
+      const active = runtimeByRole.get(role.id)
+      const last = lastByRole.get(role.id)
+      let status: string = 'idle'
+      if (active) status = 'running'
+      else if (last) status = statusLabel(last.status)
+      return {
+        role_id: role.id,
+        name: role.name,
+        executor: role.executor,
+        status,
+        ...(active
+          ? { task_id: active.task_id, subject: active.subject, started_at: active.started_at }
+          : {}),
+        ...(last && !active
+          ? { last_task_id: last.id, last_status: last.status, last_subject: subjectOf(last.description) }
+          : {}),
+      }
+    })
+
+    return {
+      session_id: sessionId,
+      team: { team_id: team.team_id, name: team.name },
+      resolved_via: resolved.via,
+      members,
+    }
+  }
+
   /* ------------------------------- endpoint 分发 ------------------------------- */
 
   /** RPC 层单入口分发器；未知端点 invalid_argument（与 rpc.ts 行为一致）。 */
@@ -478,8 +584,6 @@ export class WeaveQueryService {
         return this.taskList(payload)
       case 'task/get':
         return this.taskGet(payload)
-      case 'task/create':
-        return this.taskCreate(payload)
       case 'task/action':
         return this.taskAction(payload)
       case 'knowledge/list':
@@ -510,6 +614,8 @@ export class WeaveQueryService {
         return this.sessionSetBinding(payload)
       case 'session/clear-binding':
         return this.sessionClearBinding(payload)
+      case 'session/status':
+        return this.sessionStatus(payload)
       default:
         throw new WeaveError('invalid_argument', `未知 RPC endpoint: ${endpoint}`)
     }
@@ -519,15 +625,20 @@ export class WeaveQueryService {
 /**
  * 生产接线工厂（t4）：从宿主已组装的 CliMcpDeps 派生 WeaveQueryService。
  * mcp / 审计日志（目录与 KnowledgeReview 一致）/ 修订跟踪在此按需构造，
- * 由 index.ts 注入 registerWeaveRpc 的 deps.queryService。
+ * 由 index.ts 注入 registerWeaveRpc 的 deps.queryService；extras.scheduler 为
+ * 队长调度器（session/status 成员实时状态数据源）。
  */
-export function createWeaveQueryServiceFromCliDeps(deps: CliMcpDeps): WeaveQueryService {
+export function createWeaveQueryServiceFromCliDeps(
+  deps: CliMcpDeps,
+  extras: { scheduler?: WeaveScheduler } = {},
+): WeaveQueryService {
   return new WeaveQueryService({
     persistence: deps.persistence,
     mcp: new WeaveMcp(deps),
     auditLog: new AuditLog({ dir: DEFAULT_AUDIT_DIR }),
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
+    ...(extras.scheduler ? { scheduler: extras.scheduler } : {}),
     knowledgeStore: deps.knowledgeStore,
     importPipeline: deps.importPipeline,
   })

@@ -7,7 +7,7 @@
  * 1. 构建产物必须是 DSH ModuleLoader bundle；
  * 2. 客户端注册到 sidebar.footer.action，而不是 settings.section；
  * 3. 左侧动作可打开全屏 Dashboard；
- * 4. Dashboard 内部左侧导航可切换 8 个页面；
+ * 4. Dashboard 内部左侧导航可切换 7 个页面（任务中心/会话管理已移除）；
  * 5. 关闭按钮能关闭界面。
  *
  * 运行：
@@ -219,9 +219,12 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     expect(screen.getByTestId('weave-nav')).toBeTruthy()
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['overview', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings']) {
+    for (const route of ['overview', 'teams', 'knowledge', 'executors', 'audit', 'settings']) {
       expect(screen.getByTestId(`nav-${route}`)).toBeTruthy()
     }
+    // 任务中心与会话管理已从导航中移除
+    expect(screen.queryByTestId('nav-tasks')).toBeNull()
+    expect(screen.queryByTestId('nav-sessions')).toBeNull()
   })
 
   it('非 ZCode 角色也展示 Provider/Model 下拉', async () => {
@@ -309,7 +312,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     await screen.findByText('已保存：my-team（1 个角色）')
   })
 
-  it('Dashboard 内部导航可切换 9 个页面，关闭按钮可退出', async () => {
+  it('Dashboard 内部导航可切换 7 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
       if (id === 'react-dom') return ReactDOM
@@ -353,7 +356,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings', 'manual']) {
+    for (const route of ['teams', 'knowledge', 'executors', 'audit', 'settings', 'manual']) {
       fireEvent.click(screen.getByTestId(`nav-${route}`))
       expect(screen.getByTestId(`page-${route}`)).toBeTruthy()
       expect(screen.getByTestId(`nav-${route}`).getAttribute('data-active')).toBe('true')
@@ -402,36 +405,6 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     expect(screen.getByTestId('team-create-submit').textContent).toContain('包含 1 个角色')
   })
 
-  it('任务中心：真实列表渲染、状态过滤触发带 status 的请求、按状态出动作', async () => {
-    const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'task/list': {
-        total: 2,
-        tasks: [
-          { id: 'T-1', description: '实现功能', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-01T10:00:00Z' },
-          { id: 'T-2', description: '修复缺陷', status: 'FAILED', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-02T10:00:00Z' },
-        ],
-      },
-    })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-tasks'))
-    await screen.findByTestId('task-row-T-1')
-    expect(screen.getByTestId('task-row-T-2')).toBeTruthy()
-    expect(screen.queryByTestId('task-create-submit')).toBeNull()
-    expect(screen.queryByText('创建任务')).toBeNull()
-    const filter = screen.getByTestId('task-status-filter') as HTMLSelectElement
-    expect(filter.options.length).toBe(15)
-    expect(screen.getByTestId('task-action-cancel-T-1')).toBeTruthy()
-    expect(screen.getByTestId('task-action-retry-T-2')).toBeTruthy()
-    fireEvent.change(filter, { target: { value: 'FAILED' } })
-    await waitFor(() => {
-      const listed = fixture.calls.filter((item) => item.endpoint === 'task/list')
-      expect(listed.some((item) => (item.payload as Record<string, unknown>).status === 'FAILED')).toBe(true)
-    })
-  })
-
   it('知识库：candidate 审核通过会调用 knowledge/approve', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({
@@ -456,11 +429,9 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     await screen.findByText('已通过：k-1')
   })
 
-  it('会话管理与设置页：confirm 后解绑、只读配置渲染', async () => {
+  it('设置页只读配置渲染；会话绑定职责已移交会话面板', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({
-      'session/bindings': { bindings: [{ session_id: 'sess-1', team_id: 'my-team', updated_at: '2025-01-03T08:00:00Z' }] },
-      'session/clear-binding': { session_id: 'sess-1', unbound: true },
       'settings/describe': {
         version: '9.9.9-test',
         node_version: process.version,
@@ -470,22 +441,16 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
         zcode: { configured: false, registered: true },
       },
     })
-    const confirmSpy = vi.fn(() => true)
-    window.confirm = confirmSpy
     exported.apply(fixture.ctx as never)
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-sessions'))
-    await screen.findByTestId('binding-row-sess-1')
-    fireEvent.click(screen.getByTestId('binding-unbind-sess-1'))
-    await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalled()
-      expect(fixture.calls.some((item) => item.endpoint === 'session/clear-binding')).toBe(true)
-    })
     fireEvent.click(screen.getByTestId('nav-settings'))
     const settings = await screen.findByTestId('settings-list')
     expect(settings.textContent).toContain('9.9.9-test')
     expect(settings.textContent).toContain(process.version)
+
+    // nav-sessions 不存在：绑定在会话视图面板内完成
+    expect(screen.queryByTestId('nav-sessions')).toBeNull()
   })
 })
 describe('t8 会话优先模型与治理化改造', () => {
@@ -495,20 +460,22 @@ describe('t8 会话优先模型与治理化改造', () => {
     throw new Error(`unexpected client dependency: ${id}`)
   }
 
-  it('任务页不再提供创建入口，并明确提示任务来自 DSH 会话', async () => {
+  it('任务中心已整体移除：无导航入口、无任何任务创建/提交表单（下发只走对话）', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'task/list': { total: 1, tasks: [{ id: 'T-9', description: '会话发起的任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-04T09:00:00Z' }] },
-    })
+    const fixture = makeClientContext()
     exported.apply(fixture.ctx as never)
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-tasks'))
-    await screen.findByTestId('task-row-T-9')
+    expect(screen.queryByTestId('nav-tasks')).toBeNull()
     expect(screen.queryByText('创建任务')).toBeNull()
     expect(screen.queryByTestId('task-create-submit')).toBeNull()
     expect(screen.queryByTestId('task-project-input')).toBeNull()
-    await screen.findByText((content) => content.includes('任务由当前 DSH 会话发起'))
+
+    const source = await readFile(sourcePath, 'utf8')
+    // 源码层面确认：路由与下发通道均已移除
+    expect(source).not.toContain("'tasks'")
+    expect(source).not.toContain("'sessions'")
+    expect(source).not.toContain('task/create')
   })
 
   it('不再注册输入框团队选择器；团队启停由当前会话自然语言处理', async () => {
@@ -588,8 +555,11 @@ describe('t8 会话优先模型与治理化改造', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-manual'))
     await screen.findByTestId('page-manual')
-    expect(screen.getByTestId('command-row-0').textContent).toContain('/weave team list')
+    // 零仪式为首：直接描述目标即队长模式；启用短句退居多团队指定场景
+    expect(screen.getByTestId('command-row-0').textContent).toContain('<直接描述目标>')
+    expect(screen.getByText((t) => t.includes('启用 <团队名>'))).toBeTruthy()
     expect(screen.getByText('/weave provider add <JSON|YAML|文件路径|紧凑配置>')).toBeTruthy()
+    expect(screen.queryByText((t) => t.includes('task submit'))).toBeNull()
   })
 
   it('执行器页展示动态 provider 与声明扩展；设置页展示配置来源', async () => {
@@ -627,7 +597,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(summary.textContent).toContain('myacp · stdio · node · 已生效')
   })
 })
-describe('t9 任务依赖图可视化', () => {
+describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视化', () => {
   const moduleRequireOf = () => (id: string) => {
     if (id === 'react') return React
     if (id === 'react-dom') return ReactDOM
@@ -648,61 +618,109 @@ describe('t9 任务依赖图可视化', () => {
     ],
   }
 
-  function openTaskDetail(fixture: ReturnType<typeof makeClientContext>): void {
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-tasks'))
+  const STATUS_OK = {
+    session_id: 'sess-ui',
+    team: { team_id: 'alpha', name: '阿尔法小队' },
+    members: [
+      { role_id: 'designer', name: '设计师', executor: 'zcode', status: 'idle' },
+      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'running', task_id: 'T-A', subject: '根任务' },
+      { role_id: 'reviewer', name: '审核员', executor: 'codex', status: 'idle' },
+    ],
   }
 
-  it('分层布局：节点按最长路径分列，边用方向线连接，节点含状态与负责人', async () => {
+  function panelFixture(endpointValues: Record<string, unknown>) {
     const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'task/list': { total: 1, tasks: [{ id: 'T-A', description: '根任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
+    const fixture = makeClientContext(endpointValues)
+    exported.apply(fixture.ctx as never)
+    const panel = fixture.registration('conversation.view')
+    if (!panel) throw new Error('conversation.view slot not registered')
+    return { fixture, panel }
+  }
+
+  it('面板结构：团队头 + 成员卡片 + 本会话任务图；执行中成员带当前任务', async () => {
+    const { panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 3, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
       'task/get': THREE_NODE_DAG,
     })
-    exported.apply(fixture.ctx as never)
-    openTaskDetail(fixture)
-    await screen.findByTestId('task-row-T-A')
-    fireEvent.click(screen.getByTestId('task-detail-toggle-T-A'))
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    await screen.findByTestId('member-card-coder')
+    expect(screen.getByTestId('weave-session-team-name').textContent).toContain('阿尔法小队')
+    expect(screen.getByTestId('member-card-coder').textContent).toContain('程序员')
+    expect(screen.getByTestId('member-card-coder').textContent).toContain('执行中')
+    expect(screen.getByTestId('member-card-designer').textContent).toContain('空闲')
+
     await screen.findByTestId('dag-panel')
-
-    const nodes = screen.getAllByTestId(/^dag-node-/)
-    expect(nodes.length).toBe(3)
-    const svg = screen.getByTestId('dag-edges')
-    expect(svg.querySelectorAll('line').length).toBe(2)
-
-    // 状态徽标与负责人
+    expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
+    expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(2)
     expect(screen.getByTestId('dag-node-T-C').textContent).toContain('已完成')
-    expect(screen.getByTestId('dag-node-T-A').textContent).toContain('agent-1')
-    expect(screen.getByTestId('dag-node-T-B').textContent).toContain('未分配')
 
-    // 层级：x 随最长依赖路径递增 A < B < C
+    // 层级：x 随最长依赖路径递增
     const leftOf = (id: string) => Number.parseInt((screen.getByTestId('dag-node-' + id) as HTMLElement).style.left, 10)
     expect(leftOf('T-C')).toBeGreaterThan(leftOf('T-B'))
     expect(leftOf('T-B')).toBeGreaterThan(leftOf('T-A'))
-
-    // 点击联动详情 + 选中高亮
-    fireEvent.click(screen.getByTestId('dag-node-T-C'))
-    await waitFor(() => {
-      const gets = fixture.calls.filter((item) => item.endpoint === 'task/get')
-      expect(gets.some((item) => (item.payload as Record<string, unknown>).taskId === 'T-C')).toBe(true)
-    })
-    expect(screen.getByTestId('dag-node-T-C').getAttribute('data-selected')).toBe('true')
-    expect(screen.getByTestId('dag-node-T-A').getAttribute('data-selected')).toBe('false')
   })
 
-  it('无依赖 DAG 显示单节点且无边', async () => {
-    const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'task/list': { total: 1, tasks: [{ id: 'S-1', description: '独立任务', status: 'RUNNING', team_id: 'my-team', project_id: 'demo', version: '0.2.0', updated_at: '2025-01-06T09:00:00Z' }] },
-      'task/get': { dag_id: '', status: 'created', tasks: [{ id: 'S-1', status: 'RUNNING', dependencies: [] }], edges: [] },
+  it('节点治理动作：选中 RUNNING 节点出现取消按钮并调用 task/action', async () => {
+    const { fixture, panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 3, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
+      'task/get': THREE_NODE_DAG,
+      'task/action': { task_id: 'T-A', status: 'CANCELLED' },
     })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-tasks'))
-    await screen.findByTestId('task-row-S-1')
-    fireEvent.click(screen.getByTestId('task-detail-toggle-S-1'))
+    const confirmSpy = vi.fn(() => true)
+    window.confirm = confirmSpy
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    await screen.findByTestId('dag-panel')
+    // 默认选中第一个节点 T-A（RUNNING）→ 出现「取消」动作
+    await waitFor(() => expect(screen.getByTestId('session-task-action-cancel-T-A')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('session-task-action-cancel-T-A'))
+    await waitFor(() => {
+      const acts = fixture.calls.filter((item) => item.endpoint === 'task/action')
+      expect(acts.some((item) => (item.payload as Record<string, unknown>).taskId === 'T-A')).toBe(true)
+    })
+  })
+
+  it('无法确定团队时：展示多团队指定指引且不请求任务图', async () => {
+    const { fixture, panel } = panelFixture({
+      'session/status': { session_id: 'sess-ui', team: null, members: [] },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+    await screen.findByTestId('page-empty')
+    expect(screen.getByTestId('page-empty').textContent).toContain('无法确定本次会话的团队')
+    expect(screen.getByTestId('page-empty').textContent).toContain('多个团队')
+    expect(fixture.calls.some((call) => call.endpoint === 'session/status' && (call.payload as Record<string, unknown>).sessionId === 'sess-ui')).toBe(true)
+    expect(fixture.calls.some((call) => call.endpoint === 'task/get')).toBe(false)
+  })
+
+  it('绑定切换：下拉选择团队触发 session/set-binding', async () => {
+    const { fixture, panel } = panelFixture({
+      snapshot: {
+        teams: [{ team_id: 'alpha', name: '阿尔法小队' }, { team_id: 'beta', name: '贝塔小队' }],
+        executors: [],
+      },
+      'session/status': STATUS_OK,
+      'task/list': { total: 0, tasks: [] },
+      'session/set-binding': { session_id: 'sess-ui', team_id: 'beta' },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+    const select = (await screen.findByTestId('weave-session-team-select')) as HTMLSelectElement
+    expect(select.value).toBe('alpha')
+    fireEvent.change(select, { target: { value: 'beta' } })
+    await waitFor(() => {
+      expect(fixture.calls.some((call) => call.endpoint === 'session/set-binding' && (call.payload as Record<string, unknown>).teamId === 'beta')).toBe(true)
+    })
+  })
+
+  it('分层布局回归：单节点无边图', async () => {
+    const { panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 1, tasks: [{ id: 'S-1', dag_id: 'S-DAG', description: '独立任务', status: 'RUNNING', updated_at: '2025-01-06T09:00:00Z' }] },
+      'task/get': { dag_id: 'S-DAG', status: 'running', tasks: [{ id: 'S-1', status: 'RUNNING', dependencies: [] }], edges: [] },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
     await screen.findByTestId('dag-panel')
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(1)
     expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(0)

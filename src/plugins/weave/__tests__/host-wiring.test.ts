@@ -15,6 +15,7 @@ import {
   buildWeaveToolDefinitions,
   registerWeaveHost,
   registerWeaveCommand,
+  toJsonPropertySpec,
   tokenizeCommandLine,
   type HostCommandRuntime,
   type HostCommandDefinition,
@@ -22,6 +23,7 @@ import {
   type HostCommandResult,
   type HostToolRuntime,
 } from '../host-wiring'
+import { WeaveMcp } from '../cli-mcp'
 import type { CliMcpDeps } from '../cli-mcp'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
@@ -69,6 +71,31 @@ interface Env {
   deps: CliMcpDeps
   kstore: KnowledgeStore
   close: () => void
+}
+
+/** 队长模式下 MCP 层不再创建任务；种子一条单任务 WAITING 行供治理命令使用。 */
+async function seedHostTask(
+  persistence: import('../persistence/index').WeavePersistence,
+  projectId: string,
+): Promise<{ dagId: string; taskId: string }> {
+  const now = new Date().toISOString()
+  const dagId = `dag-${projectId}-v1-hostseed`
+  const taskId = `${dagId}-t1`
+  await persistence.tasks.run((db) => {
+    db.prepare(
+      `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
+       VALUES (?, 'alpha-squad', ?, 'v1', 'hard', 'created', ?, ?)`,
+    ).run(dagId, projectId, now, now)
+    db.prepare(
+      `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
+       dependencies, assigned_agent, executor, status, revision_count, max_revisions,
+       feedback_timeout_seconds, feedback_expires_at, skip_override, skip_reason, fail_count,
+       result, error_type, created_at, updated_at)
+       VALUES (?, ?, 'host-session', 'alpha-squad', ?, 'v1', '修复登录超时', '', '[]', 'coder', 'zcode', 'WAITING',
+       0, 5, 1800, NULL, 0, NULL, 0, NULL, NULL, ?, ?)`,
+    ).run(taskId, dagId, projectId, now, now)
+  })
+  return { dagId, taskId }
 }
 
 const envs: Env[] = []
@@ -154,7 +181,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(bundle.registration.hasToolRuntime).toBe(true)
     const names = bundle.registration.registered
     expect(names).toEqual([
-      'weave_submit_task',
+      'weave_plan_tasks',
       'weave_get_status',
       'weave_revise_task',
       'weave_accept_task',
@@ -172,14 +199,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     ])
     expect(registered).toHaveLength(15)
 
-    // 核心命令：通过注册的 weave_submit_task 定义直接执行
-    const submitDef = registered.find((r) => (r.def as { name: string }).name === 'weave_submit_task')!.def as {
-      execute: (args: Record<string, unknown>) => Promise<{ dag_id: string; tasks: unknown[]; status: string }>
+    // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
+    const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
+      execute: (args: Record<string, unknown>, exec?: unknown) => Promise<unknown>
     }
-    const output = await submitDef.execute({ description: '修复登录超时', project_id: 'p1', version: 'v1' })
-    expect(output.status).toBe('submitted')
-    expect(output.dag_id).toMatch(/^dag-/)
-    expect(output.tasks.length).toBeGreaterThan(0)
+    await expect(planDef.execute({ tasks: [] })).rejects.toMatchObject(/configuration_error/)
 
     // 工具注销后注册表清空
     bundle.dispose()
@@ -187,17 +211,23 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(bundle.registration.unregister).toBeTypeOf('function')
   })
 
-  it('核心 CLI 命令可调用：/weave task submit + status（--json）', async () => {
+  it('options.planTasks 注入后：planTasks 工具全链路可用（回调→返回摘要）', async () => {
     const env = await newEnv()
-    const bundle = registerWeaveHost(env.ctx, env.deps)
-    const submitted = await bundle.cli.run(['task', 'submit', '修复登录超时', '--project', 'proj-x', '--version', 'v2'])
-    expect(submitted.exitCode).toBe(0)
-    expect(submitted.text).toContain('已提交 DAG')
-    const dagId = (JSON.parse(submitted.json) as { data: { dag_id: string } }).data.dag_id
-    expect(dagId).toContain('proj-x')
-    const status = await bundle.cli.run(['task', 'status', '--dag', dagId])
-    expect(status.exitCode).toBe(0)
-    expect(status.text).toContain('WAITING')
+    const planCalls: Array<Record<string, unknown>> = []
+    const planTasks = async (args: unknown) => {
+      planCalls.push(args as Record<string, unknown>)
+      return { dag_id: 'dag-stub-1', session_id: 's1', team_id: 't', team_name: 'n', goal: null, tasks: [] }
+    }
+    const bundle = registerWeaveHost(env.ctx, env.deps, { planTasks })
+    const def = buildWeaveToolDefinitions(bundle.mcp, { planTasks }).find((d) => d.name === 'weave_plan_tasks')!
+    const out = (await def.execute({ tasks: [{ description: 'x', assignee: 'coder' }] }, { agent: { id: 'sess' } })) as { dag_id: string }
+    expect(out.dag_id).toBe('dag-stub-1')
+    expect(planCalls).toHaveLength(1)
+
+    // 未注入 planTasks 时：明确 configuration_error，不静默假装可用
+    const bare = registerWeaveHost(env.ctx, env.deps)
+    const bareDef = buildWeaveToolDefinitions(bare.mcp).find((d) => d.name === 'weave_plan_tasks')!
+    await expect(bareDef.execute({}, undefined)).rejects.toMatchObject(/configuration_error/)
   })
 
   it('buildWeaveToolDefinitions 15 个定义：名称齐全且每个具 execute/description/parameters', async () => {
@@ -247,9 +277,9 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const bans = (await def('weave_ban_list').execute({})) as { bans: unknown[] }
     expect(bans.bans).toEqual([])
 
-    // 4) task_cancel / task_retry：提交任务 → 取消（RUNNING→不可；WAITING→CANCELLED）→ 重试回 WAITING
-    const sub = await bundle.mcp.submitTask({ description: '修复登录超时', project_id: 'p2', version: 'v1' })
-    const taskId = sub.tasks[0]!.id
+    // 4) task_cancel / task_retry：种子任务 → 取消（WAITING→CANCELLED）→ 重试回 WAITING
+    const seededP2 = await seedHostTask(env.deps.persistence, 'p2')
+    const taskId = seededP2.taskId
     const cancelled = (await def('weave_task_cancel').execute({ task_id: taskId })) as { status: string }
     expect(cancelled.status).toBe('CANCELLED')
     const retried = (await def('weave_task_retry').execute({ task_id: taskId })) as { status: string }
@@ -346,9 +376,9 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(teamList.kind).toBe('success')
     expect((teamList as { text?: string }).text).toContain('alpha-squad')
 
-    // 2) 先提交任务，再 task status --dag → success
-    const sub = await bundle.mcp.submitTask({ description: '修复登录超时', project_id: 'p3', version: 'v1' })
-    const status = await invoke(`task status --dag "${sub.dag_id}"`)
+    // 2) 先种子任务，再 task status --dag → success
+    const seededP3 = await seedHostTask(env.deps.persistence, 'p3')
+    const status = await invoke(`task status --dag "${seededP3.dagId}"`)
     expect(status.kind).toBe('success')
     expect((status as { text?: string }).text).toContain('WAITING')
 
@@ -378,5 +408,26 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const weaveMod = weavePlugin as { name: string; apply: unknown }
     expect(weaveMod.name).toBe('dsh-weave')
     expect(weaveMod.apply).toBeTypeOf('function')
+  })
+})
+
+describe('P0-TOOLS-SCHEMA-FIX：属性规格表递归转 JSON Schema', () => {
+  it('嵌套 tasks.items 的布尔 required 上提为该层数组；叶子层不再残留布尔标记', () => {
+    const env = { persistence: { tasks: {}, core: {} } } as never
+    const mcp = new WeaveMcp(env as never)
+    const planDef = buildWeaveToolDefinitions(mcp).find((d) => d.name === 'weave_plan_tasks')!
+    const schema = toJsonPropertySpec(planDef.parameters) as {
+      properties: Record<string, any>
+    }
+    const items = schema.properties['tasks'] && (schema.properties['tasks'] as any)['items']
+    expect(items?.type).toBe('object')
+    expect(items?.required).toEqual(['description', 'assignee'])
+    const leaf = items?.properties?.['description']
+    expect(leaf && typeof leaf === 'object' && 'required' in leaf).toBe(false)
+
+    // 顶层扁平表：revise_task 的两个必填字段上提
+    const revise = buildWeaveToolDefinitions(mcp).find((d) => d.name === 'weave_revise_task')!
+    const reviseSchema = toJsonPropertySpec(revise.parameters) as { required?: string[] }
+    expect(reviseSchema.required).toEqual(['task_id', 'feedback'])
   })
 })

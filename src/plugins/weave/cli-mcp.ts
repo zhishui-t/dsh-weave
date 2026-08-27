@@ -15,16 +15,18 @@ import type { TeamManager } from './team-manager.js'
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
  *
  * 交付：
- * - `WeaveMcp`：MCP Tool 层——weave_submit_task / weave_get_status /
- *   weave_revise_task / weave_accept_task / weave_team_list / weave_team_switch /
- *   weave_executor_list（执行器列表）；全部返回结构化 JSON 数据；
- * - `WeaveCli`：`/weave` 斜杠命令解析器——team list/switch、task submit/status/
- *   revise/accept、executor list、dag <id>；默认人类可读文本，`--json` 输出结构化 JSON；
+ * - `WeaveMcp`：MCP Tool 层——weave_get_status / weave_revise_task /
+ *   weave_accept_task / weave_team_list / weave_team_switch /
+ *   weave_executor_list + 知识审核/任务运维/禁令；全部返回结构化 JSON 数据。
+ *   任务下发不在此层——唯一入口是对话中的 weave_plan_tasks（队长模式，planner.ts）；
+ * - `WeaveCli`：`/weave` 斜杠命令解析器——team list/switch、task status/revise/
+ *   accept/retry/skip/cancel/reopen、executor list、dag <id>、provider 管理；
+ *   默认人类可读文本，`--json` 输出结构化 JSON；
  * - 错误可读：WeaveError(code) → `error: {code}: {message}`（文本）/ {ok:false,error}（JSON）。
  *
  * 复用（依赖注入）：TeamManager（团队加载/校验/会话绑定）、ExecutorRegistry（执行器
  * 列表与校验）、FeedbackRouter（修订/确认）、DagRepository（DAG 查询/取消）、
- * TaskStateMachine（状态机校验）、WeavePersistence（tasks/dags/edges/task_sequences）。
+ * TaskStateMachine（状态机校验）、WeavePersistence（tasks/dags/edges）。
  */
 
 export interface CliMcpDeps {
@@ -41,24 +43,18 @@ export interface CliMcpDeps {
   importPipeline?: ImportPipeline
   /** 熔断器（P0-SAFETY-015，t8）：ban list 用。 */
   circuitBreaker?: CircuitBreaker
+  /**
+   * 运行时执行联动（index.ts 在调度器就绪后注入）：
+   * cancelTask → 中止运行中的子代理；resumeTask → 重试后重新泵 DAG。
+   * 钩子内部异常由 scheduler 自行收敛；此处调用不得失败任务动作本身。
+   */
+  executionHooks?: {
+    cancelTask?: (taskId: string) => void | Promise<void>
+    resumeTask?: (taskId: string) => void | Promise<void>
+  }
 }
 
 /* ============================ MCP Tool 层 ============================ */
-
-export interface SubmitTaskInput {
-  description: string
-  project_id: string
-  version: string
-  session_id?: string
-  team_id?: string
-  dependencies?: Array<{ task_id: string; artifacts?: string[] }>
-}
-
-export interface SubmitTaskOutput {
-  dag_id: string
-  tasks: TaskRecord[]
-  status: 'submitted'
-}
 
 export interface GetStatusInput {
   dag_id?: string
@@ -75,129 +71,6 @@ export class WeaveMcp {
 
   constructor(deps: CliMcpDeps) {
     this.#deps = deps
-  }
-
-  /** weave_submit_task：校验入参 → 选择/加载团队 → 单任务 DAG（阶段=execute）落库。 */
-  async submitTask(input: SubmitTaskInput): Promise<SubmitTaskOutput> {
-    const { description, project_id: projectId, version } = input
-    if (typeof description !== 'string' || description.trim() === '') {
-      throw new WeaveError('invalid_argument', 'description 不能为空', { field: 'description' })
-    }
-    if (typeof projectId !== 'string' || projectId.trim() === '') {
-      throw new WeaveError('invalid_argument', 'project_id 不能为空', { field: 'project_id' })
-    }
-    if (typeof version !== 'string' || version.trim() === '') {
-      throw new WeaveError('invalid_argument', 'version 不能为空', { field: 'version' })
-    }
-
-    // 团队：显式 > 会话绑定 > 默认 > 唯一 > 提示选择（null → invalid_team）
-    const team =
-      input.team_id !== undefined && input.team_id !== ''
-        ? this.#deps.teamManager.loadTeam(input.team_id) // 显式：invalid_team / executor_unavailable 原样冒泡
-        : await this.#deps.teamManager.selectTeam(input.session_id ?? 'cli-session', undefined)
-    if (!team) {
-      throw new WeaveError('invalid_team', '无可用团队，请先执行 /weave team switch <team_id>', {
-        session_id: input.session_id ?? 'cli-session',
-      })
-    }
-    this.#deps.teamManager.validateTeam(team, this.#deps.executorRegistry)
-
-    // 阶段 → 角色绑定（SDD 2.2.7）：'execute' 隐式角色匹配兜底
-    const stage = 'execute'
-    const role =
-      team.roles.find((r) => r.stages.includes(stage)) ?? team.roles.find((r) => r.id === stage) ?? team.roles[0]
-    if (!role) {
-      throw new WeaveError('configuration_error', '团队未声明任何角色，无法绑定执行器', { team_id: team.team_id })
-    }
-
-    // 全局任务 ID：task_sequences（(project, version) 内连续）
-    const seq = await this.#nextSequence(projectId, version)
-    const dagId = `dag-${projectId}-${version}-${seq}`
-    const taskId = `${dagId}-t1`
-
-    // 依赖校验：依赖任务必须已存在（TDD 1.2.1 dependencies）
-    const dependencyIds = input.dependencies?.map((d) => d.task_id) ?? []
-    for (const depId of dependencyIds) {
-      const exists = await this.#deps.persistence.tasks.run((db) => {
-        return db.prepare('SELECT id FROM tasks WHERE id = ?').get(depId) !== undefined
-      })
-      if (!exists) {
-        throw new WeaveError('task_not_found', `依赖任务不存在: ${depId}`, { taskId: depId })
-      }
-    }
-    const allTerminal = await this.#allDepsTerminal(dependencyIds)
-    const status: TaskStatus = dependencyIds.length === 0 || allTerminal ? 'WAITING' : 'BLOCKED'
-
-    const now = new Date().toISOString()
-    const task: TaskRecord = {
-      id: taskId,
-      session_id: input.session_id ?? 'cli-session',
-      team_id: team.team_id,
-      project_id: projectId,
-      version,
-      description,
-      dependencies: dependencyIds,
-      assigned_agent: role.id,
-      executor: role.executor,
-      status,
-      revision_count: 0,
-      max_revisions: team.feedback.max_revisions,
-      feedback_timeout_seconds: team.feedback.feedback_timeout_seconds,
-      feedback_expires_at: null,
-      skip_override: false,
-      skip_reason: null,
-      fail_count: 0,
-      result: null,
-      error_type: null,
-      created_at: now,
-      updated_at: now,
-    }
-
-    await this.#deps.persistence.tasks.run((db) => {
-      db.prepare(
-        `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'created', ?, ?)`,
-      ).run(dagId, team.team_id, projectId, version, team.task_decomposition.default_difficulty ?? 'hard', now, now)
-      db.prepare(
-        `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
-         dependencies, assigned_agent, executor, status, revision_count, max_revisions,
-         feedback_timeout_seconds, feedback_expires_at, skip_override, skip_reason, fail_count,
-         result, error_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, NULL, NULL, ?, ?)`,
-      ).run(
-        taskId, dagId, task.session_id, task.team_id, projectId, version, description, stage,
-        JSON.stringify(dependencyIds), role.id, role.executor, status, 0, task.max_revisions,
-        task.feedback_timeout_seconds, null, now, now,
-      )
-      for (const depId of dependencyIds) {
-        db.prepare('INSERT OR IGNORE INTO edges (dag_id, from_task_id, to_task_id) VALUES (?, ?, ?)').run(dagId, depId, taskId)
-      }
-    })
-
-    return { dag_id: dagId, tasks: [task], status: 'submitted' }
-  }
-
-  async #nextSequence(projectId: string, version: string): Promise<number> {
-    return this.#deps.persistence.core.run((db) => {
-      db.prepare('INSERT OR IGNORE INTO task_sequences (project_id, version, next_n) VALUES (?, ?, 0)').run(projectId, version)
-      const row = db
-        .prepare('UPDATE task_sequences SET next_n = next_n + 1 WHERE project_id = ? AND version = ? RETURNING next_n')
-        .get(projectId, version) as { next_n: number }
-      return row.next_n
-    })
-  }
-
-  async #allDepsTerminal(dependencyIds: string[]): Promise<boolean> {
-    if (dependencyIds.length === 0) return true
-    const rows = await this.#deps.persistence.tasks.run((db) => {
-      const placeholders = dependencyIds.map(() => '?').join(', ')
-      return db.prepare(`SELECT id, status FROM tasks WHERE id IN (${placeholders})`).all(...dependencyIds) as { id: string; status: string }[]
-    })
-    const byId = new Map(rows.map((r) => [r.id, r.status]))
-    return dependencyIds.every((id) => {
-      const status = byId.get(id) as TaskStatus | undefined
-      return status !== undefined && (status === 'COMPLETED' || status === 'CLOSED')
-    })
   }
 
   /** weave_get_status：dag_id / task_id 至少其一。 */
@@ -315,6 +188,11 @@ export class WeaveMcp {
     }
     void TaskStateMachine.transition(task.status, 'WAITING')
     await this.#updateTask(taskId, { status: 'WAITING' })
+    try {
+      await this.#deps.executionHooks?.resumeTask?.(taskId)
+    } catch {
+      // 联动失败不影响重试动作本身（DAG 可由后续动作恢复）
+    }
     return this.#loadTask(taskId)
   }
 
@@ -339,6 +217,11 @@ export class WeaveMcp {
     })) ?? { dag_id: '' }
     if (dagId) {
       const dag = await this.#deps.dagRepository.cancelTask(dagId, taskId)
+      try {
+        await this.#deps.executionHooks?.cancelTask?.(taskId)
+      } catch {
+        // 联动失败不影响取消动作本身（子代理由超时兜底）
+      }
       const updated = dag.tasks.find((t) => t.id === taskId)
       if (!updated) throw new WeaveError('task_not_found', `任务不存在: ${taskId}`, { taskId })
       return updated
@@ -419,7 +302,6 @@ function parseArgs(args: string[]): { positionals: string[]; flags: Map<string, 
 const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   team list
   team switch <team_id>
-  task submit <描述> --project <id> --version <v> [--team <id>]
   task status --dag <dag_id> | --task <task_id>
   task revise <task_id> <反馈文本>
   task accept <task_id>
@@ -427,7 +309,9 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   dag <dag_id>
   provider add <JSON|JSON数组|YAML|文件路径|紧凑配置>
   provider list
-  provider remove <name>`
+  provider remove <name>
+
+任务下发已收敛为对话式：在会话中描述目标，队长模型调用 weave_plan_tasks 拆解派发。`
 
 export type WeaveProviderCliCommand = (args: string[]) => Promise<{
   kind: 'success' | 'error'
@@ -505,18 +389,6 @@ export class WeaveCli {
         break
       }
       case 'task': {
-        if (command === 'submit') {
-          const { positionals, flags } = parseArgs(rest)
-          const description = positionals[0]
-          if (!description) throw new WeaveError('invalid_argument', '用法: /weave task submit <描述> --project <id> --version <v>')
-          const data = await this.#mcp.submitTask({
-            description,
-            project_id: flags.get('project') ?? '',
-            version: flags.get('version') ?? '',
-            ...(flags.get('team') ? { team_id: flags.get('team') } : {}),
-          })
-          return { json: `已提交 DAG ${data.dag_id}（任务数 ${data.tasks.length}）`, data }
-        }
         if (command === 'status') {
           const { flags } = parseArgs(rest)
           const data = await this.#mcp.getStatus({ dag_id: flags.get('dag'), task_id: flags.get('task') })

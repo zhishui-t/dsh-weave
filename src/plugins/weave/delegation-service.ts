@@ -175,6 +175,10 @@ export interface StopReasonMapping {
 }
 
 export const DEFAULT_DELEGATION_TIMEOUT_MS = 300_000
+/** 空闲超时缺省：连续无任何执行器事件的时长上限；0=禁用空闲检测（回退纯墙钟）。 */
+export const DEFAULT_DELEGATION_IDLE_TIMEOUT_MS = 600_000
+/** 单次委托绝对上限缺省：不受事件重置；0=不限。 */
+export const DEFAULT_DELEGATION_MAX_WALL_CLOCK_MS = 0
 
 /** 非交互拒绝启发式（可选 P0，AC-EXEC-004）：命中文本 → permission_denied。 */
 const PERMISSION_DENIED_PATTERN =
@@ -194,10 +198,10 @@ export function detectPermissionDenied(result: { output: ContentBlockLike[]; dia
  */
 export function mapStopReason(
   stopReason: SubagentStopReason,
-  options?: { weaveErrorType?: 'timeout'; permissionDenied?: boolean },
+  options?: { weaveErrorType?: 'timeout' | 'idle_timeout'; permissionDenied?: boolean },
 ): StopReasonMapping {
-  if (options?.weaveErrorType === 'timeout') {
-    return { errorType: 'timeout', status: 'FAILED', countBreaker: true }
+  if (options?.weaveErrorType === 'timeout' || options?.weaveErrorType === 'idle_timeout') {
+    return { errorType: options.weaveErrorType, status: 'FAILED', countBreaker: true }
   }
   switch (stopReason) {
     case 'completed':
@@ -256,8 +260,15 @@ export interface DelegationServiceOptions {
   sessionTracker: SessionTracker
   processLimiter: ProcessLimiter
   knowledgeEngine: KnowledgeEngineLike
-  /** 委托超时（Weave 应用层；默认 300s）。 */
+  /**
+   * 兼容入参：历史语义「单次委托总时长上限」。仍被接受并映射为绝对墙钟；
+   * 新接线请改用 delegationIdleTimeoutMs + delegationMaxWallClockMs 两参数。
+   */
   timeoutMs?: number
+  /** 空闲超时：连续无执行器事件（token/工具/状态）才判定挂起；默认 600s，0=禁用。 */
+  idleTimeoutMs?: number
+  /** 绝对墙钟上限：不受事件重置，任一次委托总时长硬顶；默认 0=不限。 */
+  delegationMaxWallClockMs?: number
   /** 可注入时钟（测试用）。 */
   now?: () => number
   /**
@@ -289,12 +300,15 @@ export class DelegationService {
   readonly #sessionTracker: SessionTracker
   readonly #processLimiter: ProcessLimiter
   readonly #knowledgeEngine: KnowledgeEngineLike
-  readonly #timeoutMs: number
+  readonly #wallClockMs: number
+  readonly #idleTimeoutMs: number
   readonly #now: () => number
   readonly #onExecutorEvent?: (event: ExecutorRunEvent) => void
   readonly #executorEventBufferSize: number
   readonly #executorProviders?: ExecutorProviderRegistry
   readonly #executorRuns = new Map<string, ExecutorRunSnapshot>()
+  /** 运行中的空闲探针：runId → 收到新事件时的重置回调（await 等待期注册）。 */
+  readonly #activitySinks = new Map<string, () => void>()
 
   constructor(ctx: DelegationContext, options: DelegationServiceOptions) {
     this.#ctx = ctx
@@ -302,7 +316,11 @@ export class DelegationService {
     this.#sessionTracker = options.sessionTracker
     this.#processLimiter = options.processLimiter
     this.#knowledgeEngine = options.knowledgeEngine
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_DELEGATION_TIMEOUT_MS
+    // 墙钟解析：delegationMaxWallClockMs 显式 > 历史 timeoutMs（等义映射）> 缺省不限。
+    // 历史 timeoutMs 的原语义是「总时长上限」，与绝对墙钟一致。
+    this.#wallClockMs =
+      options.delegationMaxWallClockMs ?? (options.timeoutMs !== undefined ? options.timeoutMs : DEFAULT_DELEGATION_MAX_WALL_CLOCK_MS)
+    this.#idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_DELEGATION_IDLE_TIMEOUT_MS
     this.#now = options.now ?? Date.now
     this.#onExecutorEvent = options.onExecutorEvent
     this.#executorEventBufferSize = Math.max(1, options.executorEventBufferSize ?? 200)
@@ -351,6 +369,9 @@ export class DelegationService {
     try {
       this.#recordExecutorEvent(event)
       this.#onExecutorEvent?.(event)
+      // 活动感知空闲检测：任何执行器事件（含 status）都视为运行活跃，
+      // 重置该 run 的 idle 计时器；等待器未注册（订阅窗口外）时为 noop。
+      this.#activitySinks.get(event.runId)?.()
     } catch {
       // 输出观察者不得影响委托主链路。
     }
@@ -417,7 +438,13 @@ export class DelegationService {
     return Object.keys(options).length > 0 ? options : undefined
   }
 
-  #subscribeRunEvents(taskId: string, executor: string, run: DelegationRunLike): () => void {
+  /**
+   * 订阅执行器事件流。返回 `hasEventSource` 标记是否存在真实事件源：
+   * - 有源（onEvent 直通 / readOutput 轮询 / localAgent 桥接）：参与活动感知空闲超时；
+   * - 无源（三者皆缺或桥接失败，仅发出 stream_unavailable）：自动回退纯墙钟语义，
+   *   避免把「不可观测但健康」的长任务误判为空闲挂起。
+   */
+  #subscribeRunEvents(taskId: string, executor: string, run: DelegationRunLike): { unsubscribe: () => void; hasEventSource: boolean } {
     // 自定义 ACP Provider 直接暴露实时事件流。
     if (typeof run.onEvent === 'function') {
       const unsubscribe = run.onEvent((event) => {
@@ -434,7 +461,7 @@ export class DelegationService {
         })
       })
       this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
-      return unsubscribe
+      return { unsubscribe: unsubscribe ?? (() => undefined), hasEventSource: true }
     }
 
     // 兜底：仅提供事件快照的 Provider 用短间隔轮询。
@@ -463,7 +490,7 @@ export class DelegationService {
         }
       }, 250)
       this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
-      return () => clearInterval(timer)
+      return { unsubscribe: () => clearInterval(timer), hasEventSource: true }
     }
 
     const agent = run.localAgent as
@@ -481,7 +508,7 @@ export class DelegationService {
         type: 'status',
         text: 'stream_unavailable',
       })
-      return () => undefined
+      return { unsubscribe: () => undefined, hasEventSource: false }
     }
 
     try {
@@ -529,7 +556,7 @@ export class DelegationService {
         }
       })
       this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
-      return unsubscribe ?? (() => undefined)
+      return { unsubscribe: unsubscribe ?? (() => undefined), hasEventSource: true }
     } catch (error) {
       this.#emitExecutorEvent({
         taskId,
@@ -539,7 +566,7 @@ export class DelegationService {
         text: 'stream_unavailable',
         data: String(error),
       })
-      return () => undefined
+      return { unsubscribe: () => undefined, hasEventSource: false }
     }
   }
 
@@ -625,12 +652,19 @@ export class DelegationService {
       }
 
       this.#emitExecutorEvent({ taskId: task.id, executor, runId: run.id, type: 'status', text: 'started' })
-      const unsubscribe = this.#subscribeRunEvents(task.id, executor, run)
+      const { unsubscribe, hasEventSource } = this.#subscribeRunEvents(task.id, executor, run)
 
-      // timeout 竞速：Weave 自计时（应用层 timeout，TDD 2.4.3）
-      let outcome: { kind: 'result'; result: DelegationResultLike } | { kind: 'timeout' }
+      // 超时竞速：活动感知空闲 + 绝对墙钟双闸（TDD 2.4.3 扩展）。
+      // context.timeoutMs 兼容保留为「单次绝对墙钟」覆盖；有事件源才启用空闲检测。
+      let outcome:
+        | { kind: 'result'; result: DelegationResultLike }
+        | { kind: 'timeout'; reason: 'idle' | 'wallclock' }
       try {
-        outcome = await this.#awaitResultWithTimeout(run, context.timeoutMs ?? this.#timeoutMs)
+        outcome = await this.#awaitResultWithTimeout(run, {
+          hasEventSource,
+          idleTimeoutMs: this.#idleTimeoutMs,
+          wallClockMs: context.timeoutMs ?? this.#wallClockMs,
+        })
       } finally {
         unsubscribe()
       }
@@ -638,14 +672,18 @@ export class DelegationService {
 
       if (outcome.kind === 'timeout') {
         await run.dispose()
-        this.#finishExecutorRun(run.id, 'timeout', 'Weave 委托超时，已终止运行')
+        const idleCause = outcome.reason === 'idle'
+        const message = idleCause
+          ? `Weave 空闲超时（连续 ${this.#idleTimeoutMs}ms 无执行器事件），已终止运行`
+          : 'Weave 委托超时，已终止运行'
+        this.#finishExecutorRun(run.id, 'timeout', message)
         return {
           id: run.id,
           output: [],
           stopReason: 'aborted',
           duration_ms: durationMs,
-          diagnostic: 'Weave 委托超时，已终止运行',
-          weave: mapStopReason('aborted', { weaveErrorType: 'timeout' }),
+          diagnostic: message,
+          weave: mapStopReason('aborted', { weaveErrorType: idleCause ? 'idle_timeout' : 'timeout' }),
         }
       }
 
@@ -763,20 +801,73 @@ export class DelegationService {
     return lines.join('\n')
   }
 
-  async #awaitResultWithTimeout(
+  /**
+   * 结果等待（活动感知超时，TDD 2.4.3 扩展）：
+   * - idle 闸：注册 `#activitySinks` 探针，任何执行器事件经 #emitExecutorEvent 重置
+   *   单个 setTimeout（同一句柄 clearTimeout+setTimeout 原地续命，无并发定时器泄漏）；
+   *   连续 idleTimeoutMs 无事件 → `{kind:'timeout', reason:'idle'}`；
+   * - wallclock 闸：绝对上限，独立第二个句柄，到点必触发（事件风暴无法延后）；
+   * - 回退：hasEventSource=false（无 onEvent/readOutput/localAgent 源）时不装 idle 闸，
+   *   行为与旧纯墙钟实现完全一致；
+   * - 任一闸关闭或 idleTimeoutMs<=0 / wallClockMs<=0 时跳过对应闸门。
+   */
+  #awaitResultWithTimeout(
     run: DelegationRunLike,
-    timeoutMs: number,
-  ): Promise<{ kind: 'result'; result: DelegationResultLike } | { kind: 'timeout' }> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), timeoutMs)
+    params: { hasEventSource: boolean; idleTimeoutMs: number; wallClockMs: number },
+  ): Promise<{ kind: 'result'; result: DelegationResultLike } | { kind: 'timeout'; reason: 'idle' | 'wallclock' }> {
+    const { hasEventSource, idleTimeoutMs, wallClockMs } = params
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let idleTimer: ReturnType<typeof setTimeout> | undefined
+      let wallTimer: ReturnType<typeof setTimeout> | undefined
+
+      const cleanup = () => {
+        if (idleTimer !== undefined) {
+          clearTimeout(idleTimer)
+          idleTimer = undefined
+        }
+        if (wallTimer !== undefined) {
+          clearTimeout(wallTimer)
+          wallTimer = undefined
+        }
+        this.#activitySinks.delete(run.id)
+      }
+      const settle = (value:
+        | { kind: 'result'; result: DelegationResultLike }
+        | { kind: 'timeout'; reason: 'idle' | 'wallclock' }) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(value)
+      }
+
+      // 事件探针：仅重排 idle 句柄；结算后的迟到事件是 noop。
+      this.#activitySinks.set(run.id, () => {
+        if (settled) return
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => settle({ kind: 'timeout', reason: 'idle' }), idleTimeoutMs)
+      })
+
+      const armIdle = () => {
+        if (!hasEventSource || idleTimeoutMs <= 0) return
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => settle({ kind: 'timeout', reason: 'idle' }), idleTimeoutMs)
+      }
+      armIdle()
+
+      if (wallClockMs > 0) {
+        wallTimer = setTimeout(() => settle({ kind: 'timeout', reason: 'wallclock' }), wallClockMs)
+      }
+
+      void run.result.then(
+        (result) => settle({ kind: 'result', result }),
+        (error) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(error instanceof Error ? error : new Error(String(error)))
+        },
+      )
     })
-    try {
-      const raced = await Promise.race<DelegationResultLike | 'timeout'>([run.result, timeout])
-      if (raced === 'timeout') return { kind: 'timeout' }
-      return { kind: 'result', result: raced }
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
   }
 }

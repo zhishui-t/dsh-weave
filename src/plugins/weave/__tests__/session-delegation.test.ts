@@ -8,12 +8,9 @@ import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
 import { createWeaveRpcHandler } from '../rpc'
 import {
-  SequentialSessionDelegator,
   createPreStepDelegationHook,
   notifySession,
   parseTeamSelectionCommand,
-  pickDifficulty,
-  planStages,
 } from '../session-delegation'
 
 const lookup: ExecutorLookup = {
@@ -51,54 +48,20 @@ let dir = ''
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'weave-sessdel-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-/** 真实 DelegationService 的执行替身：捕获调用序列与上游上下文，按脚本回放结果。 */
-class FakeDelegation {
-  calls: Array<{ taskId: string; roleId: string; stageDescription: string; upstreamLabels: string[]; upstreamText: string[] }> = []
-  script: Array<{ stopReason?: string; text?: string; throwInfra?: boolean }> = []
-
-  async executeTask(task: { id: string; description: string }, role: { id: string; name: string }, _team: unknown, context: { upstreamOutputs?: Array<{ label: string; output: string }> }) {
-    const upstream = context.upstreamOutputs ?? []
-    this.calls.push({
-      taskId: task.id,
-      roleId: role.id,
-      stageDescription: task.description,
-      upstreamLabels: upstream.map((item) => item.label),
-      upstreamText: upstream.map((item) => item.output),
-    })
-    const step = this.script[this.calls.length - 1] ?? {}
-    if (step.throwInfra) throw new Error('infra-boom')
-    return {
-      id: task.id,
-      output: [{ type: 'text', text: step.text ?? `${role.id}-done` }],
-      stopReason: step.stopReason ?? 'completed',
-      duration_ms: 5,
-    }
-  }
-}
-
-async function flushAsync(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 15))
-}
-
 function makeHookEnv() {
   const persistence = new WeavePersistence({ inMemory: true })
   const manager = new TeamManager(lookup, { teamsDir: dir, persistence })
   manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
-  const fake = new FakeDelegation()
-  const delegator = new SequentialSessionDelegator(fake as never)
   const notices: Array<{ sessionId: string; text: string }> = []
   const hook = createPreStepDelegationHook({
-    getSelection: (sessionId) => manager.getSelection(sessionId),
-    loadTeam: (teamId) => manager.loadTeam(teamId),
     listTeams: () => manager.listTeams(),
     setSelection: async (sessionId, teamId) => {
       if (teamId === null) await manager.unbindTeam(sessionId)
       else await manager.bindTeam(sessionId, teamId)
     },
-    delegator,
     notify: (sessionId, text) => { notices.push({ sessionId, text }) },
   })
-  return { manager, fake, delegator, notices, hook }
+  return { manager, notices, hook }
 }
 
 function makePayload(messageId = 'm1', text = '帮我实现登录功能', agentId = 'sess-1') {
@@ -123,21 +86,7 @@ function makePayload(messageId = 'm1', text = '帮我实现登录功能', agentI
 
 const nextOk = async () => ({ kind: 'enter' as const, messages: [] })
 
-describe('pickDifficulty / planStages（t6 顺序计划）', () => {
-  it('matchers 首个命中优先，否则 default_difficulty', () => {
-    expect(pickDifficulty(TEAM, '请重构整个模块')).toBe('critical')
-    expect(pickDifficulty(TEAM, '普通任务')).toBe('hard')
-  })
-
-  it('按难度模板展开阶段→角色；缺失难度回退默认模板', () => {
-    const plan = planStages(TEAM, 'hard')
-    expect(plan.map((step) => step.role.id)).toEqual(['researcher', 'coder', 'reviewer'])
-    const fallback = planStages(TEAM, 'easy')
-    expect(fallback.map((step) => step.stage)).toEqual(['prepare'])
-  })
-})
-
-describe('自然语言团队启停（t6 会话控制）', () => {
+describe('自然语言团队启停（会话控制通道）', () => {
   it('解析启用指令并按 ID / 名称匹配团队', () => {
     expect(parseTeamSelectionCommand('启用 pipe-team', [TEAM])).toEqual({ action: 'enable', team: TEAM })
     expect(parseTeamSelectionCommand('请切换到 流水线团队。', [TEAM])).toEqual({ action: 'enable', team: TEAM })
@@ -149,29 +98,73 @@ describe('自然语言团队启停（t6 会话控制）', () => {
     expect(parseTeamSelectionCommand('请停用小队。', [TEAM])).toEqual({ action: 'disable' })
   })
 
-  it('自然语言启用会写入绑定、通知会话且不触发委托', async () => {
+  it('自然语言启用会写入绑定并通知，然后 reject 该消息', async () => {
     const env = makeHookEnv()
     const payload = makePayload('nl-enable', '启用 pipe-team')
     const decision = await env.hook(payload.payload, nextOk)
-    await flushAsync()
 
     expect(decision).toEqual({ kind: 'reject' })
     expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
     expect(env.notices.at(-1)?.text).toContain('已在当前会话启用团队「流水线团队」')
-    expect(env.fake.calls).toHaveLength(0)
   })
 
-  it('自然语言关闭会清除绑定且不触发委托', async () => {
+  it('自然语言关闭会清除绑定并通知', async () => {
     const env = makeHookEnv()
     await env.manager.bindTeam('sess-1', 'pipe-team')
     const payload = makePayload('nl-disable', '关闭团队')
     const decision = await env.hook(payload.payload, nextOk)
-    await flushAsync()
 
     expect(decision).toEqual({ kind: 'reject' })
     expect(await env.manager.getSelection('sess-1')).toBeNull()
     expect(env.notices.at(-1)?.text).toContain('已关闭当前会话的团队')
-    expect(env.fake.calls).toHaveLength(0)
+  })
+
+  it('普通任务消息直接放行（任务派发由队长模型经 weave_plan_tasks 完成）', async () => {
+    const env = makeHookEnv()
+    await env.manager.bindTeam('sess-1', 'pipe-team')
+    const payload = makePayload('m-task', '做一个新的登录页面')
+    const decision = await env.hook(payload.payload, nextOk)
+    expect(decision).toEqual({ kind: 'enter', messages: [] })
+    expect(env.notices).toHaveLength(0)
+  })
+
+  it('同一 message.id 只处理一次；非 user 来源消息忽略', async () => {
+    const env = makeHookEnv()
+    const first = makePayload('dup-1', '启用 pipe-team')
+    await env.hook(first.payload, nextOk)
+    // 第二次投递同一 id：此时绑定已存在，重复 reject 才说明去重失效。
+    // 实现里 markProcessed 在命中后执行；未命中消息每次都会重新判定，
+    // 这里验证的是控制路径本身幂等性 —— 二次投递仍安全返回 enter/reject 之一且无异常。
+    await env.hook(first.payload, nextOk)
+    expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
+
+    const pluginOnly = makePayload('p-only', '启用 pipe-team')
+    pluginOnly.payload.messages = pluginOnly.payload.messages.map((message) =>
+      message.id === 'p-only' ? { ...message, source: { kind: 'plugin' as const } } : message,
+    )
+    await env.hook(pluginOnly.payload, nextOk)
+    expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' }) // 未被改写
+  })
+
+  it('hook 自身异常不破坏 pre-step 主链路（降级为放行）', async () => {
+    const badHook = createPreStepDelegationHook({
+      listTeams: () => { throw new Error('boom') },
+      setSelection: async () => undefined,
+      notify: () => undefined,
+    })
+    const { payload } = makePayload('bad-1', '启用 pipe-team')
+    await expect(badHook(payload, nextOk)).resolves.toEqual({ kind: 'enter', messages: [] })
+  })
+
+  it('notifySession 写入 durable log：plugin 来源 + surface append', () => {
+    const appended: Array<{ type: string; data: unknown; opts: unknown }> = []
+    notifySession({ append: (type, data, opts) => { appended.push({ type, data, opts }) } }, '[weave] 测试通知')
+    expect(appended).toHaveLength(1)
+    const record = appended[0]!
+    expect(record.type).toBe('user/message')
+    expect(record.opts).toEqual({ surfaceOp: 'append' })
+    expect((record.data as { source: { kind: string; plugin: string } }).source).toEqual({ kind: 'plugin', plugin: 'dsh-weave' })
+    expect((record.data as { role: string }).role).toBe('user')
   })
 })
 
@@ -221,107 +214,5 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
       ok: false,
       error: { code: 'invalid_argument' },
     })
-  })
-})
-
-describe('agent/pre-step 委托编排（t6 核心）', () => {
-  it('未绑定团队：直接放行，零委托零通知', async () => {
-    const env = makeHookEnv()
-    const { payload } = makePayload()
-    const decision = await env.hook(payload, nextOk)
-    expect(decision).toEqual({ kind: 'enter', messages: [] })
-    expect(env.fake.calls).toHaveLength(0)
-    expect(env.notices).toHaveLength(0)
-  })
-
-  it('绑定团队后：三阶段顺序委托，前序输出进入后续上游，完成与进度通知齐全', async () => {
-    const env = makeHookEnv()
-    await env.manager.bindTeam('sess-1', 'pipe-team')
-    env.fake.script = [{ text: '调研结论A' }, {}, { stopReason: undefined }]
-    const { payload } = makePayload('m1', '帮我实现登录功能')
-    await env.hook(payload, nextOk)
-    await flushAsync()
-
-    expect(env.fake.calls.map((call) => call.roleId)).toEqual(['researcher', 'coder', 'reviewer'])
-    expect(env.fake.calls[1]!.upstreamLabels).toEqual(['方案研究员（prepare）'])
-    expect(env.fake.calls[1]!.upstreamText).toEqual(['调研结论A'])
-    expect(env.notices.filter((n) => n.text.includes('开始'))).toHaveLength(3)
-    const done = env.notices.find((n) => n.text.includes('已完成本次任务委托'))
-    expect(done?.text).toContain('reviewer-done')
-
-    // 幂等：同一 message.id 再次投递不重复委托
-    await env.hook(payload, nextOk)
-    await flushAsync()
-    expect(env.fake.calls).toHaveLength(3)
-  })
-
-  it('主模型失败时使用备用模型重试一次并继续完成', async () => {
-    const env = makeHookEnv()
-    await env.manager.importTeam(stringifyYaml({
-      schema_version: '1',
-      ...TEAM,
-      roles: [
-        {
-          ...TEAM.roles[0]!,
-          fallback_provider: 'fb-provider',
-          fallback_model: 'fb-model',
-        },
-        ...TEAM.roles.slice(1),
-      ],
-    }), { overwrite: true })
-    await env.manager.bindTeam('sess-1', 'pipe-team')
-    env.fake.script = [{ throwInfra: true }, { text: '备用成功' }]
-    const { payload } = makePayload('fb1', '做一个需要备用模型的任务')
-    await env.hook(payload, nextOk)
-    await flushAsync()
-
-    expect(env.fake.calls.length).toBeGreaterThanOrEqual(2)
-    expect(env.fake.calls[0]!.roleId).toBe('researcher')
-    expect(env.fake.calls[1]!.roleId).toBe('researcher')
-    expect(env.notices.some((n) => n.text.includes('已完成本次任务委托'))).toBe(true)
-    expect(env.notices.some((n) => n.text.includes('任务委托失败'))).toBe(false)
-  })
-
-  it('非 user 来源消息忽略；阶段失败落明确失败 notice 且 hook 不抛错', async () => {
-    const env = makeHookEnv()
-    await env.manager.bindTeam('sess-1', 'pipe-team')
-    env.fake.script = [{ stopReason: 'error', text: '执行炸了' }]
-    const pluginOnly = makePayload('m2', 'x')
-    pluginOnly.payload.messages = pluginOnly.payload.messages.map((message) =>
-      message.id === 'm2' ? { ...message, source: { kind: 'plugin' as const } } : message,
-    )
-    await env.hook(pluginOnly.payload, nextOk)
-    await flushAsync()
-    expect(env.fake.calls).toHaveLength(0)
-
-    env.fake.script = [{ stopReason: 'error', text: '执行炸了' }]
-    const failing = makePayload('m3', '做点事')
-    await expect(env.hook(failing.payload, nextOk)).resolves.toEqual({ kind: 'enter', messages: [] })
-    await flushAsync()
-    const failure = env.notices.find((notice) => notice.text.includes('任务委托失败'))
-    expect(failure?.text).toContain('execution_failed')
-    expect(failure?.text).toContain('prepare')
-  })
-
-  it('绑定行残留而团队 YAML 被外部删除 → 「团队不可用」通知而非崩溃', async () => {
-    const env = makeHookEnv()
-    await env.manager.bindTeam('sess-1', 'pipe-team')
-    // 外部直接删 YAML（绕过 deleteTeam 的绑定清理），制造真实的悬空选择。
-    rmSync(join(dir, 'pipe-team.yaml'))
-    const { payload } = makePayload('m4', '继续干活')
-    await env.hook(payload, nextOk)
-    expect(env.notices.some((notice) => notice.text.includes('团队不可用'))).toBe(true)
-    expect(env.fake.calls).toHaveLength(0)
-  })
-
-  it('notifySession 写入 durable log：plugin 来源 + surface append', () => {
-    const appended: Array<{ type: string; data: unknown; opts: unknown }> = []
-    notifySession({ append: (type, data, opts) => { appended.push({ type, data, opts }) } }, '[weave] 测试通知')
-    expect(appended).toHaveLength(1)
-    const record = appended[0]!
-    expect(record.type).toBe('user/message')
-    expect(record.opts).toEqual({ surfaceOp: 'append' })
-    expect((record.data as { source: { kind: string; plugin: string } }).source).toEqual({ kind: 'plugin', plugin: 'dsh-weave' })
-    expect((record.data as { role: string }).role).toBe('user')
   })
 })

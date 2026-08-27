@@ -92,22 +92,55 @@ ctx.registry.delete(weavePlugin)       // 卸载
 `WeaveService` 在 `ctx.weave` 上提供 `version()` / `describe()` / `loadedAt`，后续模块
 （ExecutorRegistry / TaskStateMachine / Persistence 等）以方法或子服务挂载于此。
 
-## 5. Web 控制台、当前会话团队与外部 Provider
+## 5. 会话即团队：队长模式、会话面板与控制台
 
-DSH Web 左侧底部点击 **Weave** 打开控制台。控制台用于团队配置、执行器治理、
-任务监控和知识审核；**任务不由 Web 表单下发**。
-
-当前 DSH 会话是团队控制面：
+**任务下发只有对话一条路，且零仪式**：小队配置好即生效——已有默认团队或
+只配了一个团队时，直接说需求就行：
 
 ```text
-启用 pipe-team
-使用 流水线团队
-切换到 alpha
-关闭团队
+做一个登录页 + 邮箱验证    ← 直接描述目标，队长立刻拆解派发
 ```
 
-插件在 `agent/pre-step` 中识别这些短句，写入该会话的团队绑定；后续用户消息
-按该团队配置顺序委托。未绑定团队时消息正常进入主模型。
+需要多团队切换时才涉及「启用」（自然语言或面板下拉，一次绑定长期生效）：
+
+```text
+启用 pipe-team            ← 仅在多个团队且要明确指定时使用
+```
+
+解析顺序：会话绑定 > 默认团队 > 唯一团队；全部不满足（无团队配置）时给出
+配置指引而非空转。
+
+随后队长模型把目标拆解为「任务列表 + 成员角色 + 依赖」并调用
+`weave_plan_tasks` 工具；插件：
+
+1. 校验规划（角色存在、依赖合法且无环），经 SingleWriterQueue 落库
+   `dags/tasks/edges` 三表，`session_id` 绑定当前会话；
+2. `WeaveScheduler` 按依赖自动调度成员子代理执行（唯一执行出口仍是
+   `DelegationService.executeTask` → `ctx.subagents.start`），状态全程回写
+   （WAITING/BLOCKED/RUNNING/COMPLETED/FAILED/SKIPPED…14 态矩阵）。
+   **一个团队角色同一时刻只执行一个任务**：同角色的后续就绪任务会排队，
+   直到该成员空闲；团队 YAML 中的 `max_concurrent_tasks` 不再参与调度仲裁；
+3. 每个任务的开始/完成/失败以插件通知回灌当前会话；DAG 结束时发汇总通知，
+   队长据此向用户做最终答复。
+
+命令式下发入口已全部移除：MCP `weave_submit_task`、CLI `/weave task submit`、
+Web RPC `task/create` 均不存在；保留的 `task status|revise|accept|retry|skip|
+cancel|reopen` 是对真实运行中任务的治理动作（取消/重试与实际子代理联动中止/恢复）。
+
+### 会话视图面板（Weave 团队页签）
+
+DSH Web 的每个会话可通过 `conversation.view` 槽位的 **Weave 团队** 页签查看：
+
+- 团队绑定头：本会话绑定的团队，可直接下拉切换或关闭；
+- 成员实时状态卡片：每角色显示 空闲 / 执行中（当前任务）/ 最近结果；
+- 本会话任务图：按 `session_id` 过滤的最近 DAG 渲染，节点可展开详情并执行
+  验收/返工/取消/重试等治理动作。
+
+### 控制台（七页）
+
+DSH Web 左侧底部点击 **Weave** 打开控制台：总览（含修订记录）、团队、知识库、
+执行器、审计、设置、使用手册。原「任务中心」「会话管理」两页已移除——任务
+治理收敛到会话面板，会话绑定收敛到面板团队头。**任务不由 Web 表单下发。**
 
 控制台中的 **团队** 页面通过 `/dsh-weave` Connection RPC 读取已注册执行器和团队，
 并可创建/删除团队配置。角色可选择任意当前真实注册的执行器；ZCode 只是可选源，

@@ -39,12 +39,24 @@ function defaultScenario(): Record<string, RpcEnvelope> {
       value: {
         total: 2,
         tasks: [
-          { id: 't-wait', project: 'proj-a', version: 'v1', status: 'WAITING', updated_at: 1 },
-          { id: 't-fb', project: 'proj-b', version: 'v1', status: 'AWAITING_FEEDBACK', updated_at: 2 },
+          { id: 'T-A', dag_id: 'D1', project: 'proj-a', version: 'v1', status: 'RUNNING', updated_at: 1 },
+          { id: 'T-B', dag_id: 'D1', project: 'proj-b', version: 'v1', status: 'COMPLETED', updated_at: 2 },
         ],
       },
     },
-    'task/get': { ok: true, value: { dag: { id: 't-wait' }, tasks: [], edges: [] } },
+    'task/get': {
+      ok: true,
+      value: {
+        dag_id: 'D1',
+        status: 'running',
+        tasks: [
+          { id: 'T-A', description: '实现登录页', status: 'RUNNING', dependencies: [], assigned_agent: 'coder' },
+          { id: 'T-B', description: '校验产物', status: 'COMPLETED', dependencies: ['T-A'], assigned_agent: 'reviewer' },
+        ],
+        edges: [{ from: 'T-A', to: 'T-B' }],
+      },
+    },
+    'task/action': { ok: true, value: { task_id: 'T-A', status: 'CANCELLED' } },
     'knowledge/list': {
       ok: true,
       value: { candidates: [{ id: 'kn-1', title: '候选知识', status: 'candidate', layer: 'project' }] },
@@ -64,6 +76,18 @@ function defaultScenario(): Record<string, RpcEnvelope> {
     'knowledge/reject': { ok: true, value: {} },
     'session/bindings': { ok: true, value: { bindings: [] } },
     'session/revisions': { ok: true, value: { revisions: [] } },
+    'session/status': {
+      ok: true,
+      value: {
+        session_id: 'sess-h',
+        team: { team_id: 'seed-team', name: '种子团队' },
+        members: [
+          { role_id: 'coder', name: '程序员', executor: 'spawn', status: 'running', task_id: 'T-A', subject: '实现登录页' },
+          { role_id: 'reviewer', name: '审核员', executor: 'fork', status: 'idle' },
+        ],
+      },
+    },
+    'session/set-binding': { ok: true, value: { session_id: 'sess-h', team_id: 'beta' } },
     'audit/list': { ok: true, value: { events: [{ type: 'task.status_changed', time: 1 }] } },
     'settings/describe': { ok: true, value: { stateDir: '~/.dsh/weave', version: '0.2.0', teams_dir: '/teams', audit_dir: '/audit', obsidian_dir: '~/.dsh/obsidian' } },
   }
@@ -103,7 +127,11 @@ window.__ModuleLoader__ = { load(reg){ window.__WEAVE_REG__ = reg } };</script>
     },
     slots: {
       inject(_slot, register){ register() },
-      register(_def, registered){ window.__WEAVE_ACTION__ = registered },
+      register(def, registered){
+        window.__WEAVE_SLOTS__ = window.__WEAVE_SLOTS__ || {}
+        if (def && def.name) window.__WEAVE_SLOTS__[def.name] = registered
+        if (!def || def.name === 'sidebar.footer.action') window.__WEAVE_ACTION__ = registered
+      },
     },
   }
   mod.apply(ctx)
@@ -145,16 +173,89 @@ window.__ModuleLoader__ = { load(reg){ window.__WEAVE_REG__ = reg } };</script>
 }
 
 test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
-  test('shell+nav: 九页可达且 data-active 正确切换', async ({ page }) => {
+  test('shell+nav: 七页可达且 data-active 正确切换；任务中心/会话管理不复存在', async ({ page }) => {
     await openHarnessPage(page)
     await page.getByTestId('weave-open').click()
     await expect(page.getByTestId('weave-dashboard')).toBeVisible()
-    for (const key of ['overview', 'teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings', 'manual'] as const) {
+    for (const key of ['overview', 'teams', 'knowledge', 'executors', 'audit', 'settings', 'manual'] as const) {
       await page.getByTestId(`nav-${key}`).click()
       await expect(page.getByTestId(`page-${key}`)).toBeVisible()
       await expect(page.getByTestId(`nav-${key}`)).toHaveAttribute('data-active', 'true')
     }
-    await expect(page.locator('.weave-title')).toContainText('Weave 控制台 · 命令手册')
+    await expect(page.locator('.weave-title')).toContainText('Weave 控制台 · 使用手册')
+    await expect(page.getByTestId('nav-tasks')).toHaveCount(0)
+    await expect(page.getByTestId('nav-sessions')).toHaveCount(0)
+    // 总览带修订记录区块（原会话管理职责并入）
+    await page.getByTestId('nav-overview').click()
+    await expect(page.getByText('最近修订记录（保温期）')).toBeVisible()
+  })
+
+  /** 把 conversation.view 面板挂载到主区域。 */
+  async function mountSessionPanel(page: Page, sessionId = 'sess-h'): Promise<void> {
+    await page.evaluate((sid) => {
+      const root = document.getElementById('root')!
+      root.innerHTML = ''
+      window.ReactDOM.createRoot(root).render(
+        window.React.createElement(window.__WEAVE_SLOTS__!['conversation.view'], { sessionId: sid }),
+      )
+    }, sessionId)
+  }
+
+  test('session-panel: 团队头+成员卡片+本会话DAG；RUNNING 节点默认选中并出现治理动作', async ({ page }) => {
+    await openHarnessPage(page)
+    await mountSessionPanel(page)
+
+    await expect(page.getByTestId('weave-session-panel')).toBeVisible()
+    await expect(page.getByTestId('weave-session-team-name')).toContainText('种子团队')
+    await expect(page.getByTestId('weave-session-team-name')).not.toContainText('（自动）')
+    const coderCard = page.getByTestId('member-card-coder')
+    await expect(coderCard).toContainText('程序员')
+    await expect(coderCard).toContainText('执行中')
+    await expect(coderCard).toContainText('实现登录页')
+    await expect(page.getByTestId('member-card-reviewer')).toContainText('空闲')
+
+    // 本会话 DAG 按sessionId 过滤请求 + 两节点图渲染
+    const calls = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string; payload: unknown }>
+    const listCall = calls.find((c) => c.endpoint === 'task/list')
+    expect(listCall).toBeTruthy()
+    expect(listCall!.payload).toMatchObject({ sessionId: 'sess-h' })
+    await expect(page.getByTestId('dag-node-T-A')).toBeVisible()
+    await expect(page.getByTestId('dag-node-T-B')).toBeVisible()
+    await expect(page.getByTestId('dag-edges').locator('line')).toHaveCount(1)
+    // 默认选中首个节点 T-A（RUNNING）→ 出现取消动作；含 confirm 门径，dismiss 后不发 action
+    await expect(page.getByTestId('session-task-action-cancel-T-A')).toContainText('取消')
+    await page.getByTestId('session-task-action-cancel-T-A').click()
+    const after = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string }>
+    expect(after.filter((c) => c.endpoint === 'task/action')).toHaveLength(0)
+  })
+
+  test('session-panel: 零仪式（resolved_via=default/single）标注 + 无法确定时的空态', async ({ page }) => {
+    // 默认团队自动生效：头部带「（自动）」标记，成员照常渲染
+    await openHarnessPage(page, {
+      'session/status': {
+        ok: true,
+        value: {
+          session_id: 'sess-auto',
+          team: { team_id: 'seed-team', name: '种子团队' },
+          resolved_via: 'default',
+          members: [{ role_id: 'coder', name: '程序员', executor: 'spawn', status: 'idle' }],
+        },
+      },
+    })
+    await mountSessionPanel(page, 'sess-auto')
+    await expect(page.getByTestId('weave-session-team-name')).toContainText('种子团队（自动）')
+
+    // 多团队且无默认：引导空态，不发任务请求
+    await openHarnessPage(page, {
+      'session/status': { ok: true, value: { session_id: 'sess-x', team: null, resolved_via: null, members: [] } },
+    })
+    await mountSessionPanel(page, 'sess-x')
+    await expect(page.getByTestId('page-empty')).toBeVisible()
+    await expect(page.getByTestId('page-empty')).toContainText('无法确定本次会话的团队')
+    const calls = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string }>
+    expect(calls.some((c) => c.endpoint === 'task/get')).toBe(false)
+    // 未确定团队：任务列表轮询一并跳过
+    expect(calls.some((c) => c.endpoint === 'task/list')).toBe(false)
   })
 
   test('teams: 创建按钮文案随角色数变化，执行器下拉来自 snapshot', async ({ page }) => {
@@ -168,20 +269,6 @@ test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
     await page.getByTestId('team-add-role').click()
     await expect(page.getByTestId('role-editor-1')).toBeVisible()
     await expect(page.getByTestId('team-create-submit')).toContainText('包含 2 个角色')
-  })
-
-  test('tasks: 动作矩阵按状态渲染（WAITING 与 AWAITING_FEEDBACK）', async ({ page }) => {
-    await openHarnessPage(page)
-    await page.getByTestId('weave-open').click()
-    await page.getByTestId('nav-tasks').click()
-    await expect(page.getByTestId('task-action-cancel-t-wait')).toContainText('取消')
-    await expect(page.getByTestId('task-action-skip-t-wait')).toContainText('跳过')
-    await expect(page.getByTestId('task-action-revise-t-fb')).toContainText('要求返工')
-    await expect(page.getByTestId('task-action-accept-t-fb')).toContainText('验收')
-    // WAITING 的取消需要 confirm 门径，直接点不应立即发 action
-    await page.getByTestId('task-action-cancel-t-wait').click()
-    const calls = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string }>
-    expect(calls.filter((c) => c.endpoint === 'task/action')).toHaveLength(0)
   })
 
   test('knowledge: reject 两步流必须填理由并携带 payload', async ({ page }) => {

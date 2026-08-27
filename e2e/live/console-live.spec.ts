@@ -1,6 +1,6 @@
 // Weave 控制台真实 DSH Web 端到端验收（t5 live 层）。
 // 运行：pnpm test:e2e:live —— 访问真实 http://127.0.0.1:3080，走真实 Connection RPC，无任何 mock。
-// 通过标准：八页可达；团队配置创建成功；任务由当前 DSH 会话发起，Web 仅验收列表/治理；知识/审计/会话/设置真实数据或明确空态；
+// 通过标准：七页可达；团队配置创建成功；任务由当前 DSH 会话发起，Web 仅验收列表/治理；知识/审计/会话/设置真实数据或明确空态；
 // 无 405、无 invalid client-request message、无未捕获页面异常、/dsh-weave 信封全部 ok=true。
 import { expect, test, type Page } from '@playwright/test'
 
@@ -56,7 +56,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('nav: 九页全部可达且无错误态', async () => {
+  test('nav: 七页全部可达且无错误态', async () => {
     try {
       for (let i = 0; i < ROUTES.length; i += 1) {
         const key = ROUTES[i]!
@@ -67,9 +67,9 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         await shot(page, `${String(i + 2).padStart(2, '0')}-page-${key}`)
         console.log(`  页面可达: ${key}`)
       }
-      step('九页全部可达且无错误态')()
+      step('七页全部可达且无错误态')()
     } catch (err) {
-      step('九页全部可达且无错误态')(String(err))
+      step('七页全部可达且无错误态')(String(err))
       throw err
     }
   })
@@ -94,7 +94,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         await scope.locator('.weave-field', { hasText: '角色 ID' }).locator('input').fill(roleId)
         await scope.locator('.weave-field', { hasText: '名称' }).locator('input').first().fill(`${roleId} 成员`)
         await scope
-          .locator('.weave-field', { hasText: 'Stages' })
+          .locator('.weave-field', { hasText: '职责标签' })
           .locator('input')
           .fill('prepare,implement,review')
       }
@@ -116,35 +116,33 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('tasks: 任务中心只读展示且无 Web 创建任务入口', async () => {
+  test('tasks: 任务中心/会话管理已移除，会话面板为运行时唯一出口', async () => {
     try {
-      await page.getByTestId('nav-tasks').click()
-      await page.getByTestId('task-search').waitFor({ state: 'visible', timeout: 10_000 })
-      await page.getByTestId('task-status-filter').waitFor({ state: 'visible', timeout: 10_000 })
+      // Dashboard 内不再有这两个导航项
+      await expect(page.getByTestId('nav-tasks')).toHaveCount(0)
+      await expect(page.getByTestId('nav-sessions')).toHaveCount(0)
 
-      await expect(page.getByTestId('task-create-submit')).toHaveCount(0)
-      await expect(page.getByTestId('task-project-input')).toHaveCount(0)
-      await expect(page.getByTestId('task-version-input')).toHaveCount(0)
-      await expect(page.getByText('任务由当前 DSH 会话发起')).toBeVisible()
-
-      const rows = page.locator('[data-testid^="task-row-"]')
-      const rowCount = await rows.count()
-      if (rowCount > 0) {
-        const rowId = (await rows.first().getAttribute('data-testid'))!.replace('task-row-', '')
-        await page.getByTestId(`task-detail-toggle-${rowId}`).click()
-        await page.getByTestId('task-detail').waitFor({ state: 'visible', timeout: 10_000 })
-        const detail = await page.getByTestId('task-detail').innerText()
-        expect(detail.length).toBeGreaterThan(0)
-        expect(detail).toMatch(/状态|WAITING|RUNNING|BLOCKED|PENDING/)
+      // 关闭控制台回会话视图：寻找「Weave 团队」页签（conversation.view 槽位）
+      await page.getByTestId('weave-close').click()
+      await page.getByTestId('weave-dashboard').waitFor({ state: 'detached', timeout: 10_000 })
+      const teamTab = page.getByText('Weave 团队', { exact: false }).first()
+      if (await teamTab.isVisible().catch(() => false)) {
+        await teamTab.click()
+        await page.getByTestId('weave-session-panel').waitFor({ state: 'visible', timeout: 15_000 })
+        const members = await page.locator('[data-testid^="member-card-"]').count()
+        console.log(`  会话面板可见，成员卡片 ${members} 张`)
+        await shot(page, '11-session-panel')
+        await page.getByTestId('weave-open').click() // 恢复 Dashboard 状态供后续步骤复用
+        await page.getByTestId('weave-dashboard').waitFor({ state: 'visible' })
       } else {
-        console.log('  当前 tasks.db 无任务（明确空态）')
+        console.log('  当前视图未渲染 conversation.view 页签（新会话或宿主未注入），跳过面板断言')
+        await shot(page, '11-no-panel-tab')
+        await page.getByTestId('weave-open').click()
+        await page.getByTestId('weave-dashboard').waitFor({ state: 'visible' })
       }
-
-      await shot(page, '11-task-governance')
-      console.log('  任务中心为只读/治理模式，未提供 Web 创建入口')
-      step('任务中心无创建入口并真实渲染')()
+      step('任务中心已移除 + 会话面板可探测')()
     } catch (err) {
-      step('任务中心无创建入口并真实渲染')(String(err))
+      step('任务中心已移除 + 会话面板可探测')(String(err))
       throw err
     }
   })
@@ -180,23 +178,13 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('executors/sessions/audit/settings: 真实数据或明确空态', async () => {
+  test('executors/audit/settings/manual: 真实数据或明确空态', async () => {
     try {
       // 执行器：列表来自 snapshot 注册项（zcode 目录仅存在时展示）
       await page.getByTestId('nav-executors').click()
       await page.getByTestId('page-executors').waitFor({ state: 'visible' })
       await page.waitForTimeout(600)
       await expectNoPageError(page, 'executors')
-
-      // 会话管理：绑定/修订各自有数据或空态
-      await page.getByTestId('nav-sessions').click()
-      await page.getByTestId('page-sessions').waitFor({ state: 'visible' })
-      await page.waitForTimeout(800)
-      await expectNoPageError(page, 'sessions')
-      for (const prefix of ['binding-row-', 'revision-row-']) {
-        const rows = await page.locator(`[data-testid^="${prefix}"]`).count()
-        if (rows === 0) await expect(page.getByTestId('page-empty').first()).toBeVisible()
-      }
 
       // 审计日志：事件或空态
       await page.getByTestId('nav-audit').click()
@@ -213,9 +201,9 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
       expect(settings.length).toBeGreaterThan(10)
 
       await shot(page, '13-misc-pages')
-      step('执行器/会话/审计/设置 真实数据或空态')()
+      step('执行器/审计/设置 真实数据或空态')()
     } catch (err) {
-      step('执行器/会话/审计/设置 真实数据或空态')(String(err))
+      step('执行器/审计/设置 真实数据或空态')(String(err))
       throw err
     }
   })

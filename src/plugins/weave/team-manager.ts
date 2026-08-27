@@ -118,6 +118,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+/**
+ * 手术式改写顶层 `default:` 行（setDefaultTeam 专用）：
+ * - 仅命中列首无缩进的 `default:` 键（^default 配合 m 标志），嵌套同名键与注释不受影响；
+ * - 保留既有行尾风格（CRLF 的 \r 原样带回）；无该行时插到头部元信息
+ *   （schema_version/team_id/name 的最后一行）之后，兜底追加文件尾；
+ * - 首行 BOM 与其余内容原样保留。
+ */
+export function replaceDefaultFlag(raw: string, value: boolean): string {
+  const existing = raw.match(/^default:(.*)$/m)
+  if (existing && existing.index !== undefined) {
+    const eolCarriage = existing[1]!.endsWith('\r') ? '\r' : ''
+    const end = existing.index + existing[0].length
+    return `${raw.slice(0, existing.index)}default: ${value ? 'true' : 'false'}${eolCarriage}${raw.slice(end)}`
+  }
+  const headerPattern = /^(?:schema_version|team_id|name):[^\n]*\n/gm
+  let insertAt = -1
+  for (const match of raw.matchAll(headerPattern)) {
+    if (match.index === undefined) continue
+    // 仅认头部区域的元信息行；出现 roles: 后的 name: 属于角色条目，不算。
+    if (raw.slice(0, match.index).split('\n').some((row) => row.startsWith('roles:'))) break
+    insertAt = match.index + match[0].length
+  }
+  if (insertAt >= 0) {
+    return `${raw.slice(0, insertAt)}default: ${value ? 'true' : 'false'}\n${raw.slice(insertAt)}`
+  }
+  return `${raw}${raw.endsWith('\n') ? '' : '\n'}default: ${value ? 'true' : 'false'}\n`
+}
+
 function asStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === 'string')) {
     throw new WeaveError('invalid_team', `${field} 必须为非空字符串数组`)
@@ -387,6 +415,56 @@ export class TeamManager {
     return team
   }
 
+  /* --------------------- Web RPC 支撑：设置默认团队 --------------------- */
+
+  /**
+   * 设置默认团队（Web team/set-default，全局互斥唯一）。
+   * - 目标已是 default → 幂等 no-op；
+   * - 其余 default:true 的团队一并翻转（顺带收敛历史脏数据的多默认并存）；
+   * - 手术式文本替换只改顶层 `default:` 一行，原 YAML 注释/字段顺序/其余内容不动
+   *   （changan.yaml 等手工调优文件不受损；importTeam 的整文件重写做不到这点）；
+   * - 缺行时插入到头部元信息之后；写后 parse 校验翻转结果，失败即抛不落盘。
+   */
+  setDefaultTeam(teamId: string): { team_id: string; flipped: string[] } {
+    const target = this.loadTeam(teamId) // invalid_team / executor_unavailable 冒泡
+    const flipped: string[] = []
+    for (const other of this.listTeams()) {
+      if (other.team_id !== teamId && other.default === true) {
+        this.#writeDefaultFlag(other.team_id, false)
+        flipped.push(other.team_id)
+      }
+    }
+    if (target.default !== true) {
+      this.#writeDefaultFlag(teamId, true)
+    }
+    return { team_id: teamId, flipped }
+  }
+
+  /** 改写单个团队 YAML 的顶层 default 标记；写前解析自检，异常即抛不落盘。 */
+  #writeDefaultFlag(teamId: string, value: boolean): void {
+    const file = this.teamFile(teamId)
+    let raw: string
+    try {
+      raw = readFileSync(file, 'utf8')
+    } catch {
+      throw new WeaveError('invalid_team', `未找到团队配置: ${file}`, { teamId })
+    }
+    const updated = replaceDefaultFlag(raw, value)
+    // 写前结构自检：default 值必须读回一致；替换意外破坏文档则拒绝写入。
+    const doc = parseYaml(updated) as { default?: unknown } | null
+    if ((doc?.default === true) !== value) {
+      throw new WeaveError('invalid_team', `default 标记改写失败（解析结果不一致）: ${file}`, { teamId, want: value })
+    }
+    try {
+      writeFileSync(file, updated, { encoding: 'utf8', flag: 'w' })
+    } catch (error) {
+      throw new WeaveError('configuration_error', `团队配置写入失败: ${file}`, {
+        teamId,
+        cause: String(error),
+      })
+    }
+  }
+
     /* ----------------------------- 会话绑定（ME-4） ----------------------------- */
 
   async #ensureBindings(): Promise<void> {
@@ -508,5 +586,23 @@ export class TeamManager {
       db.prepare('SELECT session_id, team_id, updated_at FROM team_bindings WHERE session_id = ?').get(sessionId),
     ) as { session_id: string; team_id: string; updated_at: string } | undefined
     return row ?? null
+  }
+
+  /**
+   * 队长模式的零仪式团队解析（绑定 > 默认团队 > 唯一团队）：
+   * 配置好了小队就该直接可用——只有「多团队且无默认」才需要显式启用。
+   * 返回 via 供 UI 标注来源；无可解析团队时 {team:null, via:null}。
+   */
+  async resolveSessionTeam(
+    sessionId: string,
+  ): Promise<{ team: TeamConfig | null; via: 'binding' | 'default' | 'single' | null }> {
+    const bound = await this.getSelection(sessionId)
+    if (bound) {
+      return { team: this.loadTeam(bound.team_id), via: 'binding' }
+    }
+    const teams = this.listTeams()
+    const fallback = teams.find((t) => t.default) ?? (teams.length === 1 ? teams[0] : undefined)
+    if (!fallback) return { team: null, via: null }
+    return { team: this.loadTeam(fallback.team_id), via: fallback.default ? 'default' : 'single' }
   }
 }

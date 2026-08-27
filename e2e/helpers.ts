@@ -10,8 +10,8 @@ export const EXECUTABLE =
   'C:/Users/10042/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe'
 /** 截图与 trace 汇总目录（gitignore）。 */
 export const ART = resolve(process.cwd(), '.artifacts/weave-ui')
-/** Dashboard 八个路由 key。 */
-export const ROUTES = ['overview', 'teams', 'tasks', 'knowledge', 'executors', 'sessions', 'audit', 'settings'] as const
+/** Dashboard 七个路由 key（任务中心/会话管理已移除，运行时信息在会话面板）。 */
+export const ROUTES = ['overview', 'teams', 'knowledge', 'executors', 'audit', 'settings', 'manual'] as const
 
 mkdirSync(ART, { recursive: true })
 
