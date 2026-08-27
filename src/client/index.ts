@@ -892,6 +892,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [advancedOpen, setAdvancedOpen] = useState(false)
     const [roleOpen, setRoleOpen] = useState([true])
     const [detailTeamId, setDetailTeamId] = useState(null as string | null)
+    const [expandedRoles, setExpandedRoles] = useState(new Set<string>())
     const [deleteTarget, setDeleteTarget] = useState(null as null | { id: string; name: string })
     const [confirmDefaultTarget, setConfirmDefaultTarget] = useState(null as null | { id: string; name: string })
     const creator = useAction()
@@ -1349,27 +1350,45 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         React.createElement('span', { className: 'weave-adv-note' }, hint),
       )
 
-    /** 卡片/抽屉共用的角色只读块。 */
+    /** 卡片/抽屉共用的角色只读块（紧凑卡片 + 可折叠人格）。 */
     const roleDetailBlocks = (teamIdForKeys: string, rows?: Json[]): Array<React.ReactElement> =>
       Array.isArray(rows) && rows.length > 0
-        ? rows.map((role: Json, roleIndex: number) =>
-            React.createElement(
+        ? rows.map((role: Json, roleIndex: number) => {
+            const rid = `${teamIdForKeys}-role-${roleIndex}`
+            const expanded = expandedRoles.has(rid)
+            const toggle = () => {
+              setExpandedRoles((prev: Set<string>) => {
+                const next = new Set(prev)
+                if (next.has(rid)) next.delete(rid)
+                else next.add(rid)
+                return next
+              })
+            }
+            return React.createElement(
               'div',
-              { className: 'weave-detail-role', key: `${teamIdForKeys}-role-${roleIndex}` },
-              React.createElement('b', null, `${String(role.name ?? role.id ?? '角色')}（${executorLabel(String(role.executor ?? ''))}）`),
+              { className: 'weave-detail-role weave-detail-role-compact', key: rid },
               React.createElement(
-                'span',
-                { className: 'weave-muted' },
-                `模型：${String(role.model ?? '继承默认')} · 思考：${String(role.thought_level ?? '继承默认')} · 模式：${String(role.mode ?? '继承默认')}`,
+                'div',
+                { onClick: toggle, style: { cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+                React.createElement('b', null, String(role.name ?? role.id ?? '角色')),
+                React.createElement('span', { className: 'weave-pill weave-pill-idle', style: { fontSize: '11px', padding: '1px 6px' } }, executorLabel(String(role.executor ?? ''))),
+                React.createElement('span', { className: 'weave-muted', style: { fontSize: '11px' } }, String(role.model ?? '')),
+                React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: '#999' } }, expanded ? '▲' : `▼ ${String(role.personality ?? '').length}字`),
               ),
-              React.createElement(
-                'span',
-                { className: 'weave-muted' },
-                `阶段：${Array.isArray(role.stages) ? (role.stages as string[]).join(', ') : String(role.stages ?? '')} · 并发 ${String(role.max_concurrent_tasks ?? '1')}`,
-              ),
-              role.personality ? React.createElement('p', { className: 'weave-detail-personality' }, String(role.personality)) : null,
-            ),
-          )
+              expanded
+                ? React.createElement(
+                    'div',
+                    { style: { padding: '8px 0 4px 12px', borderLeft: '2px solid #e0e0e0', marginTop: '4px' } },
+                    React.createElement(
+                      'span',
+                      { className: 'weave-muted', style: { fontSize: '12px' } },
+                      `模式：${String(role.mode ?? '继承')} · 阶段：${Array.isArray(role.stages) ? (role.stages as string[]).join(', ') : ''} · 并发 ${String(role.max_concurrent_tasks ?? '1')}`,
+                    ),
+                    role.personality ? React.createElement('p', { className: 'weave-detail-personality', style: { marginTop: '4px', fontSize: '12px', color: '#666' } }, String(role.personality)) : null,
+                  )
+                : null,
+            )
+          })
         : [React.createElement('span', { key: 'no-roles', className: 'weave-muted' }, '该团队暂无角色')]
 
     const detailRows =
