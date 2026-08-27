@@ -671,18 +671,27 @@ export class DelegationService {
       const durationMs = Math.max(0, this.#now() - startedAt)
 
       if (outcome.kind === 'timeout') {
+        // 死亡递送：提取事件尾部摘要让队长知道子代理死前在做什么。
+        const snapshot = this.getExecutorRun(run.id)
+        const tail = (snapshot?.events ?? [])
+          .filter((e) => e.text && e.type !== 'status')
+          .slice(-3)
+          .map((e) => `[${e.type}] ${(e.text ?? '').slice(0, 150)}`)
+          .join(' | ')
         await run.dispose()
         const idleCause = outcome.reason === 'idle'
         const message = idleCause
           ? `Weave 空闲超时（连续 ${this.#idleTimeoutMs}ms 无执行器事件），已终止运行`
           : 'Weave 委托超时，已终止运行'
-        this.#finishExecutorRun(run.id, 'timeout', message)
+        const diagnostic = tail ? `${message}
+临终活动：${tail}` : message
+        this.#finishExecutorRun(run.id, 'timeout', diagnostic)
         return {
           id: run.id,
           output: [],
           stopReason: 'aborted',
           duration_ms: durationMs,
-          diagnostic: message,
+          diagnostic,
           weave: mapStopReason('aborted', { weaveErrorType: idleCause ? 'idle_timeout' : 'timeout' }),
         }
       }
@@ -731,11 +740,23 @@ export class DelegationService {
     const mapping = mapStopReason(result.stopReason, {
       permissionDenied: detectPermissionDenied(result),
     })
+    const output = result.output ?? []
+    // 成果递送兜底：output 为空时从事件缓冲提取最近文本/工具摘要，防止 result 空洞。
+    let diagnostic = result.diagnostic
+    if (output.length === 0 && !diagnostic) {
+      const snapshot = this.getExecutorRun(run.id)
+      const tail = (snapshot?.events ?? [])
+        .filter((e) => e.text && e.type !== 'status')
+        .slice(-3)
+        .map((e) => `[${e.type}] ${(e.text ?? '').slice(0, 150)}`)
+        .join(' | ')
+      if (tail) diagnostic = `（产出见文件；执行器活动摘要）${tail}`
+    }
     return {
       id: run.id,
-      output: result.output ?? [],
+      output,
       ...(result.structured !== undefined ? { structured: result.structured } : {}),
-      ...(result.diagnostic !== undefined ? { diagnostic: result.diagnostic } : {}),
+      ...(diagnostic !== undefined ? { diagnostic } : {}),
       stopReason: result.stopReason,
       duration_ms: durationMs,
       weave: mapping,
