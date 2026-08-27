@@ -738,6 +738,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [teamId, setTeamId] = useState('')
     const [name, setName] = useState('')
     const [roles, setRoles] = useState([blankRole()] as RoleDraft[])
+    const [editingTeamId, setEditingTeamId] = useState('')
+    const [detailTeamId, setDetailTeamId] = useState(null as string | null)
     const creator = useAction()
 
     const updateRole = (index: number, key: keyof RoleDraft, value: string) => {
@@ -791,7 +793,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           return role
         })
         const resolvedId =
-          (teamId || name || 'team').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'team'
+          (editingTeamId || teamId || name || 'team').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'team'
         const executorLimits: Json = {}
         for (const role of builtRoles) {
           const key = String(role.executor ?? 'spawn')
@@ -820,8 +822,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         setTeamId('')
         setName('')
         setRoles([blankRole()])
+        setEditingTeamId('')
         void snapshot.refresh()
-        return `已保存：${resolvedId}（${builtRoles.length} 个角色）`
+        return `${editingTeamId ? '已更新' : '已保存'}：${resolvedId}（${builtRoles.length} 个角色）`
       })
     }
 
@@ -837,12 +840,45 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }, [snapshot.data])
 
     const remover = useAction()
+    const loader = useAction()
     const removeTeam = async (id: string) => {
       if (!askConfirm(`确认删除团队 ${id}？将同时移除其 YAML 配置文件，且不可恢复。`)) return
       await remover.run(async () => {
         await rpc('team/delete', { teamId: id })
         void snapshot.refresh()
         return `已删除：${id}`
+      })
+    }
+
+    const roleToDraft = (role: Json): RoleDraft => ({
+      id: String(role.id ?? ''),
+      name: String(role.name ?? ''),
+      bias: String(role.bias ?? ''),
+      executor: String(role.executor ?? ''),
+      stages: Array.isArray(role.stages) ? (role.stages as string[]).join(',') : String(role.stages ?? ''),
+      maxConcurrent: String(role.max_concurrent_tasks ?? '1'),
+      personality: String(role.personality ?? ''),
+      provider: String(role.provider ?? ''),
+      model: String(role.model ?? ''),
+      thoughtLevel: String(role.thought_level ?? ''),
+      mode: String(role.mode ?? ''),
+      fallbackProvider: String(role.fallback_provider ?? ''),
+      fallbackModel: String(role.fallback_model ?? ''),
+    })
+
+    const loadTeam = async (id: string) => {
+      await loader.run(async () => {
+        const team = (await rpc('team/get', { teamId: id })) as {
+          team_id?: string
+          name?: string
+          roles?: Json[]
+        }
+        setTeamId(String(team.team_id ?? id))
+        setName(String(team.name ?? ''))
+        setEditingTeamId(String(team.team_id ?? id))
+        setRoles(Array.isArray(team.roles) && team.roles.length > 0 ? team.roles.map(roleToDraft) : [blankRole()])
+        setDetailTeamId(null)
+        return `已载入团队：${String(team.team_id ?? id)}，可修改后保存覆盖。`
       })
     }
 
@@ -1028,7 +1064,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       Note({
         text: snapshot.loading
           ? '正在加载...'
-          : snapshot.error || creator.note || remover.note || '创建后会写入 ~/.dsh/teams 并通过完整校验。',
+          : snapshot.error || loader.note || creator.note || remover.note || '创建或编辑后会写入 ~/.dsh/teams 并通过完整校验。',
       }),
       snapshot.error ? Note({ text: snapshot.error, kind: 'error' }) : null,
       creator.ok === false || remover.ok === false ? Note({ text: creator.note || remover.note, kind: 'error' }) : null,
@@ -1150,7 +1186,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           React.createElement(
             'button',
             { className: 'weave-button', type: 'submit', disabled: creator.busy, 'data-testid': 'team-create-submit' },
-            creator.busy ? '保存中' : `创建团队（包含 ${roles.length} 个角色）`,
+            creator.busy ? '保存中' : `${editingTeamId ? '更新团队' : '创建团队'}（包含 ${roles.length} 个角色）`,
           ),
         ),
         React.createElement(
@@ -1177,6 +1213,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       {
                         className: 'weave-button weave-button-secondary weave-button-small',
                         type: 'button',
+                        'data-testid': `team-detail-${id}`,
+                        onClick: () => setDetailTeamId(detailTeamId === id ? null : id),
+                      },
+                      detailTeamId === id ? '收起详情' : '详情',
+                    ),
+                    React.createElement(
+                      'button',
+                      {
+                        className: 'weave-button weave-button-secondary weave-button-small',
+                        type: 'button',
+                        'data-testid': `team-edit-${id}`,
+                        disabled: loader.busy,
+                        onClick: () => void loadTeam(id),
+                      },
+                      '编辑',
+                    ),
+                    React.createElement(
+                      'button',
+                      {
+                        className: 'weave-button weave-button-secondary weave-button-small',
+                        type: 'button',
                         'data-testid': `team-delete-${id}`,
                         disabled: remover.busy,
                         onClick: () => void removeTeam(id),
@@ -1191,6 +1248,40 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       ? team.roles.map((role: Json) => `${String(role.id ?? '?')}/${String(role.executor ?? '?')}`).join(', ')
                       : '',
                   ),
+                  detailTeamId === id
+                    ? React.createElement(
+                        'div',
+                        { className: 'weave-detail', 'data-testid': `team-detail-content-${id}` },
+                        React.createElement('b', null, String(team.name ?? id)),
+                        React.createElement('span', { className: 'weave-muted' }, `ID：${id}${team.default ? ' · 默认团队' : ''}`),
+                        ...(Array.isArray(team.roles) && team.roles.length > 0
+                          ? team.roles.map((role: Json, roleIndex: number) =>
+                              React.createElement(
+                                'div',
+                                { className: 'weave-detail-role', key: `${id}-role-${roleIndex}` },
+                                React.createElement(
+                                  'b',
+                                  null,
+                                  `${String(role.name ?? role.id ?? '角色')}（${String(role.executor ?? '?')}）`,
+                                ),
+                                React.createElement(
+                                  'span',
+                                  { className: 'weave-muted' },
+                                  `模型：${String(role.model ?? '继承默认')} · 思考：${String(role.thought_level ?? '继承默认')} · 模式：${String(role.mode ?? '继承默认')}`,
+                                ),
+                                React.createElement(
+                                  'span',
+                                  { className: 'weave-muted' },
+                                  `阶段：${Array.isArray(role.stages) ? (role.stages as string[]).join(', ') : String(role.stages ?? '')}`,
+                                ),
+                                role.personality
+                                  ? React.createElement('p', { className: 'weave-detail-personality' }, String(role.personality))
+                                  : null,
+                              ),
+                            )
+                          : [React.createElement('span', { key: 'no-roles', className: 'weave-muted' }, '该团队暂无角色')]),
+                      )
+                    : null,
                 )
               })
             : [
@@ -2177,9 +2268,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             React.createElement(
               'div',
               { className: 'weave-chiprow' },
-              ...(capabilities.models ?? []).map((option: SelectOption) =>
+              ...(Array.from(
+                new Map<string, SelectOption>(
+                  (capabilities.models ?? []).map((option: SelectOption) => [option.value, option]),
+                ).values(),
+              ).map((option: SelectOption) =>
                 React.createElement('span', { className: 'weave-chip', key: option.value }, option.name ?? option.value),
-              ),
+              )),
             ),
           )
         : null,

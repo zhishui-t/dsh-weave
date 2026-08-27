@@ -454,6 +454,20 @@ describe('/weave provider add/list/remove 命令', () => {
     expect(env.store.get('gamma')?.args).toEqual(['g.ts'])
   })
 
+  it('add-provider：真实 ZCode JSON 命令可保存，且容忍 add/provider add 前缀', async () => {
+    const env = makeCommandEnv()
+    const add = env.add!
+    const raw = '{"name":"zcode","transport":"stdio","command":"node","args":["C:/work/project/weave/node_modules/zcode-acp-server/dist/index.js"],"env":{"ZCODE_BIN":"D:/Program Files/ZCode/resources/glm/zcode.cjs","ZCODE_NODE":"C:/Program Files/nodejs/node.exe"},"protocol":"acp","declaredExtensions":["zcode"]}'
+    const ok = await add.handler(raw)
+    expect(ok.kind).toBe('success')
+    expect(env.store.get('zcode')?.declaredExtensions).toEqual(['zcode'])
+    expect(env.store.get('zcode')?.args).toEqual(['C:/work/project/weave/node_modules/zcode-acp-server/dist/index.js'])
+
+    const prefixed = await add.handler(`provider add ${raw}`)
+    expect(prefixed.kind).toBe('success')
+    expect(env.store.get('zcode')?.command).toBe('node')
+  })
+
   it('list/remove 子命令；remove 未知名报错', async () => {
     const env = makeCommandEnv()
     const manage = env.manage!

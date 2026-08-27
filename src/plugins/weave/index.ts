@@ -70,7 +70,7 @@ export function apply(ctx: Context): void {
 
   // 真实 DSH 宿主接入：等待宿主服务就绪后一次性注册真实依赖。
   // 执行器列表来自 ctx.subagents 当前实际注册项；ZCode ACP 只是可选附加源。
-  ctx.inject(['subagents', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
+  ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
     const runtime = scoped as Context
 
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
