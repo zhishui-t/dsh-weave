@@ -311,14 +311,9 @@ export class TeamManager {
       // iso-1-hotfix: registry 尚未 load（宿主启动时序）或执行器名单波动时，
       // 不应让整个团队从 listTeams 消失——降级为跳过该校验，委派期再由
       // DelegationService/executorRegistry 兜底报 executor_unavailable。
-      const executorList = (lookup?.list?.() ?? []) as Array<string | { id?: string }>
-      const executorIds = executorList.map((item) => (typeof item === 'string' ? item : String(item?.id ?? '')))
-      if (executorIds.length > 0 && !executorIds.includes(role.executor)) {
-        throw new WeaveError('executor_unavailable', `角色 ${role.id} 的执行器未注册: ${role.executor}`, {
-          role: role.id,
-          executor: role.executor,
-        })
-      }
+      // v4 hotfix：执行器注册检查彻底降级为“委派期兜底”——listTeams 不再因
+      // registry 时序/名单波动清空团队（会话面板与团队页 405/空列表根因）。
+      void lookup
     }
     const td = team.task_decomposition
     for (const [index, matcher] of td.matchers.entries()) {
