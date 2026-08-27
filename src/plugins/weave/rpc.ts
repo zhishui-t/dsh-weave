@@ -410,24 +410,25 @@ export function registerWeaveRpc(
   const runtime = context as Context & {
     inject?(services: string[], callback: (scoped: Context & {
       connection?: { rpc?: HostConnectionRpc }
-      webServer?: { register(route: { kind: string; path: string; handler: (req: unknown, res: unknown) => Promise<void> | void }): () => void }
     }) => unknown): unknown
     connection?: { rpc?: HostConnectionRpc }
   }
 
-  // Cordis 的 inject 会等 connection 就绪后再注册，避免启动顺序竞态。
-  runtime.inject?.(['connection', 'webServer'], (scoped) => {
+  // WebSocket RPC handler（与之前一致，只等 connection）。
+  runtime.inject?.(['connection'], (scoped) => {
     const handler = createWeaveRpcHandler(deps, zcodeCatalog, settings)
     scoped.connection?.rpc?.handle(WEAVE_RPC_CHANNEL, handler, { authority: 'trusted-host' })
+  })
 
-    // HTTP fallback：客户端 WebSocket 不可用时通过 POST /dsh-weave/<endpoint> 走 HTTP transport。
-    const scopedAny = scoped as any
-    const ws = scopedAny?.webServer
-    ws?.register({
+  // HTTP fallback：注册 POST /dsh-weave/* 路由到 webServer，客户端 WS 不可用时走 HTTP。
+  const handler = createWeaveRpcHandler(deps, zcodeCatalog, settings)
+  const ws = (context as any)?.webServer
+  if (ws?.register) {
+    ws.register({
       kind: 'prefix',
       path: WEAVE_RPC_CHANNEL,
       handler: async (req: any, res: any) => {
-        const url = new URL((req as { url?: string }).url ?? '/', 'http://localhost')
+        const url = new URL(req.url ?? '/', 'http://localhost')
         const endpoint = url.pathname.replace(`${WEAVE_RPC_CHANNEL}/`, '')
         let raw = ''
         await new Promise<void>((resolve) => {
@@ -449,6 +450,6 @@ export function registerWeaveRpc(
         }
       },
     })
-  })
+  }
   return Boolean(runtime.inject)
 }
