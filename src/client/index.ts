@@ -3194,7 +3194,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ---- E 块：成员卡「查看输出」事件流 ---- */
   /** 后端 executor/run-events 就绪后置 false 直接联调；true 时用确定性 mock 数据开发。 */
-  const RUN_EVENTS_MOCK = true
+  const RUN_EVENTS_MOCK = false
   /** 事件流轮询间隔（≥1s，约束上限）。 */
   const RUN_EVENTS_POLL_MS = 1000
   /** 卡片内联展开区最多渲染的事件条数（完整历史看抽屉）。 */

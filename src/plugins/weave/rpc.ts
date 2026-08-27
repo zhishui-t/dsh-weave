@@ -87,8 +87,8 @@ export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
  * persistence 可选——存在时 team/bind* 与 overview.bindings、settings.state_dir 才可用。
  */
 export interface ExecutorRunsQuery {
-    getExecutorRun(runId: string): { events: Array<{ type: string; text?: string; name?: string }>; state: string } | undefined
-    listExecutorRuns(): Array<{ runId: string; taskId: string; executor: string; state: string; startedAt: number; events: Array<{ type: string; text?: string; name?: string }> }>
+    getExecutorRun(runId: string): { events: Array<{ type: string; text?: string; name?: string }>; state: string; sessionId?: string } | undefined
+    listExecutorRuns(): Array<{ runId: string; taskId: string; executor: string; state: string; startedAt: number; sessionId?: string; events: Array<{ type: string; text?: string; name?: string }> }>
 }
 export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> &
   Partial<Pick<CliMcpDeps, 'persistence'>> & {
@@ -261,15 +261,22 @@ export function createWeaveRpcHandler(
         const runId = typeof input.runId === 'string' ? input.runId : undefined
         const taskId = typeof input.taskId === 'string' ? input.taskId : undefined
         const tail = typeof input.tail === 'number' ? Math.min(input.tail, 200) : 50
+        const toClientEvent = (e: { type: string; text?: string; name?: string }, idx: number): Record<string, unknown> => ({
+            ts: Date.now() - (tail - idx) * 1000,
+            type: e.type === 'tool_call' ? 'tool_call' : e.type === 'tool_result' ? 'tool_result' : e.type,
+            tool: e.name,
+            text: e.text,
+        })
         if (runId) {
           const snap = runs.getExecutorRun(runId)
           if (!snap) return success({ detail: undefined, runs: [] })
-          return success({ detail: { ...snap, events: snap.events.slice(-tail) }, runs: [] })
+          const evts = snap.events.slice(-tail)
+          return success({ detail: { session_id: snap.sessionId, events: evts.map(toClientEvent) }, runs: [] })
         }
         const all = runs.listExecutorRuns()
         const filtered = taskId ? all.filter((r) => r.taskId === taskId) : all
-        const withTails = filtered.map((r) => ({ ...r, events: r.events.slice(-tail) }))
-        if (taskId && withTails.length > 0) return success({ detail: withTails[0], runs: withTails })
+        const withTails = filtered.map((r) => ({ ...r, events: r.events.slice(-tail).map(toClientEvent) }))
+        if (taskId && withTails.length > 0) { const first = withTails[0]!; return success({ detail: { session_id: first.sessionId, events: first.events }, runs: withTails }) }
         return success({ detail: undefined, runs: withTails })
       }
 
