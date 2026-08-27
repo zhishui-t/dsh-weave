@@ -36,9 +36,17 @@ interface ConnectionHandle {
   rpc: ConnectionRpc
 }
 
+/** DSH sessions 服务的窄接口：用于打开 DSH 子代理会话。 */
+interface SessionNavigator {
+  open(id: string): void
+  openSubagent?(address: { parentSessionId: string; childSessionId: string; mode?: string }): void
+  refreshSubagents?(parentSessionId: string): Promise<void>
+  subagentAddress?(id: string): { parentSessionId?: string; childSessionId?: string; mode?: string } | undefined
+}
+
 interface ClientContext {
   effect(execute: () => unknown, label?: string): unknown
-  get(service: 'connection'): ConnectionHandle
+  get(service: 'connection' | 'sessions'): ConnectionHandle | SessionNavigator
   slots: SlotsService
 }
 
@@ -204,7 +212,6 @@ interface RoleDraft {
   bias: string
   executor: string
   stages: string
-  maxConcurrent: string
   personality: string
   provider: string
   model: string
@@ -212,6 +219,8 @@ interface RoleDraft {
   mode: string
   fallbackProvider: string
   fallbackModel: string
+  priority: string
+  strengths: string
 }
 
 interface TaskRow {
@@ -416,9 +425,18 @@ function ensureStyle(): void {
 .weave-dag-node .weave-muted{font-size:11px;line-height:14px}
 .weave-spanel{display:grid;gap:14px;align-content:start;padding:14px;border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
 .weave-spanel-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
-.weave-member{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;display:grid;gap:4px;background:var(--dsw-specific-menu)}
-.weave-member b{font-size:13px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:20px}
+.weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
+.weave-member{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:6px 8px;display:grid;gap:2px;background:var(--dsw-specific-menu)}
+.weave-member b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:17px}
+.weave-member[data-status="running"]{border-color:#1677ff;background:rgba(22,119,255,.06)}
+.weave-member[data-status="idle"]{border-color:#d9d9d9;background:var(--dsw-alias-bg-layer-2)}
+.weave-member[data-status="interrupted"]{border-color:#f5222d;background:rgba(245,34,45,.06)}
+.weave-member[data-status="awaiting"]{border-left:3px solid #faad14;border-color:#faad14;background:rgba(250,173,20,.06)}
+.weave-member[data-status="failed"]{border-left:3px solid #f5222d;border-color:#f5222d;background:rgba(245,34,45,.06)}
+.weave-member[data-status="completed"]{border-left:3px solid #52c41a;border-color:#52c41a;background:rgba(82,196,26,.06)}
+.weave-member[data-status="ready"]{border-left:3px solid #52c41a;border-color:#52c41a;background:rgba(82,196,26,.06)}
+.weave-member[data-clickable="true"]{cursor:pointer}
+.weave-member[data-clickable="true"]:hover{border-color:var(--dsw-alias-label-tertiary)}
 .weave-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#8c8c8c;vertical-align:middle;flex:none}
 .weave-dot[data-tone="run"]{background:#1677ff}
 .weave-dot[data-tone="good"]{background:#52c41a}
@@ -428,7 +446,7 @@ function ensureStyle(): void {
 .weave-button-danger{background:transparent;border:1px solid #f5222d;color:#f5222d;font-weight:550}
 .weave-button-danger:hover{filter:brightness(1.15)}
 .weave-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:min(760px,calc(100vh - 48px));overflow-y:auto;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;padding:18px;display:grid;gap:12px;box-shadow:var(--dsw-shadow-lv3)}
-.weave-dialog-wide{width:min(780px,calc(100vw - 32px))}
+.weave-dialog-wide{width:min(960px,calc(100vw - 32px));max-height:min(920px,calc(100vh - 32px))}
 .weave-dialog-title{font-size:15px;font-weight:600;line-height:22px}
 .weave-dialog-body{display:grid;gap:12px;min-height:0}
 .weave-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
@@ -451,21 +469,48 @@ function ensureStyle(): void {
   .weave-dialog-actions{justify-content:stretch}
   .weave-dialog-actions .weave-button{flex:1;min-height:40px}
 }
-.weave-member-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.weave-member-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
 .weave-eventstream{box-sizing:border-box;max-height:180px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;display:grid;gap:3px;background:var(--dsw-specific-menu)}
 .weave-eventline{display:flex;gap:6px;align-items:baseline;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);word-break:break-all}
 .weave-eventline time{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none}
 .weave-eventline b{font-weight:550;color:var(--dsw-alias-label-primary);flex:none}
 .weave-event-meta{display:grid;gap:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 @media (max-width:600px){.weave-eventstream{max-height:140px}}
+.weave-session-runtime{display:grid;gap:8px;padding-top:2px}
+.weave-team-stats{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.weave-team-stats b{font-weight:550;color:var(--dsw-alias-label-primary);margin-right:2px}
+.weave-progress-segments{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}
+.weave-progress-segments span{display:block;height:100%;min-width:2px}
+.weave-progress-segments span[data-state="running"]{background:#1677ff}
+.weave-progress-segments span[data-state="waiting"]{background:#bfbfbf}
+.weave-progress-segments span[data-state="awaiting"]{background:#faad14}
+.weave-progress-segments span[data-state="completed"]{background:#52c41a}
+.weave-progress-segments span[data-state="failed"]{background:#f5222d}
+.weave-panel-tabs{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--dsw-alias-border-l2);padding:0 4px;margin-top:4px}
+.weave-tab{display:inline-flex;align-items:center;gap:6px;border:0;border-bottom:2px solid transparent;background:transparent;padding:6px 2px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+.weave-tab-active{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));font-weight:550}
+.weave-tab-label{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer}
+.weave-tab-close{border:0;background:transparent;padding:0 0 0 4px;font:inherit;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+.weave-panel-tab-body{min-height:120px;border:1px solid var(--dsw-alias-border-l2);border-top:0;border-radius:0 0 12px 12px;padding:12px;background:var(--dsw-alias-bg-layer-2)}
+.weave-section{display:grid;gap:8px;margin-top:12px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:8px}
+.weave-section-head{display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:0;font:inherit;font-size:13px;font-weight:550;color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left}
+.weave-section-body{display:grid;gap:8px;padding-top:4px}
+.weave-member-assignments{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.weave-assignment-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-l2);border-left-width:3px;border-radius:8px;padding:1px 7px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);background:var(--dsw-specific-menu)}
+.weave-assignment-chip b{font-weight:550;color:var(--dsw-alias-label-primary)}
+.weave-assignment-chip[data-state="running"]{border-color:#1677ff;background:rgba(22,119,255,.08)}
+.weave-assignment-chip[data-state="waiting"]{border-color:#bfbfbf;background:rgba(191,191,191,.12)}
+.weave-assignment-chip[data-state="awaiting"]{border-color:#faad14;background:rgba(250,173,20,.10)}
+.weave-assignment-chip[data-state="completed"]{border-color:#52c41a;background:rgba(82,196,26,.10)}
+.weave-assignment-chip[data-state="failed"]{border-color:#f5222d;background:rgba(245,34,45,.08)}
 `
   document.head.appendChild(style)
 }
 
 /* ------------------------------- 应用工厂 ------------------------------- */
 
-function createApp(React: any, createPortal?: (node: any, container: Element) => any, callRpc?: RpcCaller): any {
-  const { useState, useCallback, useEffect } = React
+function createApp(React: any, createPortal?: (node: any, container: Element) => any, callRpc?: RpcCaller, sessionNavigator?: SessionNavigator): any {
+  const { useState, useCallback, useEffect, useRef } = React
 
   /* ----------------------------- 基础工具 ----------------------------- */
 
@@ -485,7 +530,34 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return value.replace('T', ' ').slice(0, 19)
   }
 
-  const askConfirm = (message: string): boolean => Boolean(window.confirm(message))
+  /** 展示用短任务 ID：dag-...-t1 → t1，便于成员卡/DAG 节点一眼区分。 */
+  const shortTaskId = (value: unknown): string => {
+    const raw = String(value ?? '')
+    const parts = raw.split('-')
+    const tail = parts.length > 0 ? (parts[parts.length - 1] ?? '') : ''
+    return tail !== '' ? tail : raw
+  }
+
+
+  /** 打开 DSH 子代理会话：优先走新版 openSubagent，旧版回退 open(childSessionId)。 */
+  const openSubagentSession = async (parentSessionId: string, childSessionId: string): Promise<void> => {
+    if (!sessionNavigator) return
+    if (sessionNavigator.openSubagent === undefined || sessionNavigator.refreshSubagents === undefined) {
+      sessionNavigator.open(childSessionId)
+      return
+    }
+    try {
+      await sessionNavigator.refreshSubagents(parentSessionId)
+    } catch {
+      // 刷新失败不阻断跳转尝试
+    }
+    const retained = sessionNavigator.subagentAddress?.(childSessionId)
+    sessionNavigator.openSubagent?.(
+      retained?.parentSessionId === parentSessionId
+        ? (retained as { parentSessionId: string; childSessionId: string; mode?: string })
+        : { parentSessionId, childSessionId, mode: 'continuable' },
+    )
+  }
 
   /* ----------------------------- 通用 Hooks ----------------------------- */
 
@@ -595,6 +667,110 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   const Pill = ({ label, tone, title }: { label: string; tone?: string; title?: string }) =>
     React.createElement('span', { className: 'weave-pill', 'data-tone': tone ?? 'idle', title: title ?? label }, label)
+
+  /** 通用确认弹窗：替代原生 window.confirm，统一移动端体验。 */
+  const ConfirmDialog = ({ open, title, body, confirmText = '确认', cancelText = '取消', danger = false, busy = false, testId = 'confirm-dialog', onConfirm, onCancel }: {
+    open: boolean
+    title: string
+    body: string
+    confirmText?: string
+    cancelText?: string
+    danger?: boolean
+    busy?: boolean
+    testId?: string
+    onConfirm: () => void
+    onCancel: () => void
+  }) => {
+    if (!open) return null
+    return React.createElement(
+      'div',
+      {
+        className: 'weave-overlay',
+        'data-testid': testId,
+        onClick: (event: { target: unknown; currentTarget: unknown }) => {
+          if (event.target === event.currentTarget) onCancel()
+        },
+      },
+      React.createElement(
+        'div',
+        { className: 'weave-dialog', role: 'dialog', 'aria-modal': 'true' },
+        React.createElement('b', { className: 'weave-dialog-title' }, title),
+        React.createElement('p', { style: { margin: 0, fontSize: 13, lineHeight: '20px' } }, body),
+        React.createElement(
+          'div',
+          { className: 'weave-dialog-actions' },
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', disabled: busy, autoFocus: true, onClick: onCancel, 'data-testid': `${testId}-cancel` },
+            cancelText,
+          ),
+          React.createElement(
+            'button',
+            { className: danger ? 'weave-button weave-button-danger' : 'weave-button', type: 'button', disabled: busy, onClick: onConfirm, 'data-testid': `${testId}-confirm` },
+            busy ? '处理中...' : confirmText,
+          ),
+        ),
+      ),
+    )
+  }
+
+  /** 通用输入弹窗：替代原生 window.prompt（如任务返工反馈）。 */
+  const PromptDialog = ({ open, title, placeholder = '', initialValue = '', testId = 'prompt-dialog', onConfirm, onCancel }: {
+    open: boolean
+    title: string
+    placeholder?: string
+    initialValue?: string
+    testId?: string
+    onConfirm: (value: string) => void
+    onCancel: () => void
+  }) => {
+    const [value, setValue] = useState(initialValue)
+    useEffect(() => {
+      if (open) setValue(initialValue)
+    }, [open, initialValue])
+    if (!open) return null
+    return React.createElement(
+      'div',
+      {
+        className: 'weave-overlay',
+        'data-testid': testId,
+        onClick: (event: { target: unknown; currentTarget: unknown }) => {
+          if (event.target === event.currentTarget) onCancel()
+        },
+      },
+      React.createElement(
+        'div',
+        { className: 'weave-dialog', role: 'dialog', 'aria-modal': 'true' },
+        React.createElement('b', { className: 'weave-dialog-title' }, title),
+        React.createElement(
+          'label',
+          { className: 'weave-field' },
+          React.createElement('span', null, '反馈内容'),
+          React.createElement('textarea', {
+            value,
+            placeholder,
+            rows: 3,
+            autoFocus: true,
+            onChange: (event: { target: { value: string } }) => setValue(event.target.value),
+          }),
+        ),
+        React.createElement(
+          'div',
+          { className: 'weave-dialog-actions' },
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', onClick: onCancel },
+            '取消',
+          ),
+          React.createElement(
+            'button',
+            { className: 'weave-button', type: 'button', disabled: value.trim() === '', onClick: () => onConfirm(value.trim()) },
+            '提交反馈',
+          ),
+        ),
+      ),
+    )
+  }
 
 
   /* ============================== 总览页 ============================== */
@@ -756,7 +932,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     bias: 'dev',
     executor: '',
     stages: DEFAULT_STAGES,
-    maxConcurrent: '1',
     personality: DEFAULT_PERSONALITY,
     provider: '',
     model: '',
@@ -764,6 +939,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     mode: '',
     fallbackProvider: '',
     fallbackModel: '',
+    priority: '',
+    strengths: '',
   })
 
   /** 「高级配置」三段（任务拆解/知识注入/反馈策略）的表单默认值：= 原提交逻辑的硬编码字面量。 */
@@ -892,13 +1069,21 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [advancedOpen, setAdvancedOpen] = useState(false)
     const [roleOpen, setRoleOpen] = useState([true])
     const [detailTeamId, setDetailTeamId] = useState(null as string | null)
-    const [expandedRoles, setExpandedRoles] = useState(new Set<string>())
+    /** 队员聚焦模式：null=整队编辑器；>=0=只编辑该下标成员；-1=只编辑末尾新追加的队员。 */
+    const [memberFocus, setMemberFocus] = useState(null as null | number)
     const [deleteTarget, setDeleteTarget] = useState(null as null | { id: string; name: string })
     const [confirmDefaultTarget, setConfirmDefaultTarget] = useState(null as null | { id: string; name: string })
     const creator = useAction()
+    const [fieldErrors, setFieldErrors] = useState({} as Record<string, string>)
+    const [confirmDiscard, setConfirmDiscard] = useState(false)
+    const [editSnapshotJson, setEditSnapshotJson] = useState('')
 
-    const setAdvancedField = <K extends keyof ReturnType<typeof blankAdvanced>>(key: K, value: string): void =>
+    const setAdvancedField = <K extends keyof ReturnType<typeof blankAdvanced>>(key: K, value: string): void => {
+      for (const errorKey of ['advancedKnowledgeMaxEntries', 'advancedKnowledgePerEntry', 'advancedKnowledgeTotalChars', 'advancedFeedbackTimeoutSeconds', 'advancedMaxRevisions', 'advancedReopenWindowSeconds']) {
+        clearFieldError(errorKey)
+      }
       setAdvancedState((current: ReturnType<typeof blankAdvanced>) => ({ ...current, [key]: value }))
+    }
 
     const resetEditorForm = (): void => {
       setEditingTeamId('')
@@ -910,6 +1095,70 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       setEditBase(null)
       setAdvancedOpen(false)
       setRoleOpen([true])
+      setFieldErrors({})
+      setConfirmDiscard(false)
+      setEditSnapshotJson('')
+      setMemberFocus(null)
+    }
+
+    const buildDraftJson = (): string =>
+      JSON.stringify({ teamId, name, defaultFlag, roles, advanced })
+    const dirty = editorMode === 'edit' && editSnapshotJson !== '' && buildDraftJson() !== editSnapshotJson
+
+    const closeEditor = (): void => {
+      if (editorMode === 'edit' && dirty) {
+        setConfirmDiscard(true)
+        return
+      }
+      setFieldErrors({})
+      setConfirmDiscard(false)
+      setEditorMode(null)
+    }
+
+    const clearFieldError = (key: string): void =>
+      setFieldErrors((current: Record<string, string>) => {
+        if (!(key in current)) return current
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+
+    const validateTeamForm = (): Record<string, string> => {
+      const errors: Record<string, string> = {}
+      const resolvedName = name.trim()
+      if (resolvedName === '') errors.name = '请填写团队名称'
+      const resolvedId = editorMode === 'edit'
+        ? editingTeamId
+        : (teamId.trim() || slugifyTeamId(name) || 'team')
+      if (editorMode === 'create') {
+        if (!/^[a-z0-9._-]+$/.test(resolvedId)) errors.teamId = '只能使用小写字母、数字和 . _ -'
+        if (resolvedId.length > 64) errors.teamId = '长度不能超过 64'
+        if (teams.some((team: TeamSummaryRow) => String(team.team_id ?? '') === resolvedId)) {
+          errors.teamId = `已存在同名团队 ID：${resolvedId}`
+        }
+      }
+      const seen = new Map<string, number>()
+      roles.forEach((role: RoleDraft, index: number) => {
+        const roleId = role.id.trim() || `member${index > 0 ? `-${index + 1}` : ''}`
+        const prev = seen.get(roleId)
+        if (prev !== undefined) {
+          errors[`role-${index}-id`] = `角色 ID 在团队内需唯一，与「${roleId}」冲突`
+          errors[`role-${prev}-id`] = `角色 ID 在团队内需唯一，与「${roleId}」冲突`
+        } else {
+          seen.set(roleId, index)
+        }
+      })
+      const intIn = (raw: string, min: number, max: number): boolean => {
+        const n = Number.parseInt(raw, 10)
+        return Number.isInteger(n) && n >= min && n <= max
+      }
+      if (!intIn(advanced.knowledgeMaxEntries, 0, 20)) errors.advancedKnowledgeMaxEntries = '应在 0–20 之间'
+      if (!intIn(advanced.knowledgePerEntry, 100, 100000)) errors.advancedKnowledgePerEntry = '不能小于 100'
+      if (!intIn(advanced.knowledgeTotalChars, 100, 1000000)) errors.advancedKnowledgeTotalChars = '不能小于 100'
+      if (!intIn(advanced.feedbackTimeoutSeconds, 60, 604800)) errors.advancedFeedbackTimeoutSeconds = '应在 60 秒以上'
+      if (!intIn(advanced.maxRevisions, 0, 10)) errors.advancedMaxRevisions = '应在 0–10 之间'
+      if (!intIn(advanced.reopenWindowSeconds, 0, 31536000)) errors.advancedReopenWindowSeconds = '不能小于 0'
+      return errors
     }
 
     /** 新建模式：空白草稿（高级配置默认值与原提交硬编码一致）；执行器直接取当前已注册的首个，避免依赖只在快照首次到达时运行的补默认 effect。 */
@@ -924,6 +1173,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }
 
     const updateRole = (index: number, key: keyof RoleDraft, value: string) => {
+      clearFieldError(`role-${index}-${String(key)}`)
       setRoles((current: RoleDraft[]) => current.map((role, i) => (i === index ? { ...role, [key]: value } : role)))
     }
 
@@ -957,6 +1207,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const submit = async (event: { preventDefault(): void }) => {
       event.preventDefault()
       if (editorMode === null) return
+      const errors = validateTeamForm()
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors)
+        return
+      }
+      setFieldErrors({})
       const mode = editorMode
       await creator.run(async () => {
         const fallbackExecutor = executors[0]?.id ?? ''
@@ -964,16 +1220,22 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         const builtRoles = roles.map((draft: RoleDraft, index: number) => {
           const suffix = index > 0 ? `-${index + 1}` : ''
           const stages = draft.stages.split(',').map((part: string) => part.trim()).filter(Boolean)
-          const maxConcurrent = Number.parseInt(draft.maxConcurrent, 10)
           const role: Json = {
             id: draft.id.trim() || `member${suffix}`,
             name: draft.name.trim() || '成员',
             bias: draft.bias.trim() || 'dev',
             executor: draft.executor || fallbackExecutor,
             stages,
-            max_concurrent_tasks: Number.isInteger(maxConcurrent) && maxConcurrent > 0 ? maxConcurrent : 1,
+            // 每名成员同一时间只执行一个任务：调度器强制串行（忽略历史 yaml 值），统一写 1 仅供后端校验通过。
+            max_concurrent_tasks: 1,
             personality: draft.personality,
           }
+          if (draft.priority.trim() !== '') {
+            const priority = Number.parseInt(draft.priority, 10)
+            if (Number.isInteger(priority) && priority >= 0) role.priority = priority
+          }
+          const strengths = draft.strengths.split(',').map((part) => part.trim()).filter(Boolean)
+          if (strengths.length > 0) role.strengths = strengths
           if (draft.executor === 'zcode') {
             if (draft.model) {
               const cut = draft.model.lastIndexOf(separator)
@@ -1046,7 +1308,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         setEditorMode(null)
         setEditBase(null)
         setEditingTeamId('')
-        setDetailTeamId(null)
+        setMemberFocus(null)
+        setDetailTeamId(mode === 'edit' ? editingTeamId : null)
         void snapshot.refresh()
         return `${mode === 'edit' ? '已更新' : '已保存'}：${resolvedId}（${builtRoles.length} 个角色）`
       })
@@ -1098,7 +1361,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       bias: String(role.bias ?? ''),
       executor: String(role.executor ?? ''),
       stages: Array.isArray(role.stages) ? (role.stages as string[]).join(',') : String(role.stages ?? ''),
-      maxConcurrent: String(role.max_concurrent_tasks ?? '1'),
       personality: String(role.personality ?? ''),
       provider: String(role.provider ?? ''),
       model: String(role.model ?? ''),
@@ -1106,6 +1368,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       mode: String(role.mode ?? ''),
       fallbackProvider: String(role.fallback_provider ?? ''),
       fallbackModel: String(role.fallback_model ?? ''),
+      priority: String(role.priority ?? ''),
+      strengths: Array.isArray(role.strengths) ? (role.strengths as string[]).join(',') : String(role.strengths ?? ''),
     })
 
     /** 编辑模式：载入全量配置预填（含高级三段），作为提交基底防丢字段。 */
@@ -1124,8 +1388,62 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         setEditBase(team)
         setAdvancedOpen(false)
         setRoleOpen(Array.from({ length: drafts.length }, () => true))
-        setDetailTeamId(null)
+        setMemberFocus(null)
+        setFieldErrors({})
+        setConfirmDiscard(false)
+        setEditSnapshotJson(JSON.stringify({
+          teamId: String(team.team_id ?? id),
+          name: String(team.name ?? ''),
+          defaultFlag: team.default === true,
+          roles: drafts,
+          advanced: advancedFromConfig(team),
+        }))
         return `已载入团队：${String(team.team_id ?? id)}`
+      })
+    }
+
+    /** 详情抽屉点队员卡片：载入整队进编辑器并只展开该成员（其余折叠），保存/取消后回到抽屉。 */
+    const openMemberEditor = async (id: string, roleIndex: number): Promise<void> => {
+      if (loader.busy) return
+      try {
+        await loadTeam(id)
+      } catch {
+        return
+      }
+      setDetailTeamId(id)
+      setRoleOpen((current: boolean[]) => current.map((_v: boolean, i: number) => i === roleIndex))
+      setMemberFocus(roleIndex)
+    }
+
+    /** 详情弹窗「添加队员」：整队末尾追加空白成员并聚焦（memberFocus=-1 表示取列表最后一个）。 */
+    const openAddMember = async (id: string): Promise<void> => {
+      if (loader.busy) return
+      try {
+        await loadTeam(id)
+      } catch {
+        return
+      }
+      setDetailTeamId(id)
+      setRoles((current: RoleDraft[]) => [...current, { ...blankRole(), executor: executors[0]?.id ?? '' }])
+      setMemberFocus(-1)
+    }
+
+    /* ---- 删除队员（卡片右上角 × → 二次确认 → team/get 全量去掉该角色后 team/import） ---- */
+    const memberRemover = useAction()
+    const [deleteMember, setDeleteMember] = useState(null as null | { teamId: string; name: string; roleIndex: number })
+
+    const confirmDeleteMember = async (): Promise<void> => {
+      const target = deleteMember
+      if (!target) return
+      await memberRemover.run(async () => {
+        const team = (await rpc('team/get', { teamId: target.teamId })) as Json
+        const allRoles = Array.isArray(team.roles) ? [...(team.roles as Json[])] : []
+        if (allRoles.length <= 1) throw new Error('团队至少保留一名队员，无法删除')
+        allRoles.splice(target.roleIndex, 1)
+        await rpc('team/import', { overwrite: true, config: { ...team, roles: allRoles } })
+        void snapshot.refresh()
+        setDeleteMember(null)
+        return `已删除队员：${target.name}`
       })
     }
 
@@ -1133,16 +1451,18 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const modes = (capabilities?.modes ?? []).map((option: SelectOption) => option.value)
     const thoughts = (capabilities?.thoughtLevels ?? []).map((option: SelectOption) => option.value)
 
-    const roleField = (index: number, label: string, key: keyof RoleDraft, placeholder = '', type = 'text') =>
-      React.createElement(
+    const roleField = (index: number, label: string, key: keyof RoleDraft, placeholder = '', type = 'text', rows = 2) => {
+      const errorKey = `role-${index}-${String(key)}`
+      const error = fieldErrors[errorKey]
+      return React.createElement(
         'label',
-        { className: 'weave-field' },
+        { className: 'weave-field', 'data-invalid': error ? 'true' : undefined },
         React.createElement('span', null, label),
         type === 'textarea'
           ? React.createElement('textarea', {
               value: roles[index]?.[key] ?? '',
               onChange: (event: { target: { value: string } }) => updateRole(index, key, event.target.value),
-              rows: 2,
+              rows,
             })
           : React.createElement('input', {
               type,
@@ -1150,7 +1470,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               placeholder,
               onChange: (event: { target: { value: string } }) => updateRole(index, key, event.target.value),
             }),
+        error ? React.createElement('span', { className: 'weave-field-error' }, error) : null,
       )
+    }
 
     const roleSelect = (index: number, label: string, key: keyof RoleDraft, options: string[], emptyLabel = '默认') =>
       React.createElement(
@@ -1306,8 +1628,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
     // Esc 关闭最上层浮层（优先级：删除确认 > 设默认确认 > 编辑器 > 抽屉）。
     useEffect(() => {
-      if (!deleteTarget && !confirmDefaultTarget && detailTeamId === null && editorMode === null) return
+      if (!deleteTarget && !confirmDefaultTarget && detailTeamId === null && editorMode === null && !confirmDiscard) return
       const handler = (): void => {
+        if (confirmDiscard) {
+          setConfirmDiscard(false)
+          return
+        }
         if (deleteTarget) {
           setDeleteTarget(null)
           return
@@ -1320,11 +1646,11 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           setDetailTeamId(null)
           return
         }
-        setEditorMode(null)
+        closeEditor()
       }
       window.addEventListener('keydown', handler as never)
       return () => window.removeEventListener('keydown', handler as never)
-    }, [deleteTarget, confirmDefaultTarget, detailTeamId, editorMode])
+    }, [deleteTarget, confirmDefaultTarget, detailTeamId, editorMode, confirmDiscard])
 
     const editorBusy = creator.busy || loader.busy
     const otherDefaultRow = teams.find(
@@ -1332,15 +1658,25 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
 
     /** 高级配置数值/文本输入（type=number；宽松解析在提交时统一兜底）。 */
+    const ADV_ERROR_KEYS: Record<string, string> = {
+      knowledgeMaxEntries: 'advancedKnowledgeMaxEntries',
+      knowledgePerEntry: 'advancedKnowledgePerEntry',
+      knowledgeTotalChars: 'advancedKnowledgeTotalChars',
+      feedbackTimeoutSeconds: 'advancedFeedbackTimeoutSeconds',
+      maxRevisions: 'advancedMaxRevisions',
+      reopenWindowSeconds: 'advancedReopenWindowSeconds',
+    }
     const advNumField = (
       label: string,
       key: keyof AdvancedDraft,
       value: string,
       hint: string,
-    ): React.ReactElement =>
-      React.createElement(
+    ): React.ReactElement => {
+      const errorKey = ADV_ERROR_KEYS[String(key)] ?? ''
+      const error = errorKey !== '' ? fieldErrors[errorKey] : undefined
+      return React.createElement(
         'label',
-        { className: 'weave-field', key },
+        { className: 'weave-field', key, 'data-invalid': error ? 'true' : undefined },
         React.createElement('span', null, label),
         React.createElement('input', {
           type: 'number',
@@ -1348,45 +1684,51 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           onChange: (event: { target: { value: string } }) => setAdvancedField(key, event.target.value),
         }),
         React.createElement('span', { className: 'weave-adv-note' }, hint),
+        error ? React.createElement('span', { className: 'weave-field-error' }, error) : null,
       )
+    }
 
     /** 卡片/抽屉共用的角色只读块（紧凑卡片 + 可折叠人格）。 */
+    /** 详情抽屉的队员卡片：点击载入编辑器并只展开该成员（其余折叠）。 */
     const roleDetailBlocks = (teamIdForKeys: string, rows?: Json[]): Array<React.ReactElement> =>
       Array.isArray(rows) && rows.length > 0
         ? rows.map((role: Json, roleIndex: number) => {
-            const rid = `${teamIdForKeys}-role-${roleIndex}`
-            const expanded = expandedRoles.has(rid)
-            const toggle = () => {
-              setExpandedRoles((prev: Set<string>) => {
-                const next = new Set(prev)
-                if (next.has(rid)) next.delete(rid)
-                else next.add(rid)
-                return next
-              })
-            }
+            const roleId = String(role.id ?? '') || `role-${roleIndex + 1}`
+            const model = String(role.model ?? '')
+            const stages = Array.isArray(role.stages) ? (role.stages as string[]).join(', ') : ''
             return React.createElement(
               'div',
-              { className: 'weave-detail-role weave-detail-role-compact', key: rid },
+              {
+                className: 'weave-member',
+                key: `${teamIdForKeys}-member-${roleIndex}`,
+                'data-testid': `team-member-card-${roleId}`,
+                'data-clickable': 'true',
+                title: '点击修改该成员',
+                style: { position: 'relative', paddingRight: 26 },
+                onClick: () => void openMemberEditor(teamIdForKeys, roleIndex),
+              },
+              React.createElement('button', {
+                key: 'member-delete-x',
+                className: 'weave-close',
+                type: 'button',
+                title: '删除该队员',
+                style: { position: 'absolute', top: 2, right: 2, width: 22, height: 22, fontSize: 14 },
+                onClick: (event: { stopPropagation(): void }) => {
+                  event.stopPropagation()
+                  setDeleteMember({ teamId: teamIdForKeys, name: String(role.name ?? roleId), roleIndex })
+                },
+              }, '×'),
+              React.createElement('b', null, String(role.name ?? roleId)),
               React.createElement(
-                'div',
-                { onClick: toggle, style: { cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
-                React.createElement('b', null, String(role.name ?? role.id ?? '角色')),
-                React.createElement('span', { className: 'weave-pill weave-pill-idle', style: { fontSize: '11px', padding: '1px 6px' } }, executorLabel(String(role.executor ?? ''))),
-                React.createElement('span', { className: 'weave-muted', style: { fontSize: '11px' } }, String(role.model ?? '')),
-                React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: '#999' } }, expanded ? '▲' : `▼ ${String(role.personality ?? '').length}字`),
+                'span',
+                { className: 'weave-muted', style: { fontSize: '11px' } },
+                model === '' ? executorLabel(String(role.executor ?? '')) : `${executorLabel(String(role.executor ?? ''))} · ${model}`,
               ),
-              expanded
-                ? React.createElement(
-                    'div',
-                    { style: { padding: '8px 0 4px 12px', borderLeft: '2px solid #e0e0e0', marginTop: '4px' } },
-                    React.createElement(
-                      'span',
-                      { className: 'weave-muted', style: { fontSize: '12px' } },
-                      `模式：${String(role.mode ?? '继承')} · 阶段：${Array.isArray(role.stages) ? (role.stages as string[]).join(', ') : ''} · 并发 ${String(role.max_concurrent_tasks ?? '1')}`,
-                    ),
-                    role.personality ? React.createElement('p', { className: 'weave-detail-personality', style: { marginTop: '4px', fontSize: '12px', color: '#666' } }, String(role.personality)) : null,
-                  )
-                : null,
+              React.createElement(
+                'span',
+                { className: 'weave-muted', style: { fontSize: '11px' } },
+                `阶段：${stages === '' ? '默认' : stages} · 点击修改`,
+              ),
             )
           })
         : [React.createElement('span', { key: 'no-roles', className: 'weave-muted' }, '该团队暂无角色')]
@@ -1437,7 +1779,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ? React.createElement('div', { className: 'weave-muted' }, '正在加载团队...')
         : React.createElement(
             'div',
-            { className: 'weave-list' },
+            { className: 'weave-grid' },
             ...(teams.length
               ? teams.map((team: TeamSummaryRow) => {
                   const id = String(team.team_id ?? '')
@@ -1473,20 +1815,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                           className: 'weave-button weave-button-secondary weave-button-small',
                           type: 'button',
                           'data-testid': `team-detail-${id}`,
-                          onClick: () => setDetailTeamId(detailTeamId === id ? null : id),
+                          disabled: loader.busy,
+                          onClick: () => setDetailTeamId(id),
                         },
                         '详情',
-                      ),
-                      React.createElement(
-                        'button',
-                        {
-                          className: 'weave-button weave-button-secondary weave-button-small',
-                          type: 'button',
-                          'data-testid': `team-edit-${id}`,
-                          disabled: loader.busy,
-                          onClick: () => void loadTeam(id),
-                        },
-                        '编辑',
                       ),
                       team.default === true
                         ? React.createElement(
@@ -1539,15 +1871,15 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ? React.createElement(
             'div',
             {
-              className: 'weave-drawer-wrap',
+              className: 'weave-overlay',
               'data-testid': `team-drawer-${String(detailRows.team_id ?? '')}`,
               onClick: (event: { target: unknown; currentTarget: unknown }) => {
                 if (event.target === event.currentTarget) setDetailTeamId(null)
               },
             },
             React.createElement(
-              'aside',
-              { className: 'weave-drawer' },
+              'div',
+              { className: 'weave-dialog weave-dialog-wide' },
               React.createElement(
                 'div',
                 { className: 'weave-list-head' },
@@ -1565,10 +1897,30 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 { className: 'weave-muted' },
                 `ID：${String(detailRows.team_id ?? '')}${detailRows.default === true ? ' · 未绑定的会话自动启用本团队' : ''}`,
               ),
-              ...roleDetailBlocks(String(detailRows.team_id ?? ''), detailRows.roles),
+              React.createElement(
+                'span',
+                { className: 'weave-adv-note' },
+                '每名成员同一时间只执行一个任务；点击成员卡片可修改其配置。',
+              ),
+              React.createElement(
+                'div',
+                { className: 'weave-members', 'data-testid': 'team-member-cards' },
+                ...roleDetailBlocks(String(detailRows.team_id ?? ''), detailRows.roles),
+              ),
               React.createElement(
                 'div',
                 { className: 'weave-drawer-foot' },
+                React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-secondary',
+                    type: 'button',
+                    'data-testid': `team-add-member-${String(detailRows.team_id ?? '')}`,
+                    disabled: loader.busy,
+                    onClick: () => void openAddMember(String(detailRows.team_id ?? '')),
+                  },
+                  '＋ 添加队员',
+                ),
                 React.createElement(
                   'button',
                   {
@@ -1591,16 +1943,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       '设为默认',
                     )
                   : null,
-                React.createElement(
-                  'button',
-                  {
-                    className: 'weave-button weave-button-danger',
-                    type: 'button',
-                    disabled: remover.busy,
-                    onClick: () => setDeleteTarget({ id: String(detailRows.team_id ?? ''), name: String(detailRows.name ?? '') }),
-                  },
-                  '删除',
-                ),
+
                 React.createElement(
                   'button',
                   { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => setDetailTeamId(null) },
@@ -1617,10 +1960,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             'form',
             {
               className: 'weave-overlay',
-              style: { alignItems: 'flex-start', overflowY: 'auto', padding: '24px 0' },
+              style: { justifyContent: 'center', alignItems: 'center', overflowY: 'auto', padding: '16px' },
               onSubmit: (event: { preventDefault(): void }) => void submit(event),
               onClick: (event: { target: unknown; currentTarget: unknown }) => {
-                if (event.target === event.currentTarget) setEditorMode(null)
+                if (event.target === event.currentTarget) closeEditor()
               },
             },
             React.createElement(
@@ -1634,16 +1977,22 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               React.createElement(
                 'b',
                 { className: 'weave-dialog-title' },
-                editorMode === 'edit' ? `正在编辑：${editingTeamId}` : '新建团队',
+                memberFocus !== null
+                  ? memberFocus === -1
+                    ? '添加队员'
+                    : `编辑队员：${roles[memberFocus]?.name?.trim() || roles[memberFocus]?.id?.trim() || '队员'}`
+                  : editorMode === 'edit'
+                    ? `正在编辑：${editingTeamId}`
+                    : '新建团队',
               ),
               creator.ok === false ? Note({ text: creator.note, kind: 'error' }) : null,
               loader.ok === false ? Note({ text: loader.note, kind: 'error' }) : null,
               React.createElement(
                 'div',
-                { className: 'weave-role-grid' },
+                { className: 'weave-role-grid', style: memberFocus !== null ? { display: 'none' } : undefined },
                 React.createElement(
                   'label',
-                  { className: 'weave-field' },
+                  { className: 'weave-field', 'data-invalid': fieldErrors.teamId ? 'true' : undefined },
                   React.createElement('span', null, '团队 ID'),
                   React.createElement('input', {
                     'data-testid': 'team-id-input',
@@ -1651,7 +2000,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     placeholder: 'my-team',
                     disabled: editorMode === 'edit',
                     title: editorMode === 'edit' ? '团队 ID 创建后不可变' : '小写字母、数字与 . _ -',
-                    onChange: (event: { target: { value: string } }) => setTeamId(event.target.value),
+                    onChange: (event: { target: { value: string } }) => {
+                      setTeamId(event.target.value)
+                      clearFieldError('teamId')
+                    },
                   }),
                   editorMode === 'create'
                     ? React.createElement(
@@ -1660,27 +2012,36 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                         `保存为：${slugifyTeamId(teamId) || slugifyTeamId(name) || 'team'}`,
                       )
                     : null,
+                  fieldErrors.teamId
+                    ? React.createElement('span', { className: 'weave-field-error' }, fieldErrors.teamId)
+                    : null,
                 ),
                 React.createElement(
                   'label',
-                  { className: 'weave-field' },
+                  { className: 'weave-field', 'data-invalid': fieldErrors.name ? 'true' : undefined },
                   React.createElement('span', null, '名称'),
                   React.createElement('input', {
                     'data-testid': 'team-name-input',
                     value: name,
                     placeholder: '我的团队',
-                    onChange: (event: { target: { value: string } }) => setName(event.target.value),
+                    onChange: (event: { target: { value: string } }) => {
+                      setName(event.target.value)
+                      clearFieldError('name')
+                    },
                     onBlur: () => {
                       if (editorMode === 'create' && teamId.trim() === '' && name.trim() !== '') {
                         setTeamId(slugifyTeamId(name))
                       }
                     },
                   }),
+                  fieldErrors.name
+                    ? React.createElement('span', { className: 'weave-field-error' }, fieldErrors.name)
+                    : null,
                 ),
               ),
               React.createElement(
                 'label',
-                { className: 'weave-checkrow' },
+                { className: 'weave-checkrow', style: memberFocus !== null ? { display: 'none' } : undefined },
                 React.createElement('input', {
                   type: 'checkbox',
                   'data-testid': 'form-default-toggle',
@@ -1695,10 +2056,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     { className: 'weave-field-error' },
                     `将取代当前默认「${String(otherDefaultRow.name ?? otherDefaultRow.team_id ?? '')}」，保存后会取消其默认标记`,
                   )
-                : React.createElement('span', { className: 'weave-adv-note' }, defaultFlag ? '该团队将成为全局唯一默认。' : ''),
+                : memberFocus === null ? React.createElement('span', { className: 'weave-adv-note' }, defaultFlag ? '该团队将成为全局唯一默认。' : '') : null,
               React.createElement(
                 'div',
-                { className: 'weave-list-head' },
+                { className: 'weave-list-head', style: memberFocus !== null ? { display: 'none' } : undefined },
                 React.createElement('b', null, `角色（${roles.length}）`),
                 React.createElement(
                   'button',
@@ -1712,6 +2073,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 ),
               ),
               ...roles.map((_draft: RoleDraft, index: number) => {
+                if (memberFocus !== null && index !== memberFocus && !(memberFocus === -1 && index === roles.length - 1)) return null
                 const expanded = roleOpen[index] !== false
                 const summary = `${roles[index]?.name?.trim() || roles[index]?.id?.trim() || `角色 ${index + 1}`}（${executorLabel(roles[index]?.executor)}·模型 ${roles[index]?.model || '继承默认'}）`
                 return React.createElement(
@@ -1737,7 +2099,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                           {
                             className: 'weave-button weave-button-secondary weave-button-small',
                             type: 'button',
-                            onClick: () => removeRole(index),
+                            onClick: () => {
+                              removeRole(index)
+                              if (memberFocus !== null) {
+                                setMemberFocus(null)
+                                setEditorMode(null)
+                              }
+                            },
                           },
                           '删除角色',
                         )
@@ -1775,7 +2143,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                             ),
                           ),
                           roleField(index, '职责标签（逗号分隔，可选）', 'stages', DEFAULT_STAGES),
-                          roleField(index, '最大并发任务', 'maxConcurrent', '1', 'number'),
+                          roleField(index, '派发优先级', 'priority', '10'),
+                          roleField(index, '擅长方向（逗号分隔）', 'strengths', 'implementation, refactor'),
                         ),
                         roles[index]?.executor === 'zcode'
                           ? React.createElement(
@@ -1810,7 +2179,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                               ...roleAdvancedFields(index),
                               ...roleFallbackLinkedFields(index),
                             ),
-                        React.createElement('div', { style: { marginTop: 10 } }, roleField(index, '角色提示词', 'personality', '', 'textarea')),
+                        React.createElement('div', { style: { marginTop: 10 } }, roleField(index, '角色提示词', 'personality', '', 'textarea', 9)),
                       )
                     : null,
                 )
@@ -1818,7 +2187,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               /* ---- 高级配置（折叠区；默认值 = 原硬编码；编辑模式回显 yaml 实值） ---- */
               React.createElement(
                 'div',
-                { className: 'weave-collapse' },
+                { className: 'weave-collapse', style: memberFocus !== null ? { display: 'none' } : undefined },
                 React.createElement(
                   'button',
                   { className: 'weave-collapse-head', type: 'button', onClick: () => setAdvancedOpen(!advancedOpen) },
@@ -1922,7 +2291,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     className: 'weave-button weave-button-secondary',
                     type: 'button',
                     disabled: creator.busy,
-                    onClick: () => setEditorMode(null),
+                    onClick: closeEditor,
                   },
                   '取消',
                 ),
@@ -1937,6 +2306,109 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   editorBusy
                     ? '保存中'
                     : `${editorMode === 'edit' ? '保存修改' : '创建团队'}（包含 ${roles.length} 个角色）`,
+                ),
+              ),
+            ),
+          )
+        : null,
+
+      /* ---- 编辑弃改确认 ---- */
+      confirmDiscard
+        ? React.createElement(
+            'div',
+            {
+              className: 'weave-overlay',
+              'data-testid': 'confirm-discard-team',
+              onClick: (event: { target: unknown; currentTarget: unknown }) => {
+                if (event.target === event.currentTarget) setConfirmDiscard(false)
+              },
+            },
+            React.createElement(
+              'div',
+              { className: 'weave-dialog', role: 'dialog', 'aria-modal': 'true' },
+              React.createElement('b', { className: 'weave-dialog-title' }, '放弃修改？'),
+              React.createElement(
+                'p',
+                { style: { margin: 0, fontSize: 13, lineHeight: '20px' } },
+                '未保存的更改将丢失。',
+              ),
+              React.createElement(
+                'div',
+                { className: 'weave-dialog-actions' },
+                React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-secondary',
+                    type: 'button',
+                    'data-testid': 'confirm-discard-cancel',
+                    autoFocus: true,
+                    onClick: () => setConfirmDiscard(false),
+                  },
+                  '继续编辑',
+                ),
+                React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-danger',
+                    type: 'button',
+                    'data-testid': 'confirm-discard-confirm',
+                    onClick: () => {
+                      setConfirmDiscard(false)
+                      setFieldErrors({})
+                      setEditorMode(null)
+                    },
+                  },
+                  '放弃修改',
+                ),
+              ),
+            ),
+          )
+        : null,
+
+      /* ---- 删除队员二次确认 ---- */
+      deleteMember
+        ? React.createElement(
+            'div',
+            {
+              className: 'weave-overlay',
+              'data-testid': 'confirm-delete-member',
+              onClick: (event: { target: unknown; currentTarget: unknown }) => {
+                if (event.target === event.currentTarget) setDeleteMember(null)
+              },
+            },
+            React.createElement(
+              'div',
+              { className: 'weave-dialog', role: 'dialog', 'aria-modal': 'true' },
+              React.createElement('b', { className: 'weave-dialog-title' }, '删除队员'),
+              React.createElement(
+                'p',
+                { style: { margin: 0, fontSize: 13, lineHeight: '20px' } },
+                `即将从团队「${deleteMember.teamId}」移除队员「${deleteMember.name}」，其配置将从团队配置中删除。`,
+              ),
+              React.createElement(
+                'div',
+                { className: 'weave-dialog-actions' },
+                React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-secondary',
+                    type: 'button',
+                    'data-testid': 'confirm-delete-member-cancel',
+                    autoFocus: true,
+                    disabled: memberRemover.busy,
+                    onClick: () => setDeleteMember(null),
+                  },
+                  '取消',
+                ),
+                React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-danger',
+                    type: 'button',
+                    disabled: memberRemover.busy,
+                    onClick: () => void confirmDeleteMember(),
+                  },
+                  '确认删除',
                 ),
               ),
             ),
@@ -2117,7 +2589,11 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   function DagGraph({ dag, selectedId, onSelect }: DagGraphProps) {
     if (!dag || !Array.isArray(dag.tasks)) return null
     const tasks = dag.tasks ?? []
-    const edges = dag.edges ?? []
+    const edges = (dag.edges ?? []).length > 0
+      ? dag.edges ?? []
+      : tasks.flatMap((task: TaskRow) =>
+          (task.dependencies ?? []).map((dep: string) => ({ from: dep, to: String(task.id ?? '') })),
+        )
     const levels = computeDagLevels(tasks, edges)
     const byLevel = new Map<number, TaskRow[]>()
     for (const task of tasks) {
@@ -2193,7 +2669,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               borderLeft: '4px solid ' + (DAG_STATUS_COLORS[String(node.task.status ?? '')] ?? '#8c8c8c'),
             },
           },
-          React.createElement('b', null, node.id),
+          React.createElement('b', null, shortTaskId(node.id)),
           React.createElement('span', { className: 'weave-muted', 'data-status': String(node.task.status ?? ''), title: String(node.task.status ?? '') }, labelOf(TASK_STATUS_LABELS, node.task.status)),
           React.createElement('span', { className: 'weave-muted' }, String(node.task.assigned_agent ?? '未分配')),
         ),
@@ -2425,6 +2901,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [layer, setLayer] = useState('')
     const [reasonFor, setReasonFor] = useState('')
     const [reasonDraft, setReasonDraft] = useState('')
+    const [rejectTarget, setRejectTarget] = useState(null as null | string)
     const [selectedNodeId, setSelectedNodeId] = useState('')
     const [copiedPath, setCopiedPath] = useState(false)
     const [graphStatus, setGraphStatus] = useState('')
@@ -2460,8 +2937,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         return `已通过：${id}`
       })
     }
-    const reject = async (id: string) => {
-      if (!askConfirm(`确认驳回知识条目 ${id}？其状态将置为 deprecated。`)) return
+    const reject = (id: string) => {
+      setRejectTarget(id)
+    }
+    const confirmReject = async () => {
+      const id = rejectTarget
+      if (!id) return
+      setRejectTarget(null)
       await rejecter.run(async () => {
         const payload: Json = { id }
         if (reasonDraft !== '') payload.reason = reasonDraft
@@ -2675,6 +3157,20 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               title: '没有知识条目',
               reason: list.loading ? '正在加载...' : `当前过滤条件（status=${status}${layer !== '' ? `，layer=${layer}` : ''}）下没有条目。`,
             }),
+      rejectTarget
+        ? React.createElement(ConfirmDialog, {
+            open: true,
+            title: '确认驳回知识条目？',
+            body: `确认驳回知识条目 ${rejectTarget}？其状态将置为 deprecated。`,
+            confirmText: '确认驳回',
+            cancelText: '取消',
+            danger: true,
+            busy: rejecter.busy,
+            testId: 'knowledge-reject-dialog',
+            onConfirm: () => void confirmReject(),
+            onCancel: () => setRejectTarget(null),
+          } as never)
+        : null,
     )
   }
 
@@ -3209,8 +3705,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ============================ 会话视图面板（会话即团队） ============================ */
 
-  const SESSION_REFRESH_MS = 5000
-
   /* ---- E 块：成员卡「查看输出」事件流 ---- */
   /** 后端 executor/run-events 就绪后置 false 直接联调；true 时用确定性 mock 数据开发。 */
   const RUN_EVENTS_MOCK = false
@@ -3364,23 +3858,41 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
 
   /** 成员卡内联展开区：最近事件（限条数）+ 打开完整历史入口。 */
-  function InlineRunEventsPane(props: { taskId: string; onOpenDrawer: () => void }): React.ReactElement | null {
+  function InlineRunEventsPane(props: { taskId: string; onOpenDrawer: () => void; showMeta?: boolean; sessionLabel?: string; onOpenSubagent?: (childSessionId: string) => void; autoOpenSubagent?: boolean }): React.ReactElement | null {
     const { rows, meta, loading } = useRunEvents(props.taskId, RUN_EVENTS_INLINE_CAP)
+    const autoOpenedSubagent = useRef(false)
+    useEffect(() => {
+      if (props.autoOpenSubagent && props.onOpenSubagent && meta.sessionId && !autoOpenedSubagent.current) {
+        autoOpenedSubagent.current = true
+        props.onOpenSubagent(meta.sessionId)
+      }
+    }, [props.autoOpenSubagent, props.onOpenSubagent, meta.sessionId])
     if (loading) return React.createElement('span', { className: 'weave-muted' }, '连接事件流...')
     if (meta.unavailable) return eventStreamEmptyNote(true)
     return React.createElement(
       'div',
       null,
       React.createElement('div', { className: 'weave-eventstream', role: 'log' }, rows.map(eventLineOf)),
-      React.createElement(
-        'div',
-        { className: 'weave-member-actions' },
-        React.createElement(
-          'button',
-          { className: 'weave-button weave-button-secondary weave-button-small', type: 'button', onClick: props.onOpenDrawer },
-          '打开完整历史',
-        ),
-      ),
+      props.showMeta
+        ? React.createElement(
+            'div',
+            { className: 'weave-event-meta', style: { marginTop: 4 } },
+            React.createElement('span', null, `${props.sessionLabel ?? 'sessionId'}：${meta.sessionId ?? '—'}`),
+            React.createElement('span', null, `模型 IO：${meta.modelIoPath ?? '—'}`),
+            props.onOpenSubagent && meta.sessionId
+              ? React.createElement(
+                  'button',
+                  {
+                    className: 'weave-button weave-button-secondary weave-button-small',
+                    type: 'button',
+                    'data-testid': 'session-open-subagent',
+                    onClick: () => props.onOpenSubagent?.(meta.sessionId ?? ''),
+                  },
+                  '打开子代理会话',
+                )
+              : null,
+          )
+        : null,
     )
   }
 
@@ -3425,12 +3937,87 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
 
+  /** 团队消息面板：队长 → 当前成员的稳定双向通信入口。 */
+  function TeamMessagePanel(props: { teamId: string; sessionId: string; roleId: string; roleName: string }): React.ReactElement {
+    const [draft, setDraft] = useState('')
+    const messages = useResource<{ messages?: Array<{ id: number; from_role: string; to_role: string; content: string; created_at: string }> }>(
+      () =>
+        rpc('team/message/list', { teamId: props.teamId, toRole: props.roleId, limit: 50 }) as Promise<{
+          messages?: Array<{ id: number; from_role: string; to_role: string; content: string; created_at: string }>
+        }>,
+      [props.teamId, props.roleId],
+    )
+    const sender = useAction()
+    const send = async (): Promise<void> => {
+      const content = draft.trim()
+      if (content === '') return
+      await sender.run(async () => {
+        await rpc('team/message/send', {
+          teamId: props.teamId,
+          sessionId: props.sessionId,
+          fromRole: 'captain',
+          toRole: props.roleId,
+          content,
+        })
+        setDraft('')
+        void messages.refresh()
+        return `已发送给 ${props.roleName}`
+      })
+    }
+    const rows = messages.data?.messages ?? []
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': `team-messages-${props.roleId}`, style: { marginTop: 8 } },
+      React.createElement('b', { className: 'weave-subh' }, `与 ${props.roleName} 的消息`),
+      messages.loading
+        ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
+        : rows.length === 0
+          ? React.createElement('span', { className: 'weave-muted' }, '暂无消息。')
+          : React.createElement(
+              'div',
+              { className: 'weave-eventstream', role: 'log' },
+              ...rows.map((message: { id: number; from_role: string; to_role: string; content: string; created_at: string }) =>
+                React.createElement(
+                  'div',
+                  { className: 'weave-eventline', key: message.id },
+                  React.createElement('time', null, fmtTime(message.created_at)),
+                  React.createElement('b', null, message.from_role === 'captain' ? '队长' : message.from_role),
+                  React.createElement('span', null, message.content),
+                ),
+              ),
+            ),
+      React.createElement(
+        'div',
+        { className: 'weave-actions', style: { marginTop: 4 } },
+        React.createElement('input', {
+          className: 'weave-control',
+          style: { minWidth: 180, flex: 1 },
+          value: draft,
+          placeholder: `给 ${props.roleName} 发消息...`,
+          onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
+        }),
+        React.createElement(
+          'button',
+          { className: 'weave-button weave-button-small', type: 'button', disabled: sender.busy || draft.trim() === '', onClick: () => void send() },
+          sender.busy ? '发送中' : '发送',
+        ),
+      ),
+      sender.note ? Note({ text: sender.note }) : null,
+    )
+  }
+
   /** 成员状态徽标色（与节点边框色系一致）。 */
   const memberToneOf = (status: string): string => {
     if (status === 'running') return 'run'
-    if (status === 'completed' || status === 'closed') return 'good'
-    if (status === 'failed' || status === 'banned' || status === 'cancelled' || status === 'cooldown') return 'bad'
+    if (status === 'interrupted' || status === 'idle_timeout') return 'bad'
     return 'idle'
+  }
+
+  const memberStatusLabel = (status: string): string => {
+    const lower = String(status ?? '').toLowerCase()
+    if (lower === 'running') return '执行中'
+    if (lower === 'interrupted' || lower === 'idle_timeout') return '中断'
+    return '空闲'
   }
 
   /**
@@ -3459,12 +4046,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const list = useResource<{ total?: number; tasks?: TaskRow[] } | undefined>(
       async () => {
         if (sid === '' || !statusKnown || !teamBound) return undefined
-        const boundTeamId = String(status.data?.team?.team_id ?? '')
-        const primary = (await rpc('task/list', { sessionId: sid, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
-        if ((primary.total ?? 0) > 0 || boundTeamId === '') return primary
-        // P4 兜底：sessionId 查无任务时按 teamId 回退（DAG 归属可能挂在宿主内部会话 id 下）。
-        const fallback = (await rpc('task/list', { teamId: boundTeamId, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
-        return (fallback.total ?? 0) > 0 ? fallback : primary
+        // 只取当前会话的任务，避免把其他会话的同团队任务误显示到本会话。
+        return (await rpc('task/list', { sessionId: sid, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
       },
       [sid, statusKnown, teamBound],
     )
@@ -3495,22 +4078,30 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }
 
     const actor = useAction()
-    const runTaskAction = async (taskId: string, action: string, needsConfirm: boolean, label: string) => {
-      let feedback: string | undefined
-      if (action === 'revise') {
-        const raw = window.prompt(`请输入对任务 ${taskId} 的返工反馈：`)
-        const trimmed = (raw ?? '').trim()
-        if (trimmed === '') return
-        feedback = trimmed
-      }
-      if (needsConfirm && !askConfirm(`确认对任务 ${taskId} 执行「${label}」？`)) return
+    const [confirmTask, setConfirmTask] = useState(null as null | { taskId: string; action: string; label: string })
+    const [reviseTask, setReviseTask] = useState(null as null | { taskId: string })
+
+    const performTaskAction = async (taskId: string, action: string, feedback?: string) => {
       await actor.run(async () => {
         await rpc('task/action', { action, taskId, ...(feedback !== undefined ? { feedback } : {}) })
         void list.refresh()
         void detail.refresh()
         void status.refresh()
+        const label = TASK_ACTIONS_BY_STATUS[String(selectedNode?.status ?? '')]?.find((entry) => entry.action === action)?.label ?? action
         return `已${label}：${taskId}`
       })
+    }
+
+    const runTaskAction = async (taskId: string, action: string, needsConfirm: boolean, label: string) => {
+      if (action === 'revise') {
+        setReviseTask({ taskId })
+        return
+      }
+      if (needsConfirm) {
+        setConfirmTask({ taskId, action, label })
+        return
+      }
+      await performTaskAction(taskId, action)
     }
 
     const refreshAll = useCallback(() => {
@@ -3519,23 +4110,79 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       if (latestDagId !== '') void detail.refresh()
     }, [status.refresh, list.refresh, detail.refresh, latestDagId])
 
-    useEffect(() => {
-      if (sid === '') return
-      const timer = setInterval(refreshAll, SESSION_REFRESH_MS)
-      return () => clearInterval(timer)
-    }, [refreshAll, sid])
-
+    // 不做定时轮询：状态变更由通信/手动刷新驱动（Phase 3 消息机制已具备）。
     const members = status.data?.members ?? []
-    /* ---- E 块：内联输出流展开态与完整历史抽屉（taskId 缺席时入口禁用） ---- */
-    const [openStreams, setOpenStreams] = useState({} as Record<string, boolean>)
+    /* ---- 底部 Tab 组：固定「任务依赖图」+ 队员输出 Tab（可关闭） ---- */
+    const [outputTabs, setOutputTabs] = useState([] as Array<{ roleId: string; name: string; taskId: string; executor?: string }>)
+    const [activeTab, setActiveTab] = useState('dag' as string)
+    const [membersOpen, setMembersOpen] = useState(true)
+    const [tabsOpen, setTabsOpen] = useState(true)
     const [streamDrawer, setStreamDrawer] = useState(null as null | { taskId: string; name: string })
-    const toggleStream = (roleId: string): void =>
-      setOpenStreams((current: Record<string, boolean>) => ({ ...current, [roleId]: !current[roleId] }))
+    const isDshExecutor = (executor?: string): boolean =>
+      executor === 'spawn' || executor === 'fork' || executor === 'dsh_subagent'
+    const openOutputTab = (roleId: string, name: string, taskId: string, executor?: string): void => {
+      setOutputTabs((current: Array<{ roleId: string; name: string; taskId: string; executor?: string }>) =>
+        current.some((tab) => tab.roleId === roleId) ? current : [...current, { roleId, name, taskId, executor }],
+      )
+      setActiveTab(`member-${roleId}`)
+    }
+    const closeOutputTab = (roleId: string): void => {
+      setOutputTabs((current: Array<{ roleId: string; name: string; taskId: string }>) => current.filter((tab) => tab.roleId !== roleId))
+      setActiveTab((current: string) => (current === `member-${roleId}` ? 'dag' : current))
+    }
     const selectedFromDag = String((dag?.tasks ?? [])[0]?.id ?? '')
     const [selectedId0, setSelectedId0] = useState('')
     const selectedId = selectedId0 !== '' ? selectedId0 : selectedFromDag
     const selectedNode = (dag?.tasks ?? []).find((task: TaskRow) => String(task.id ?? '') === selectedId)
     const nodeActions = TASK_ACTIONS_BY_STATUS[String(selectedNode?.status ?? '')] ?? []
+
+    /* ---- AgentTeams 风格运行视图派生：进度分段、成员已接任务 ---- */
+    const sessionTasks = ((dag?.tasks ?? list.data?.tasks ?? []) as TaskRow[])
+    const hasActiveTasks = sessionTasks.some((task: TaskRow) =>
+      !['COMPLETED', 'CLOSED', 'FAILED', 'CANCELLED', 'SKIPPED', 'BANNED', 'LOOP_TERMINATED', 'INTERRUPTED', 'COOLDOWN'].includes(String(task.status ?? '')),
+    )
+    const sessionTaskStateOf = (status: string | undefined): string => {
+      const s = String(status ?? '')
+      if (s === 'RUNNING' || s === 'REVISION_RUNNING') return 'running'
+      if (s === 'WAITING' || s === 'BLOCKED' || s === 'COOLDOWN') return 'waiting'
+      if (s === 'AWAITING_FEEDBACK') return 'awaiting'
+      if (s === 'COMPLETED' || s === 'CLOSED') return 'completed'
+      return 'failed'
+    }
+    const sessionTaskCounts = (tasks: TaskRow[]): { running: number; waiting: number; awaiting: number; completed: number; failed: number; total: number } => {
+      const counts = { running: 0, waiting: 0, awaiting: 0, completed: 0, failed: 0, total: tasks.length }
+      for (const task of tasks) {
+        const state = sessionTaskStateOf(task.status)
+        if (state === 'running') counts.running += 1
+        else if (state === 'waiting') counts.waiting += 1
+        else if (state === 'awaiting') counts.awaiting += 1
+        else if (state === 'completed') counts.completed += 1
+        else counts.failed += 1
+      }
+      return counts
+    }
+    const memberAssignedTasks = (member: SessionStatusMember): TaskRow[] => {
+      const roleId = String(member.role_id ?? '')
+      const current = String(member.task_id ?? '')
+      const last = String(member.last_task_id ?? '')
+      return sessionTasks.filter((task: TaskRow) =>
+        String(task.assigned_agent ?? '') === roleId ||
+        (current !== '' && String(task.id ?? '') === current) ||
+        (last !== '' && String(task.id ?? '') === last),
+      )
+    }
+    const sessionProgressBar = (tasks: TaskRow[], testId: string): React.ReactElement =>
+      React.createElement(
+        'div',
+        { className: 'weave-progress-segments', 'data-testid': testId },
+        ...tasks.map((task: TaskRow) =>
+          React.createElement('span', {
+            key: String(task.id ?? ''),
+            'data-state': sessionTaskStateOf(task.status),
+            title: `${String(task.id ?? '')} · ${labelOf(TASK_STATUS_LABELS, task.status)}`,
+          }),
+        ),
+      )
 
     if (sid === '') {
       return React.createElement(
@@ -3561,7 +4208,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           {
             className: 'weave-control',
             value: boundTeamId,
-            disabled: binder.busy || teams.length === 0,
+            disabled: binder.busy || teams.length === 0 || hasActiveTasks,
+            title: hasActiveTasks ? '当前团队有进行中任务，不能切换团队' : '选择当前会话使用的团队',
             'data-testid': 'weave-session-team-select',
             onChange: (event: { target: { value: string } }) => void bindTeam(event.target.value),
           },
@@ -3581,10 +4229,44 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
         React.createElement('span', { className: 'weave-muted', style: { marginLeft: 'auto' } }, `会话 ${sid.slice(0, 18)}${sid.length > 18 ? '…' : ''}`),
       ),
+      hasActiveTasks
+        ? React.createElement('span', { className: 'weave-field-error', 'data-testid': 'weave-session-team-locked' }, '当前团队有进行中任务，不能切换团队；请先完成/取消任务。')
+        : null,
       binder.note ? Note({ text: binder.note }) : null,
       binder.ok === false || actor.ok === false ? Note({ text: binder.note || actor.note, kind: 'error' }) : null,
 
-      /* ---- 成员实时状态 ---- */
+      /* ---- AgentTeams 风格：团队运行总览（进度分段 + 状态统计） ---- */
+      status.data?.team
+        ? React.createElement(
+            'div',
+            { className: 'weave-session-runtime', 'data-testid': 'weave-session-runtime' },
+            React.createElement(
+              'div',
+              { className: 'weave-team-stats', 'data-testid': 'weave-session-team-stats' },
+              React.createElement('span', null, React.createElement('b', null, String(members.length)), ' 成员'),
+              React.createElement('span', null, React.createElement('b', null, String(sessionTasks.length)), ' 任务'),
+              React.createElement('span', null, React.createElement('b', null, String(sessionTaskCounts(sessionTasks).completed)), ` / ${String(sessionTasks.length)} 已完成`),
+              React.createElement('span', null, React.createElement('b', null, String(sessionTaskCounts(sessionTasks).running)), ' 执行中'),
+            ),
+            sessionTasks.length > 0
+              ? sessionProgressBar(sessionTasks, 'weave-session-progress')
+              : React.createElement('span', { className: 'weave-muted' }, '暂无任务'),
+          )
+        : null,
+
+      /* ---- 成员区（可折叠） ---- */
+      React.createElement(
+        'div',
+        { className: 'weave-section' },
+        React.createElement(
+          'button',
+          { className: 'weave-section-head', 'data-testid': 'session-members-toggle', onClick: () => setMembersOpen(!membersOpen) },
+          membersOpen ? '▾ 成员' : '▸ 成员',
+        ),
+        membersOpen
+          ? React.createElement(
+              'div',
+              { className: 'weave-section-body' },
       React.createElement(
         'div',
         null,
@@ -3608,17 +4290,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       String((member as Json)['error_type'] ?? '') === 'idle_timeout' ||
                       String((member as Json)['interrupt_reason'] ?? '') === 'idle_timeout'
                     const streamTaskId = String(member.task_id || member.last_task_id || '')
-                    const dotTone = memberToneOf(st)
-                    const line =
-                      st === 'running'
-                        ? `执行中：「${String(member.subject ?? '')}」`
-                        : st === 'idle'
-                          ? (member.last_task_id
-                              ? idleTimeoutHit
-                                ? `空闲 · 上次被空闲超时中断：「${String(member.last_subject ?? '')}」`
-                                : `空闲 · 上次[${labelOf(TASK_STATUS_LABELS, member.last_status)}] ${String(member.last_subject ?? '')}`
-                              : '空闲')
-                          : `[${labelOf(TASK_STATUS_LABELS, (member.last_status ?? '').toUpperCase())}] ${String(member.last_subject ?? '')}`
+                    const assignedTasks = memberAssignedTasks(member)
+                    const interrupted = idleTimeoutHit || st === 'interrupted'
+                    const dotTone = interrupted ? 'bad' : memberToneOf(st)
+                    const statusText = interrupted ? '中断' : memberStatusLabel(st)
                     const cardChildren: Array<React.ReactElement> = [
                       React.createElement(
                         'b',
@@ -3629,47 +4304,52 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                         'span',
                         { className: 'weave-muted', key: 'status' },
                         React.createElement('span', { className: 'weave-dot', 'data-tone': dotTone }),
-                        `${labelOf(TASK_STATUS_LABELS, st.toUpperCase())} · ${line}`,
+                        statusText,
                       ),
                       // 空闲超时细分提示（B0 死亡递送文案；红色警示，区别于普通失败）。
                       idleTimeoutHit
                         ? React.createElement('span', { className: 'weave-field-error', key: 'idle-note' }, '已被空闲超时中断：长时间无模型输出或工具活动，可重试恢复')
                         : null,
-                      React.createElement(
-                        'div',
-                        { className: 'weave-member-actions', key: 'actions' },
-                        React.createElement(
-                          'button',
-                          {
-                            className: 'weave-button weave-button-secondary weave-button-small',
-                            type: 'button',
-                            'data-testid': `member-stream-${roleId}`,
-                            disabled: streamTaskId === '',
-                            title: streamTaskId === '' ? '暂无关联任务' : '查看运行输出',
-                            onClick: () => toggleStream(roleId),
-                          },
-                          openStreams[roleId] ? '收起输出' : '查看输出',
-                        ),
-                      ),
+                      assignedTasks.length > 0
+                        ? React.createElement(
+                            'div',
+                            { className: 'weave-member-assignments', key: 'assignments', 'data-testid': `member-assignments-${roleId}` },
+                            ...assignedTasks.slice(0, 8).map((task: TaskRow) =>
+                              React.createElement(
+                                'span',
+                                {
+                                  className: 'weave-assignment-chip',
+                                  key: String(task.id ?? ''),
+                                  'data-state': sessionTaskStateOf(task.status),
+                                  title: `${String(task.id ?? '')} · ${labelOf(TASK_STATUS_LABELS, task.status)}`,
+                                },
+                                React.createElement('b', null, shortTaskId(task.id)),
+                              ),
+                            ),
+                          )
+                        : null,
                     ]
-                    if (openStreams[roleId] && streamTaskId !== '') {
-                      cardChildren.push(
-                        React.createElement(InlineRunEventsPane, {
-                          taskId: streamTaskId,
-                          key: `stream-${roleId}`,
-                          onOpenDrawer: () => setStreamDrawer({ taskId: streamTaskId, name: String(member.name ?? roleId) }),
-                        }) as unknown as React.ReactElement,
-                      )
-                    }
                     return React.createElement(
                       'div',
-                      { className: 'weave-member', key: roleId, 'data-testid': `member-card-${roleId}` },
+                      {
+                        className: 'weave-member',
+                        key: roleId,
+                        'data-testid': `member-card-${roleId}`,
+                        'data-status': st,
+                        'data-clickable': streamTaskId !== '' ? 'true' : undefined,
+                        onClick: () => {
+                          if (streamTaskId !== '') openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
+                        },
+                      },
                       ...cardChildren,
                     )
                   }),
                 ),
+      )
+            )
+          : null,
       ),
-      /* ---- E 块：完整历史抽屉 ---- */
+      /* ---- 完整历史抽屉 ---- */
       streamDrawer
         ? React.createElement(RunEventsDrawer, {
             taskId: streamDrawer.taskId,
@@ -3678,71 +4358,176 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           } as never)
         : null,
 
-      /* ---- 本会话任务图 ---- */
+      /* ---- 底部 Tab 组（可折叠）：任务依赖图 + 队员输出 ---- */
       React.createElement(
         'div',
-        null,
+        { className: 'weave-section' },
         React.createElement(
-          'div',
-          { className: 'weave-list-head' },
-          React.createElement('b', { className: 'weave-subh' }, '本会话任务图'),
-          latestDagId !== ''
-            ? React.createElement(Pill, { label: String(dag?.dag_id ?? latestDagId), title: '最近活跃任务图' })
-            : null,
+          'button',
+          { className: 'weave-section-head', 'data-testid': 'session-tabs-toggle', onClick: () => setTabsOpen(!tabsOpen) },
+          tabsOpen ? '▾ 任务 / 输出' : '▸ 任务 / 输出',
         ),
-        list.loading || pendingDetail
-          ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
-          : !status.data?.team
-            ? null
-            : latestDagId === ''
-              ? EmptyState({
-                  title: '暂无任务',
-                  reason: '直接在对话中描述目标，队长模型会用 weave_plan_tasks 拆解并派发给团队成员。',
-                })
-              : !dag
-                ? React.createElement('span', { className: 'weave-muted' }, `加载失败：${detail.error || '未知错误'}`)
-                : React.createElement(
-                  React.Fragment,
-                  null,
-                  React.createElement(DagGraph, {
-                    dag: dag as TaskDagDetail,
-                    selectedId,
-                    onSelect: (next: string) => setSelectedId0(next),
-                  }),
-                  selectedNode
-                    ? React.createElement(
-                        'div',
-                        { className: 'weave-graph-detail', 'data-testid': 'weave-session-task-detail' },
-                        React.createElement(
-                          'div',
-                          { className: 'weave-list-head' },
-                          React.createElement('b', null, String(selectedNode.id ?? '')),
-                          React.createElement(Pill, {
-                            label: labelOf(TASK_STATUS_LABELS, selectedNode.status),
-                            tone: toneOf(String(selectedNode.status ?? '')),
-                            title: String(selectedNode.status ?? ''),
+        tabsOpen
+          ? React.createElement(
+              'div',
+              { className: 'weave-section-body' },
+      React.createElement(
+        'div',
+        { className: 'weave-panel-tabs', 'data-testid': 'weave-session-tabs' },
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            className: activeTab === 'dag' ? 'weave-tab weave-tab-active' : 'weave-tab',
+            'data-testid': 'session-tab-dag',
+            onClick: () => setActiveTab('dag'),
+          },
+          '任务依赖图',
+        ),
+        ...outputTabs.map((tab: { roleId: string; name: string; taskId: string; executor?: string }) =>
+          React.createElement(
+            'span',
+            { key: tab.roleId, className: activeTab === `member-${tab.roleId}` ? 'weave-tab weave-tab-active' : 'weave-tab', 'data-testid': `session-tab-${tab.roleId}` },
+            React.createElement(
+              'button',
+              { type: 'button', className: 'weave-tab-label', onClick: () => setActiveTab(`member-${tab.roleId}`) },
+              tab.name,
+            ),
+            React.createElement(
+              'button',
+              { type: 'button', className: 'weave-tab-close', 'data-testid': `session-tab-close-${tab.roleId}`, onClick: () => closeOutputTab(tab.roleId) },
+              '×',
+            ),
+          ),
+        ),
+      ),
+      React.createElement(
+        'div',
+        { className: 'weave-panel-tab-body', 'data-testid': 'weave-session-tab-body' },
+        activeTab === 'dag'
+          ? React.createElement(
+              'div',
+              null,
+              React.createElement(
+                'div',
+                { className: 'weave-list-head' },
+                React.createElement('b', { className: 'weave-subh' }, '任务依赖图'),
+                latestDagId !== ''
+                  ? React.createElement(Pill, { label: String(dag?.dag_id ?? latestDagId), title: '最近活跃任务图' })
+                  : null,
+              ),
+              list.loading || pendingDetail
+                ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
+                : !status.data?.team
+                  ? null
+                  : latestDagId === ''
+                    ? EmptyState({
+                        title: '暂无任务',
+                        reason: '直接在对话中描述目标，队长模型会用 weave_plan_tasks 拆解并派发给团队成员。',
+                      })
+                    : !dag
+                      ? React.createElement('span', { className: 'weave-muted' }, `加载失败：${detail.error || '未知错误'}`)
+                      : React.createElement(
+                          React.Fragment,
+                          null,
+                          React.createElement(DagGraph, {
+                            dag: dag as TaskDagDetail,
+                            selectedId,
+                            onSelect: (next: string) => setSelectedId0(next),
                           }),
-                          ...(nodeActions.map((entry) =>
-                            React.createElement(
-                              'button',
-                              {
-                                key: entry.action,
-                                className: 'weave-button weave-button-secondary weave-button-small',
-                                type: 'button',
-                                disabled: actor.busy,
-                                'data-testid': `session-task-action-${entry.action}-${String(selectedNode.id ?? '')}`,
-                                onClick: () => void runTaskAction(String(selectedNode.id ?? ''), entry.action, entry.confirm === true, entry.label),
-                              },
-                              entry.label,
-                            ),
-                          )),
+                          selectedNode
+                            ? React.createElement(
+                                'div',
+                                { className: 'weave-graph-detail', 'data-testid': 'weave-session-task-detail' },
+                                React.createElement(
+                                  'div',
+                                  { className: 'weave-list-head' },
+                                  React.createElement('b', null, shortTaskId(selectedNode.id)),
+                                  React.createElement(Pill, {
+                                    label: labelOf(TASK_STATUS_LABELS, selectedNode.status),
+                                    tone: toneOf(String(selectedNode.status ?? '')),
+                                    title: String(selectedNode.status ?? ''),
+                                  }),
+                                  ...(nodeActions.map((entry) =>
+                                    React.createElement(
+                                      'button',
+                                      {
+                                        key: entry.action,
+                                        className: 'weave-button weave-button-secondary weave-button-small',
+                                        type: 'button',
+                                        disabled: actor.busy,
+                                        'data-testid': `session-task-action-${entry.action}-${String(selectedNode.id ?? '')}`,
+                                        onClick: () => void runTaskAction(String(selectedNode.id ?? ''), entry.action, entry.confirm === true, entry.label),
+                                      },
+                                      entry.label,
+                                    ),
+                                  )),
+                                ),
+                              )
+                            : null,
                         ),
-                        // description 不在会话面板展示——只在控制台团队页可见
-                      )
-                    : null,
+            )
+          : (() => {
+              const tab = outputTabs.find((item: { roleId: string; name: string; taskId: string; executor?: string }) => `member-${item.roleId}` === activeTab)
+              if (!tab) return React.createElement('span', { className: 'weave-muted' }, '没有打开的输出')
+              return React.createElement(
+                'div',
+                { 'data-testid': `session-output-${tab.roleId}` },
+                React.createElement(
+                  'div',
+                  { className: 'weave-list-head' },
+                  React.createElement('b', null, `${tab.name} 输出`),
+                  React.createElement(Pill, { label: shortTaskId(tab.taskId), title: tab.taskId }),
                 ),
+                React.createElement(InlineRunEventsPane, {
+                  taskId: tab.taskId,
+                  onOpenDrawer: () => setStreamDrawer({ taskId: tab.taskId, name: tab.name }),
+                  showMeta: true,
+                  sessionLabel: isDshExecutor(tab.executor) ? '子代理会话' : 'sessionId',
+                  onOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator
+                    ? (childSessionId: string) => void openSubagentSession(sid, childSessionId)
+                    : undefined,
+                  autoOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator ? true : undefined,
+                } as never),
+              )
+            })(),
+      )
+            )
+          : null,
       ),
       actor.note && actor.ok === true ? Note({ text: actor.note }) : null,
+      confirmTask
+        ? React.createElement(ConfirmDialog, {
+            open: true,
+            title: '确认操作',
+            body: `确认对任务 ${shortTaskId(confirmTask.taskId)} 执行「${confirmTask.label}」？`,
+            confirmText: '确认',
+            cancelText: '取消',
+            danger: confirmTask.action === 'cancel' || confirmTask.action === 'skip',
+            busy: actor.busy,
+            testId: 'session-confirm-action',
+            onConfirm: () => {
+              const target = confirmTask
+              setConfirmTask(null)
+              if (target) void performTaskAction(target.taskId, target.action)
+            },
+            onCancel: () => setConfirmTask(null),
+          } as never)
+        : null,
+      reviseTask
+        ? React.createElement(PromptDialog, {
+            open: true,
+            title: `返工反馈 · ${shortTaskId(reviseTask.taskId)}`,
+            placeholder: '例如：把登录校验改成邮箱验证码',
+            testId: 'session-revise-dialog',
+            onConfirm: (value: string) => {
+              const target = reviseTask
+              setReviseTask(null)
+              if (target) void performTaskAction(target.taskId, 'revise', value)
+            },
+            onCancel: () => setReviseTask(null),
+          } as never)
+        : null,
     )
   }
 
@@ -3790,13 +4575,19 @@ moduleLoader.load({
     const ReactDOM = moduleRequire('react-dom') as { createPortal: (node: any, container: Element) => any }
     let callRpc: RpcCaller | undefined
     const localApply = (ctx: ClientContext): void => {
-      const connection = ctx.get('connection')
+      const connection = ctx.get('connection') as ConnectionHandle
+      let sessions: SessionNavigator | undefined
+      try {
+        sessions = ctx.get('sessions') as SessionNavigator
+      } catch {
+        sessions = undefined
+      }
       callRpc = async (endpoint, payload) => {
         const result = await connection.rpc.call('/dsh-weave', endpoint, payload ?? {})
         if (!result.ok) throw new Error(`${result.error?.code ?? 'rpc-error'}: ${result.error?.message ?? 'RPC failed'}`)
         return result.value
       }
-      const app = createApp(React, ReactDOM.createPortal, callRpc)
+      const app = createApp(React, ReactDOM.createPortal, callRpc, sessions)
       const registered = app.WeaveSidebarAction
 
       ctx.effect(
@@ -3836,7 +4627,7 @@ moduleLoader.load({
 
     const module = { exports: {} as Record<string, unknown> }
     module.exports.apply = localApply
-    module.exports.inject = ['slots', 'connection']
+    module.exports.inject = ['slots', 'connection', 'sessions']
     return module.exports
   },
 })

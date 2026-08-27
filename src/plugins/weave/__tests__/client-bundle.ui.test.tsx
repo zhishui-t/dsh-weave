@@ -81,7 +81,7 @@ describe('dsh-weave Web 客户端产物契约', () => {
       throw new Error(`unexpected client dependency: ${id}`)
     }
     const exported = getCapturedBundle().factory(moduleRequire)
-    expect(exported.inject).toEqual(['slots', 'connection'])
+    expect(exported.inject).toEqual(['slots', 'connection', 'sessions'])
     expect(exported.apply).toBeTypeOf('function')
   })
 })
@@ -483,7 +483,7 @@ describe('t8 会话优先模型与治理化改造', () => {
     const source = await readFile(sourcePath, 'utf8')
     // 源码层面确认：路由与下发通道均已移除
     expect(source).not.toContain("'tasks'")
-    expect(source).not.toContain("'sessions'")
+    expect(source).not.toContain("key: 'sessions'")
     expect(source).not.toContain('task/create')
   })
 
@@ -678,14 +678,14 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
       'task/get': THREE_NODE_DAG,
       'task/action': { task_id: 'T-A', status: 'CANCELLED' },
     })
-    const confirmSpy = vi.fn(() => true)
-    window.confirm = confirmSpy
     render(createElement(panel!, { sessionId: 'sess-ui' }))
 
     await screen.findByTestId('dag-panel')
     // 默认选中第一个节点 T-A（RUNNING）→ 出现「取消」动作
     await waitFor(() => expect(screen.getByTestId('session-task-action-cancel-T-A')).toBeTruthy())
     fireEvent.click(screen.getByTestId('session-task-action-cancel-T-A'))
+    await screen.findByTestId('session-confirm-action')
+    fireEvent.click(screen.getByTestId('session-confirm-action-confirm'))
     await waitFor(() => {
       const acts = fixture.calls.filter((item) => item.endpoint === 'task/action')
       expect(acts.some((item) => (item.payload as Record<string, unknown>).taskId === 'T-A')).toBe(true)

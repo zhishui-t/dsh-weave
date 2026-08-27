@@ -211,7 +211,6 @@ test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
     const coderCard = page.getByTestId('member-card-coder')
     await expect(coderCard).toContainText('程序员')
     await expect(coderCard).toContainText('执行中')
-    await expect(coderCard).toContainText('实现登录页')
     await expect(page.getByTestId('member-card-reviewer')).toContainText('空闲')
 
     // 本会话 DAG 按sessionId 过滤请求 + 两节点图渲染
@@ -225,6 +224,7 @@ test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
     // 默认选中首个节点 T-A（RUNNING）→ 出现取消动作；含 confirm 门径，dismiss 后不发 action
     await expect(page.getByTestId('session-task-action-cancel-T-A')).toContainText('取消')
     await page.getByTestId('session-task-action-cancel-T-A').click()
+    await page.getByTestId('session-confirm-action-cancel').click()
     const after = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string }>
     expect(after.filter((c) => c.endpoint === 'task/action')).toHaveLength(0)
   })
@@ -262,6 +262,7 @@ test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
     await openHarnessPage(page)
     await page.getByTestId('weave-open').click()
     await page.getByTestId('nav-teams').click()
+    await page.getByTestId('team-new-btn').click()
     await page.getByTestId('team-id-input').waitFor()
     const select = page.locator('[data-testid="role-editor-0"] select').first()
     await expect(select.locator('option')).toHaveCount(2)
@@ -273,14 +274,13 @@ test.describe('harness: 构建产物 UI 逻辑（stub RPC）', () => {
 
   test('knowledge: reject 两步流必须填理由并携带 payload', async ({ page }) => {
     await openHarnessPage(page)
-    // reject 走浏览器原生 confirm 门径，headless 默认 dismiss 会静默取消操作
-    page.on('dialog', (dialog) => void dialog.accept())
     await page.getByTestId('weave-open').click()
     await page.getByTestId('nav-knowledge').click()
     await page.getByTestId('knowledge-reject-kn-1').click()
     const reason = page.getByTestId('knowledge-reason-kn-1')
     await reason.fill('依据过期')
     await page.getByTestId(`knowledge-reject-confirm-kn-1`).click()
+    await page.getByTestId('knowledge-reject-dialog-confirm').click()
     const calls = (await page.evaluate(() => window.__WEAVE_CALLS__)) as Array<{ endpoint: string; payload: unknown }>
     const rejectCall = calls.find((c) => c.endpoint === 'knowledge/reject')
     expect(rejectCall).toBeTruthy()

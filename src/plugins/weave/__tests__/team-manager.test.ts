@@ -175,10 +175,10 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     manager(['codex', 'zcode']).validateTeam(team)
   })
 
-  it('executor 未注册 → executor_unavailable（含 details）', () => {
+  it('executor 未注册不在 validateTeam 硬失败（委托期由 DelegationService 兜底）', () => {
     const mgr = manager(['codex'])
-    const error = expectCode(() => mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f')), 'executor_unavailable')
-    expect(error.details?.executor).toBe('zcode')
+    const team = mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))
+    expect(team.team_id).toBe('alpha-team')
   })
 
   it('stages 缺失 → invalid_team（HI-4）', () => {
@@ -239,7 +239,8 @@ describe('TeamManager loadTeam/listTeams', () => {
     writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b').replace('executor: zcode', 'executor: ghost'))
     writeTeam('team-c', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-c'))
     const ids = manager(['codex', 'zcode']).listTeams().map((t) => t.team_id)
-    expect(ids).toEqual(['team-a', 'team-c'])
+    // iso-1/v4 hotfix：执行器注册检查降级到委派期，listTeams 不再因 registry 波动清空团队。
+    expect(ids).toEqual(['team-a', 'team-b', 'team-c'])
   })
 })
 
@@ -326,8 +327,9 @@ describe('TeamManager importTeam（Web 创建团队）', () => {
 
   it('校验失败不落盘；路径非法直接拒绝', () => {
     const mgr = manager(['codex'])
-    expectCode(() => mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: bad')), 'executor_unavailable')
-    expect(existsSync(join(dir, 'bad.yaml'))).toBe(false)
+    const imported = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: bad'))
+    expect(imported.team_id).toBe('bad')
+    expect(existsSync(join(dir, 'bad.yaml'))).toBe(true)
     expectCode(
       () => manager(['codex', 'zcode']).importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: ../bad')),
       'invalid_team',
@@ -383,5 +385,40 @@ describe('TeamManager deleteTeam / unbindTeam / listBindings（Web team/delete�
     expect(await mgr.unbindTeam('s1')).toBe(true)
     expect(await mgr.unbindTeam('s1')).toBe(false)
     expect(await mgr.getBoundTeam('s1')).toBeNull()
+  })
+})
+
+describe('TeamManager 团队消息（Phase 3 双向通信）', () => {
+  const openPersistence = (): WeavePersistence => new WeavePersistence({ inMemory: true })
+
+  it('发送、列表、未读、已读闭环', async () => {
+    const persistence = openPersistence()
+    const mgr = manager(['codex', 'zcode'], persistence)
+    const sent = await mgr.sendTeamMessage({
+      team_id: 'team-a',
+      session_id: 's1',
+      from_role: 'captain',
+      to_role: 'coder',
+      content: '请先实现登录',
+    })
+    expect(typeof sent.id).toBe('number')
+    await mgr.sendTeamMessage({
+      team_id: 'team-a',
+      session_id: 's1',
+      from_role: 'captain',
+      to_role: 'coder',
+      content: '再做测试',
+    })
+
+    const unread = await mgr.unreadTeamMessages({ team_id: 'team-a', to_role: 'coder' })
+    expect(unread.unread).toBe(2)
+
+    const messages = await mgr.listTeamMessages({ team_id: 'team-a', to_role: 'coder' })
+    expect(messages).toHaveLength(2)
+    expect(messages[0]?.content).toBe('再做测试')
+
+    const read = await mgr.markTeamMessagesRead({ team_id: 'team-a', to_role: 'coder' })
+    expect(read.updated).toBe(2)
+    expect((await mgr.unreadTeamMessages({ team_id: 'team-a', to_role: 'coder' })).unread).toBe(0)
   })
 })

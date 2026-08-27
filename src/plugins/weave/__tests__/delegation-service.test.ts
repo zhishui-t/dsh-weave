@@ -434,6 +434,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       ['tool_call', '{"cmd":"ls"}'],
       ['status', 'completed'],
     ])
+    expect(events[0]?.sessionId).toBe('child-session-1')
     expect(events.find((event) => event.type === 'tool_call')?.name).toBe('bash')
     expect(events.find((event) => event.type === 'output')?.text).toBe('实时')
     expect(events.find((event) => event.type === 'tool_call')?.name).toBe('bash')

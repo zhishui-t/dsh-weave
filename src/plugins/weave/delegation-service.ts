@@ -69,6 +69,8 @@ export interface DelegationRunEventLike {
 
 export interface DelegationRunLike {
   id: string
+  /** DSH 子代理/Provider 运行对应的会话 id（用于前端跳转/展示）。 */
+  sessionId?: string
   localAgent?: unknown
   result: Promise<DelegationResultLike>
   dispose(): Promise<void>
@@ -651,7 +653,15 @@ export class DelegationService {
         })
       }
 
-      this.#emitExecutorEvent({ taskId: task.id, executor, runId: run.id, type: 'status', text: 'started' })
+      const runSessionId = (run as DelegationRunLike).sessionId ?? ((run as { localAgent?: { id?: string } | undefined }).localAgent?.id)
+      this.#emitExecutorEvent({
+        taskId: task.id,
+        executor,
+        runId: run.id,
+        ...(runSessionId !== undefined ? { sessionId: runSessionId } : {}),
+        type: 'status',
+        text: 'started',
+      })
       const { unsubscribe, hasEventSource } = this.#subscribeRunEvents(task.id, executor, run)
 
       // 超时竞速：活动感知空闲 + 绝对墙钟双闸（TDD 2.4.3 扩展）。

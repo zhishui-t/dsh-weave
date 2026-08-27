@@ -79,6 +79,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     const teamId = `e2e-team-${tag}`
     try {
       await page.getByTestId('nav-teams').click()
+      await page.getByTestId('team-new-btn').click()
       await page.getByTestId('team-id-input').waitFor({ state: 'visible', timeout: 10_000 })
       await page.waitForTimeout(800)
       const executorSelect = page.locator('[data-testid="role-editor-0"] select').first()
@@ -211,11 +212,11 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
   test('cleanup: 删除本次自建团队（confirm 门径）', async () => {
     if (createdTeamId === '') return
     const tid = createdTeamId
-    page.on('dialog', (dialog) => void dialog.accept())
     await page.getByTestId('nav-teams').click()
     const del = page.getByTestId(`team-delete-${tid}`)
     await del.waitFor({ state: 'visible', timeout: 15_000 })
     await del.click()
+    await page.getByTestId('confirm-delete-team-danger').click()
     await page.getByTestId(`team-delete-${tid}`).waitFor({ state: 'detached', timeout: 20_000 })
     await shot(page, '14-team-cleaned')
     createdTeamId = ''

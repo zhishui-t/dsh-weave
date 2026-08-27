@@ -308,9 +308,17 @@ export class WeaveScheduler {
     for (const task of promoted) task.status = 'WAITING'
     // 反馈流任务（AWAITING_FEEDBACK/REVISION_RUNNING）不归调度器管；仅推进 WAITING/BLOCKED。
 
-    // 就绪判定：WAITING 且上游全部成功终态；随后按角色并发上限派发
+    // 就绪判定：WAITING 且上游全部成功终态；随后按角色并发上限派发。
+    // Phase 4：同批就绪任务按角色 priority 降序，优先派发高优先级角色。
     const byId = new Map(dag.tasks.map((task) => [task.id, task]))
-    for (const task of dag.tasks) {
+    const readyTasks = dag.tasks
+      .filter((task) => task.status === 'WAITING')
+      .sort((a, b) => {
+        const roleA = run.team.roles.find((role) => role.id === a.assigned_agent)
+        const roleB = run.team.roles.find((role) => role.id === b.assigned_agent)
+        return (roleB?.priority ?? 0) - (roleA?.priority ?? 0)
+      })
+    for (const task of readyTasks) {
       if (task.status !== 'WAITING') continue
       const depsOk = task.dependencies.every((dep) => {
         const depStatus = byId.get(dep)?.status

@@ -148,6 +148,8 @@ function serializeTeam(team: TeamConfig) {
       ...(role.mode !== undefined ? { mode: role.mode } : {}),
       ...(role.fallback_provider !== undefined ? { fallback_provider: role.fallback_provider } : {}),
       ...(role.fallback_model !== undefined ? { fallback_model: role.fallback_model } : {}),
+      ...(role.priority !== undefined ? { priority: role.priority } : {}),
+      ...(role.strengths !== undefined ? { strengths: [...role.strengths] } : {}),
     })),
     task_decomposition: team.task_decomposition,
     knowledge_injection: team.knowledge_injection,
@@ -312,6 +314,48 @@ export function createWeaveRpcHandler(
       if (endpoint === 'team/bindings') {
         objectPayload(payload)
         return success({ bindings: await resolvedDeps.teamManager.listBindings() })
+      }
+
+      if (endpoint === 'team/message/send') {
+        const input = objectPayload(payload)
+        const teamId = requireString(input, 'teamId')
+        const sessionId = requireString(input, 'sessionId')
+        const fromRole = requireString(input, 'fromRole')
+        const toRole = requireString(input, 'toRole')
+        const content = requireString(input, 'content')
+        const sent = await resolvedDeps.teamManager.sendTeamMessage({ team_id: teamId, session_id: sessionId, from_role: fromRole, to_role: toRole, content })
+        return success({ id: sent.id })
+      }
+
+      if (endpoint === 'team/message/list') {
+        const input = objectPayload(payload)
+        const teamId = requireString(input, 'teamId')
+        const messages = await resolvedDeps.teamManager.listTeamMessages({
+          team_id: teamId,
+          ...(typeof input.sessionId === 'string' && input.sessionId !== '' ? { session_id: input.sessionId } : {}),
+          ...(typeof input.fromRole === 'string' && input.fromRole !== '' ? { from_role: input.fromRole } : {}),
+          ...(typeof input.toRole === 'string' && input.toRole !== '' ? { to_role: input.toRole } : {}),
+          ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+        })
+        return success({ messages })
+      }
+
+      if (endpoint === 'team/message/unread') {
+        const input = objectPayload(payload)
+        const teamId = requireString(input, 'teamId')
+        const toRole = requireString(input, 'toRole')
+        return success(await resolvedDeps.teamManager.unreadTeamMessages({ team_id: teamId, to_role: toRole }))
+      }
+
+      if (endpoint === 'team/message/read') {
+        const input = objectPayload(payload)
+        const teamId = requireString(input, 'teamId')
+        const toRole = requireString(input, 'toRole')
+        const ids = Array.isArray(input.ids) && input.ids.every((id) => typeof id === 'number')
+          ? (input.ids as number[])
+          : undefined
+        const result = await resolvedDeps.teamManager.markTeamMessagesRead({ team_id: teamId, to_role: toRole, ids })
+        return success(result)
       }
       if (endpoint === 'session/team-selection/get') {
         const input = objectPayload(payload)

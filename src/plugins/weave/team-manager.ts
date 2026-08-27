@@ -74,6 +74,10 @@ export interface RoleConfig {
   fallback_provider?: string
   /** 备用模型；仅与 fallback_provider 成对配置，委托失败时重试一次。 */
   fallback_model?: string
+  /** 角色优先派发权重：数字越大越优先（Phase 4 角色特点优先性）。 */
+  priority?: number
+  /** 角色擅长方向/特点标签，供队长规划时约束派发。 */
+  strengths?: string[]
 }
 
 export interface TeamConfig {
@@ -229,6 +233,8 @@ export class TeamManager {
           ...(typeof r.mode === 'string' && r.mode !== '' ? { mode: r.mode } : {}),
           ...(typeof r.fallback_provider === 'string' && r.fallback_provider !== '' ? { fallback_provider: r.fallback_provider } : {}),
           ...(typeof r.fallback_model === 'string' && r.fallback_model !== '' ? { fallback_model: r.fallback_model } : {}),
+          ...(typeof r.priority === 'number' && Number.isInteger(r.priority) && r.priority >= 0 ? { priority: r.priority } : {}),
+          ...(Array.isArray(r.strengths) ? { strengths: (r.strengths as unknown[]).filter((s) => typeof s === 'string') as string[] } : {}),
         }
       }),
       task_decomposition: {
@@ -478,6 +484,24 @@ export class TeamManager {
     this.#bindingsReady = true
   }
 
+  async #ensureMessages(): Promise<void> {
+    if (!this.persistence) {
+      throw new WeaveError('configuration_error', '团队消息需要 persistence（weave 持久化层）')
+    }
+    await this.persistence.core.run((db) =>
+      db.exec(`CREATE TABLE IF NOT EXISTS team_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        from_role TEXT NOT NULL,
+        to_role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+      )`),
+    )
+  }
+
   /** 持久化会话绑定（team_switch 调用，TDD §1.2.6/ME-4）；重复绑定为 upsert。 */
   async bindTeam(sessionId: string, teamId: string): Promise<void> {
     await this.#ensureBindings()
@@ -606,5 +630,109 @@ export class TeamManager {
     const fallback = teams.find((t) => t.default) ?? (teams.length === 1 ? teams[0] : undefined)
     if (!fallback) return { team: null, via: null }
     return { team: this.loadTeam(fallback.team_id), via: fallback.default ? 'default' : 'single' }
+  }
+
+  /* --------------------- 团队双向消息（稳定通信） --------------------- */
+
+  async sendTeamMessage(input: {
+    team_id: string
+    session_id: string
+    from_role: string
+    to_role: string
+    content: string
+  }): Promise<{ id: number }> {
+    await this.#ensureMessages()
+    const now = new Date().toISOString()
+    const result = (await this.persistence!.core.run((db) =>
+      db
+        .prepare(
+          `INSERT INTO team_messages (team_id, session_id, from_role, to_role, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(input.team_id, input.session_id, input.from_role, input.to_role, input.content, now),
+    )) as unknown as { lastInsertRowid?: number | bigint }
+    return { id: Number(result?.lastInsertRowid ?? 0) }
+  }
+
+  async listTeamMessages(input: {
+    team_id: string
+    session_id?: string
+    from_role?: string
+    to_role?: string
+    limit?: number
+  }): Promise<Array<{
+    id: number
+    team_id: string
+    session_id: string
+    from_role: string
+    to_role: string
+    content: string
+    created_at: string
+    read_at: string | null
+  }>> {
+    await this.#ensureMessages()
+    const where: string[] = ['team_id = ?']
+    const params: string[] = [input.team_id]
+    if (input.session_id !== undefined && input.session_id !== '') {
+      where.push('session_id = ?')
+      params.push(input.session_id)
+    }
+    if (input.from_role !== undefined && input.from_role !== '') {
+      where.push('from_role = ?')
+      params.push(input.from_role)
+    }
+    if (input.to_role !== undefined && input.to_role !== '') {
+      where.push('to_role = ?')
+      params.push(input.to_role)
+    }
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200)
+    return (await this.persistence!.core.run((db) =>
+      db
+        .prepare(`SELECT * FROM team_messages WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+        .all(...params, limit),
+    )) as Array<{
+      id: number
+      team_id: string
+      session_id: string
+      from_role: string
+      to_role: string
+      content: string
+      created_at: string
+      read_at: string | null
+    }>
+  }
+
+  async unreadTeamMessages(input: { team_id: string; to_role: string }): Promise<{ unread: number }> {
+    await this.#ensureMessages()
+    const row = (await this.persistence!.core.run((db) =>
+      db
+        .prepare(`SELECT COUNT(*) AS unread FROM team_messages WHERE team_id = ? AND to_role = ? AND read_at IS NULL`)
+        .get(input.team_id, input.to_role),
+    )) as { unread: number | bigint } | undefined
+    return { unread: Number(row?.unread ?? 0) }
+  }
+
+  async markTeamMessagesRead(input: { team_id: string; to_role: string; ids?: number[] }): Promise<{ updated: number }> {
+    await this.#ensureMessages()
+    const ids = Array.isArray(input.ids) && input.ids.length > 0 ? input.ids : undefined
+    const now = new Date().toISOString()
+    if (ids === undefined) {
+      const result = (await this.persistence!.core.run((db) =>
+        db
+          .prepare(`UPDATE team_messages SET read_at = ? WHERE team_id = ? AND to_role = ? AND read_at IS NULL`)
+          .run(now, input.team_id, input.to_role),
+      )) as unknown as { changes?: number }
+      return { updated: Number(result?.changes ?? 0) }
+    }
+    const result = (await this.persistence!.core.run((db) => {
+      const stmt = db.prepare(`UPDATE team_messages SET read_at = ? WHERE team_id = ? AND to_role = ? AND id = ?`)
+      let changes = 0
+      for (const id of ids) {
+        const r = stmt.run(now, input.team_id, input.to_role, id) as unknown as { changes?: number }
+        changes += Number(r?.changes ?? 0)
+      }
+      return { changes }
+    })) as unknown as { changes?: number }
+    return { updated: Number(result?.changes ?? 0) }
   }
 }
