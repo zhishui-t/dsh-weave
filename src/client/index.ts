@@ -2803,6 +2803,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function WeaveSessionDag() {
+    const snapshot = useResource<SnapshotData>(() => rpc('snapshot') as Promise<SnapshotData>, [])
+    const teams = snapshot.data?.teams ?? []
+    const currentTeam = teams.find((team: TeamSummaryRow) => team.default) ?? teams[0]
     const latest = useResource<{ tasks?: TaskRow[] }>(
       () => rpc('task/list', { limit: 1 }) as Promise<{ tasks?: TaskRow[] }>,
       [],
@@ -2814,30 +2817,78 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
     const [selectedId, setSelectedId] = useState('')
     const dag = detail.data
+    const refresh = () => {
+      void snapshot.refresh()
+      void latest.refresh()
+      if (firstTaskId) void detail.refresh()
+    }
+    useEffect(() => {
+      const timer = setInterval(refresh, 5000)
+      return () => clearInterval(timer)
+    }, [snapshot.refresh, latest.refresh, detail.refresh, firstTaskId])
+    const memberRows = currentTeam?.roles ?? []
     return React.createElement(
       'div',
       { className: 'weave-session-dag', 'data-testid': 'weave-session-dag' },
-      React.createElement('b', null, '任务 DAG'),
-      latest.loading || detail.loading
-        ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
-        : latest.error || detail.error
-          ? React.createElement('span', { className: 'weave-muted' }, String(latest.error || detail.error))
-          : !dag
-            ? React.createElement('span', { className: 'weave-muted' }, '暂无任务 DAG')
-            : React.createElement(
+      React.createElement(
+        'div',
+        { className: 'weave-session-section' },
+        React.createElement('b', null, '队员状态'),
+        React.createElement(
+          'span',
+          { className: 'weave-muted' },
+          `团队：${String(currentTeam?.name ?? '未绑定')}（${String(currentTeam?.team_id ?? '—')}）`,
+        ),
+        ...(memberRows.length > 0
+          ? memberRows.map((role: Json, index: number) =>
+              React.createElement(
                 'div',
-                { className: 'weave-session-dag-body' },
+                { className: 'weave-session-member', key: `member-${index}` },
+                React.createElement('b', null, `${String(role.name ?? role.id ?? '成员')}（${String(role.executor ?? '?')}）`),
                 React.createElement(
                   'span',
                   { className: 'weave-muted' },
-                  `DAG：${String(dag.dag_id ?? '')} · ${(dag.tasks ?? []).length} 个任务`,
+                  `模型：${String(role.model ?? '继承默认')} · 思考：${String(role.thought_level ?? '继承默认')} · 模式：${String(role.mode ?? '继承默认')}`,
                 ),
-                React.createElement(DagGraph, {
-                  dag: dag as TaskDagDetail,
-                  selectedId: selectedId || String((dag.tasks ?? [])[0]?.id ?? ''),
-                  onSelect: (next: string) => setSelectedId(next),
-                }),
               ),
+            )
+          : [React.createElement('span', { key: 'no-team', className: 'weave-muted' }, '暂无团队')]),
+      ),
+      React.createElement(
+        'div',
+        { className: 'weave-session-section' },
+        React.createElement('b', null, '任务 DAG'),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button weave-button-secondary weave-button-small',
+            type: 'button',
+            'data-testid': 'weave-session-dag-refresh',
+            onClick: refresh,
+          },
+          '刷新',
+        ),
+        latest.loading || detail.loading
+          ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
+          : latest.error || detail.error
+            ? React.createElement('span', { className: 'weave-muted' }, String(latest.error || detail.error))
+            : !dag
+              ? React.createElement('span', { className: 'weave-muted' }, '暂无任务 DAG')
+              : React.createElement(
+                  'div',
+                  { className: 'weave-session-dag-body' },
+                  React.createElement(
+                    'span',
+                    { className: 'weave-muted' },
+                    `DAG：${String(dag.dag_id ?? '')} · ${(dag.tasks ?? []).length} 个任务`,
+                  ),
+                  React.createElement(DagGraph, {
+                    dag: dag as TaskDagDetail,
+                    selectedId: selectedId || String((dag.tasks ?? [])[0]?.id ?? ''),
+                    onSelect: (next: string) => setSelectedId(next),
+                  }),
+                ),
+      ),
     )
   }
 
