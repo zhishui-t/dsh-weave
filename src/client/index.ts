@@ -2802,6 +2802,45 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return createPortal ? createPortal(content, document.body) : content
   }
 
+  function WeaveSessionDag() {
+    const latest = useResource<{ tasks?: TaskRow[] }>(
+      () => rpc('task/list', { limit: 1 }) as Promise<{ tasks?: TaskRow[] }>,
+      [],
+    )
+    const firstTaskId = latest.data?.tasks?.[0]?.id
+    const detail = useResource<TaskDagDetail | undefined>(
+      () => (firstTaskId ? rpc('task/get', { taskId: firstTaskId }) as Promise<TaskDagDetail> : Promise.resolve(undefined)),
+      [firstTaskId],
+    )
+    const [selectedId, setSelectedId] = useState('')
+    const dag = detail.data
+    return React.createElement(
+      'div',
+      { className: 'weave-session-dag', 'data-testid': 'weave-session-dag' },
+      React.createElement('b', null, '任务 DAG'),
+      latest.loading || detail.loading
+        ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
+        : latest.error || detail.error
+          ? React.createElement('span', { className: 'weave-muted' }, String(latest.error || detail.error))
+          : !dag
+            ? React.createElement('span', { className: 'weave-muted' }, '暂无任务 DAG')
+            : React.createElement(
+                'div',
+                { className: 'weave-session-dag-body' },
+                React.createElement(
+                  'span',
+                  { className: 'weave-muted' },
+                  `DAG：${String(dag.dag_id ?? '')} · ${(dag.tasks ?? []).length} 个任务`,
+                ),
+                React.createElement(DagGraph, {
+                  dag: dag as TaskDagDetail,
+                  selectedId: selectedId || String((dag.tasks ?? [])[0]?.id ?? ''),
+                  onSelect: (next: string) => setSelectedId(next),
+                }),
+              ),
+    )
+  }
+
   function WeaveSidebarAction({ wide }: { wide?: boolean }) {
     const [open, setOpen] = useState(false)
     return React.createElement(
@@ -2827,7 +2866,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
-  return { WeaveSidebarAction }
+  return { WeaveSidebarAction, WeaveSessionDag }
 }
 
 const moduleLoader = (
@@ -2869,6 +2908,23 @@ moduleLoader.load({
             ),
           ),
         'dsh-weave sidebar action',
+      )
+
+      const sessionDag = app.WeaveSessionDag
+      ctx.effect(
+        () =>
+          ctx.slots.inject('conversation.view', () =>
+            ctx.slots.register(
+              {
+                name: 'conversation.view',
+                id: PLUGIN_ID,
+                order: 70,
+                label: () => 'Weave DAG',
+              },
+              sessionDag,
+            ),
+          ),
+        'dsh-weave conversation dag view',
       )
 
     }
