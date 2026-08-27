@@ -191,7 +191,14 @@ export function apply(ctx: Context): void {
       const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
       // 宿主会话真值回溯：exec.agent 可能是子代理会话（其 id ≠ 对话会话 id），
       // 通过存活代理注册表沿 session.header.parentSession 向根回溯。
-      const agentsRegistry = (runtime as Context & { agents?: { get(id: string): unknown } }).agents
+      // cordis 要求服务通过 inject 访问；agents 不在 inject 列表，直接取会抛错。
+      // 安全捕获：不可用时跳过（会话归属追踪降级，不影响核心委派）。
+      let agentsRegistry: { get(id: string): unknown } | undefined
+      try {
+        agentsRegistry = (runtime as Context & { agents?: { get(id: string): unknown } }).agents
+      } catch {
+        // agents 服务未注入——跳过
+      }
       const planTasks = createPlanTasksHandler({
         planner,
         schedulerStart: async (input) => scheduler.start(input),
