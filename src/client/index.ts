@@ -3718,7 +3718,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                             ),
                           )),
                         ),
-                        React.createElement('span', { className: 'weave-muted' }, String(selectedNode.description ?? '')),
+                        React.createElement('span', { className: 'weave-muted' }, (() => {
+                          const desc = String(selectedNode.description ?? '')
+                          return desc.length > 200 ? desc.slice(0, 200) + '…（完整描述见控制台）' : desc
+                        })()),
                       )
                     : null,
                 ),
