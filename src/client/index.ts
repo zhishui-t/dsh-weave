@@ -3438,9 +3438,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const statusKnown = status.data !== undefined || status.error !== ''
     const teamBound = Boolean(status.data?.team)
     const list = useResource<{ total?: number; tasks?: TaskRow[] } | undefined>(
-      () => {
-        if (sid === '' || !statusKnown || !teamBound) return Promise.resolve(undefined)
-        return rpc('task/list', { sessionId: sid, limit: 20 }) as Promise<{ total?: number; tasks?: TaskRow[] }>
+      async () => {
+        if (sid === '' || !statusKnown || !teamBound) return undefined
+        const boundTeamId = String(status.data?.team?.team_id ?? '')
+        const primary = (await rpc('task/list', { sessionId: sid, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
+        if ((primary.total ?? 0) > 0 || boundTeamId === '') return primary
+        // P4 兜底：sessionId 查无任务时按 teamId 回退（DAG 归属可能挂在宿主内部会话 id 下）。
+        const fallback = (await rpc('task/list', { teamId: boundTeamId, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
+        return (fallback.total ?? 0) > 0 ? fallback : primary
       },
       [sid, statusKnown, teamBound],
     )
