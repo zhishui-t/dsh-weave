@@ -408,14 +408,47 @@ export function registerWeaveRpc(
   settings: WeaveRpcSettings = {},
 ): boolean {
   const runtime = context as Context & {
-    inject?(services: string[], callback: (scoped: Context & { connection?: { rpc?: HostConnectionRpc } }) => unknown): unknown
+    inject?(services: string[], callback: (scoped: Context & {
+      connection?: { rpc?: HostConnectionRpc }
+      webServer?: { register(route: { kind: string; path: string; handler: (req: unknown, res: unknown) => Promise<void> | void }): () => void }
+    }) => unknown): unknown
     connection?: { rpc?: HostConnectionRpc }
   }
 
   // Cordis 的 inject 会等 connection 就绪后再注册，避免启动顺序竞态。
-  runtime.inject?.(['connection'], (scoped) => {
+  runtime.inject?.(['connection', 'webServer'], (scoped) => {
     const handler = createWeaveRpcHandler(deps, zcodeCatalog, settings)
     scoped.connection?.rpc?.handle(WEAVE_RPC_CHANNEL, handler, { authority: 'trusted-host' })
+
+    // HTTP fallback：客户端 WebSocket 不可用时通过 POST /dsh-weave/<endpoint> 走 HTTP transport。
+    const scopedAny = scoped as any
+    const ws = scopedAny?.webServer
+    ws?.register({
+      kind: 'prefix',
+      path: WEAVE_RPC_CHANNEL,
+      handler: async (req: any, res: any) => {
+        const url = new URL((req as { url?: string }).url ?? '/', 'http://localhost')
+        const endpoint = url.pathname.replace(`${WEAVE_RPC_CHANNEL}/`, '')
+        let raw = ''
+        await new Promise<void>((resolve) => {
+          let done = false
+          const finish = (): void => { if (!done) { done = true; resolve() } }
+          req.on('data', (chunk: unknown) => { raw += String(chunk) })
+          req.on('end', finish)
+          setTimeout(finish, 5000)
+        })
+        let payload: unknown = {}
+        try { payload = JSON.parse(raw) } catch { /* 零参 endpoint 接受空 body */ }
+        try {
+          const result = await handler(endpoint, payload)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(result))
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: { code: 'internal', message: String(err) } }))
+        }
+      },
+    })
   })
   return Boolean(runtime.inject)
 }
