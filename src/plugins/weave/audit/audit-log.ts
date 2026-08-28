@@ -12,6 +12,7 @@ export const AUDIT_EVENT_TYPES = [
   'task.feedback_received',
   'knowledge.status_changed',
   'knowledge.superseded',
+  'knowledge.deposited',
   'import.confirmed',
   'ban.created',
   'ban.resolved',
@@ -36,6 +37,7 @@ export type AuditEvent =
   | (AuditEventBase & { type: 'task.feedback_received'; task_id: string; revision_count: number })
   | (AuditEventBase & { type: 'knowledge.status_changed'; knowledge_id: string; from: string; to: string })
   | (AuditEventBase & { type: 'knowledge.superseded'; new_id: string; old_id: string; reason: string })
+  | (AuditEventBase & { type: 'knowledge.deposited'; knowledge_id: string; task_id: string; executor: string; layer: string })
   | (AuditEventBase & { type: 'import.confirmed'; job_id: string; candidate_id: string })
   | (AuditEventBase & { type: 'ban.created'; ban_id: string; scope: string; entity_key: string })
   | (AuditEventBase & { type: 'ban.resolved'; ban_id: string; scope: string; entity_key: string })
@@ -53,6 +55,7 @@ export const AUDIT_EVENT_REQUIRED_FIELDS: Record<AuditEventType, readonly string
   'task.feedback_received': ['task_id', 'revision_count'],
   'knowledge.status_changed': ['knowledge_id', 'from', 'to'],
   'knowledge.superseded': ['new_id', 'old_id', 'reason'],
+  'knowledge.deposited': ['knowledge_id', 'task_id', 'executor', 'layer'],
   'import.confirmed': ['job_id', 'candidate_id'],
   'ban.created': ['ban_id', 'scope', 'entity_key'],
   'ban.resolved': ['ban_id', 'scope', 'entity_key'],

@@ -140,8 +140,8 @@ describe('mapStopReason / detectPermissionDenied / formatKnowledgeSection（TDD 
     ]
     const limits = { max_entries: 2, max_chars_per_entry: 8, max_total_chars: 100, priority: 'freshness_first' as const }
     const text = formatKnowledgeSection(entries, limits)
-    expect(text).toContain('- [pitfall] SQLite WAL：WAL 模式写并…')
-    expect(text).toContain('- [pattern] DSH API：ctx.suba…')
+    expect(text).toContain('- [pitfall] SQLite WAL（k1）：WAL 模式写并…')
+    expect(text).toContain('- [pattern] DSH API（k2）：ctx.suba…')
     expect(text).not.toContain('extra')
     const tiny = formatKnowledgeSection(entries, { max_entries: 5, max_chars_per_entry: 10, max_total_chars: 5, priority: 'freshness_first' })
     expect(tiny).toBe('（无）')
@@ -192,6 +192,10 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       '你是 编码工程师，负责完成以下任务。',
       '## 角色人格',
       '你是一名追求最小可用、先验证再交付的工程师。',
+      '## DSH Memory 提示',
+      '先查本地源码、配置、文档，不随意联网搜索。',
+      '## 执行纪律',
+      '小步快跑：一次改一处，改完立即验证。',
       '## 任务描述',
       '实现 ExecutorRegistry 并补单元测试',
       '## 项目上下文',
@@ -202,7 +206,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       '### 设计文档: 02-SDD',
       'SDD 核心章节摘要…',
       '## 相关知识（来自知识库）',
-      '[pitfall] WAL：WAL 开启',
+      '[pitfall] WAL（k1）：WAL 开启',
       '## 可用命令（执行中可调用）',
       '## 知识沉淀要求',
       '### WEAVE_KNOWLEDGE_START',

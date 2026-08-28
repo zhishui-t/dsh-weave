@@ -8,8 +8,9 @@ import { KnowledgeEngine } from './knowledge-engine.js'
 import { ProcessLimiter } from './safety/process-limiter.js'
 import { DelegationService } from './delegation-service.js'
 import { SessionTracker } from './session-tracker.js'
-import { createPlanTasksHandler, TeamPlanner } from './planner.js'
+import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
 import { WeaveScheduler } from './scheduler.js'
+import { ReflectionService } from './reflection-service.js'
 import {
   createPreStepDelegationHook,
   notifySession,
@@ -17,7 +18,7 @@ import {
 } from './session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
-import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
+import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
 import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './rpc.js'
@@ -176,11 +177,26 @@ export function apply(ctx: Context): void {
           console.warn('[dsh-weave] notify session failed:', error)
         }
       }
+      const reflection = new ReflectionService({
+        knowledge: deps.knowledgeStore!,
+        audit: new AuditLog({ dir: effectiveAuditDir }),
+      })
       const scheduler = new WeaveScheduler({
         delegation,
         persistence: deps.persistence,
         loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
         notify: notifyWeaveSession,
+        onTaskSettledText: async ({ task, role, text }) => {
+          const result = await reflection.depositFromOutput({
+            taskId: task.id,
+            executor: role.executor,
+            roleId: role.id,
+            projectId: task.project_id,
+            version: task.version,
+            outputText: text,
+          })
+          return result.deposited.length
+        },
       })
       runtime.effect(() => () => scheduler.dispose(), 'dsh-weave scheduler lifecycle')
       // UI/MCP 的取消与重试动作联动真实运行中的子代理。
@@ -206,35 +222,60 @@ export function apply(ctx: Context): void {
         getAgentById: (id) => agentsRegistry?.get(id as never),
       })
 
-      registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }), executorRuns: delegation, providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
-        if (!zcodeProvider) return undefined
-        return await zcodeProvider.describeSession(process.cwd())
-      }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })
-      const bundle = registerWeaveHost(runtime, deps, {
-        planTasks,
-        providerCommand: async (args) => {
-          if (args[0] === 'add') {
-            return await providerCommands.add.handler(args.slice(1).join(' '))
-          }
-          return await providerCommands.manage.handler(args.join(' '))
-        },
-      })
-      runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
+      // 会话控制通道最先接线：自然语言团队启停短句（绑定=启用）拦截；其余消息放行。
+      // 只依赖已构造好的 teamManager，无宿主服务依赖——后续 RPC/工具接线失败不得连坐。
+      try {
+        const hook = createPreStepDelegationHook({
+          listTeams: () => deps.teamManager.listTeams(),
+          setSelection: async (sessionId, teamId) => {
+            if (teamId === null) await deps.teamManager.unbindTeam(sessionId)
+            else await deps.teamManager.bindTeam(sessionId, teamId)
+          },
+          notify: notifyWeaveSession,
+        })
+        const evented = runtime as Context & { on?(name: string, listener: unknown): unknown }
+        const offHook = evented.on?.('agent/pre-step', hook)
+        runtime.effect(() => () => {
+          if (typeof offHook === 'function') offHook()
+        }, 'dsh-weave pre-step delegation hook')
+      } catch (error) {
+        console.warn('[dsh-weave] pre-step delegation hook registration failed:', error)
+      }
 
-      // 会话控制通道：自然语言团队启停短句（绑定=启用）拦截；其余消息放行。
-      const hook = createPreStepDelegationHook({
-        listTeams: () => deps.teamManager.listTeams(),
-        setSelection: async (sessionId, teamId) => {
-          if (teamId === null) await deps.teamManager.unbindTeam(sessionId)
-          else await deps.teamManager.bindTeam(sessionId, teamId)
-        },
-        notify: notifyWeaveSession,
-      })
-      const evented = runtime as Context & { on?(name: string, listener: unknown): unknown }
-      const offHook = evented.on?.('agent/pre-step', hook)
-      runtime.effect(() => () => {
-        if (typeof offHook === 'function') offHook()
-      }, 'dsh-weave pre-step delegation hook')
+      // RPC 通道（WS handler + HTTP fallback）：传输层失败只降级面板/远程调用。
+      try {
+        registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }), executorRuns: delegation, providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
+          if (!zcodeProvider) return undefined
+          return await zcodeProvider.describeSession(process.cwd())
+        }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })
+      } catch (error) {
+        console.warn('[dsh-weave] rpc registration failed:', error)
+      }
+
+      // 宿主工具与 /weave 命令：队长模型的任务下发路径。
+      try {
+        const bundle = registerWeaveHost(runtime, deps, {
+          planTasks,
+          // weave_team_switch 缺省会话解析：与 planTasks 同一真值链（exec.agent 血统回溯），
+          // 模型/用户无需知道会话 id；仅纯 CLI（无 exec.agent）回落 'cli-session'。
+          resolveSessionId: (exec) => {
+            const resolved = resolveHostSessionId(
+              (exec as { agent?: unknown } | undefined)?.agent,
+              { getAgentById: (id) => agentsRegistry?.get(id as never) },
+            )
+            return resolved !== '' ? resolved : undefined
+          },
+          providerCommand: async (args) => {
+            if (args[0] === 'add') {
+              return await providerCommands.add.handler(args.slice(1).join(' '))
+            }
+            return await providerCommands.manage.handler(args.join(' '))
+          },
+        })
+        runtime.effect(() => () => bundle.dispose(), 'dsh-weave host wiring')
+      } catch (error) {
+        console.warn('[dsh-weave] host tool registration failed:', error)
+      }
 
     } catch (error) {
       console.warn('[dsh-weave] automatic host wiring failed:', error)

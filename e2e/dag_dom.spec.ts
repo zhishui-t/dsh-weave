@@ -17,7 +17,6 @@ test('dag dom detail', async ({ page }) => {
     console.log('dag-panel NOT FOUND')
   }
   // 查整个会话面板的完整 HTML 结构里 dag 相关的部分
-  const weaveTab = page.locator('[class*="weave"]').last()
   const dagHtml = await page.evaluate(() => {
     const el = document.querySelector('[data-testid="dag-panel"]')
     return el ? { found: true, tag: el.tagName, children: el.children.length, w: el.offsetWidth, h: el.offsetHeight } : { found: false }

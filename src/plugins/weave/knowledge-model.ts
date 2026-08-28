@@ -76,7 +76,7 @@ export const AGENT_DIR = '_agent'
 export const HUMAN_DIR = '_human'
 export const VIEWS_DIR = '_views'
 
-const LAYER_VISIBILITY: Record<KnowledgeLayer, Visibility> = {
+export const LAYER_VISIBILITY: Record<KnowledgeLayer, Visibility> = {
   project: 'project_only',
   role: 'role_only',
   instance: 'instance_only',

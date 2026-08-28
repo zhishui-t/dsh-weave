@@ -138,17 +138,17 @@ describe('TeamPlanner.plan', () => {
     })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('成环') })
   })
 
-  it('id 缺省自动编号 tN 且持久化为 ${dagId}-tN；重复 id 拒绝', async () => {
+  it('id 缺省自动编号 T1 且持久化为 ${dagId}-T1；重复 id 拒绝', async () => {
     await manager.bindTeam('sess-1', 'alpha')
     const output = await planner.plan({
       session_id: 'sess-1',
       tasks: [
         { description: '第一步', assignee: 'coder' },
-        { description: '第二步', assignee: 'reviewer', depends_on: ['t1'] },
+        { description: '第二步', assignee: 'reviewer', depends_on: ['T1'] },
       ],
     })
-    expect(output.tasks[0]!.id.endsWith('-t1')).toBe(true)
-    expect(output.tasks[1]!.depends_on).toEqual(['t1'])
+    expect(output.tasks[0]!.id.endsWith('-T1')).toBe(true)
+    expect(output.tasks[1]!.depends_on).toEqual(['T1'])
 
     await expect(planner.plan({
       session_id: 'sess-1',

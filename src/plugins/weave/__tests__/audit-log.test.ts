@@ -49,6 +49,12 @@ describe('AuditLog：核心事件写入与字段完整', () => {
         code: 'invalid_audit_event',
         details: expect.objectContaining({ missing: expect.arrayContaining(['scope', 'entity_key']) }),
       })
+      await expect(
+        audit.record({ type: 'knowledge.deposited', knowledge_id: 'k-1', task_id: 't-1' } as never),
+      ).rejects.toMatchObject({
+        code: 'invalid_audit_event',
+        details: expect.objectContaining({ missing: expect.arrayContaining(['executor', 'layer']) }),
+      })
       expect(await audit.query()).toHaveLength(0)
     })
   })
@@ -88,14 +94,15 @@ describe('AuditLog：核心事件写入与字段完整', () => {
       await audit.record({ type: 'task.feedback_received', task_id: 't-001', revision_count: 1 })
       await audit.record({ type: 'knowledge.status_changed', knowledge_id: 'k-001', from: 'candidate', to: 'active' })
       await audit.record({ type: 'knowledge.superseded', new_id: 'k-002', old_id: 'k-001', reason: 'replaced-by-new' })
+      await audit.record({ type: 'knowledge.deposited', knowledge_id: 'k-004', task_id: 't-001', executor: 'codex', layer: 'project' })
       await audit.record({ type: 'import.confirmed', job_id: 'imp-001', candidate_id: 'k-003' })
       await audit.record({ type: 'ban.created', ban_id: 'b-001', scope: 'agent', entity_key: 'deepseek' })
       await audit.record({ type: 'ban.resolved', ban_id: 'b-001', scope: 'agent', entity_key: 'deepseek' })
       await audit.record({ type: 'team.switched', session_id: 'sess-1', from_team: 'a', to_team: 'b' })
-      // 核心 8 类（recovery.* 为恢复模块扩展的事件类型，不在核心契约内）
+      // 核心 9 类（recovery.* 为恢复模块扩展的事件类型，不在核心契约内）
       const coreTypes = AUDIT_EVENT_TYPES.filter((t) => !t.startsWith('recovery.'))
       const events = await audit.query({ types: [...coreTypes] })
-      expect(events).toHaveLength(8)
+      expect(events).toHaveLength(9)
       const types = new Set(events.map((e) => e.type))
       for (const t of coreTypes) expect(types.has(t)).toBe(true)
       for (const t of coreTypes) {

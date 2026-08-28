@@ -417,17 +417,19 @@ function ensureStyle(): void {
 .weave-subh{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:550;line-height:20px}
 .weave-chiprow{display:flex;gap:6px;flex-wrap:wrap}
 .weave-chip{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 10px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.weave-dag-wrap{position:relative;overflow:auto;margin:8px 0}
-.weave-dag-node{position:absolute;box-sizing:border-box;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:6px 8px;display:flex;flex-direction:column;gap:2px;cursor:pointer}
+.weave-dag-wrap{position:relative;overflow:auto;margin:8px 0;width:100%}
+.weave-dag-node{position:absolute;box-sizing:border-box;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:3px 5px;display:flex;flex-direction:column;gap:1px;cursor:pointer}
 .weave-dag-node:hover{border-color:var(--dsw-alias-label-tertiary)}
 .weave-dag-node[data-selected="true"]{outline:2px solid var(--dsw-alias-label-primary);outline-offset:1px}
-.weave-dag-node b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:16px}
-.weave-dag-node .weave-muted{font-size:11px;line-height:14px}
-.weave-spanel{display:grid;gap:14px;align-content:start;padding:14px;border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
+.weave-dag-node b{font-size:10px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:12px}
+.weave-dag-node .weave-muted{font-size:9px;line-height:11px}
+.weave-spanel{display:grid;gap:14px;align-content:start;padding:14px;border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);min-height:calc(100vh - 80px)}
 .weave-spanel-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
-.weave-member{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:6px 8px;display:grid;gap:2px;background:var(--dsw-specific-menu)}
-.weave-member b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:17px}
+.weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:6px;align-items:start;align-content:start}
+.weave-member{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;display:grid;gap:2px;background:var(--dsw-specific-menu)}
+.weave-member b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:16px}
+.weave-member .weave-muted{font-size:11px;line-height:15px}
+.weave-member .weave-member-assignments{gap:3px}
 .weave-member[data-status="running"]{border-color:#1677ff;background:rgba(22,119,255,.06)}
 .weave-member[data-status="idle"]{border-color:#d9d9d9;background:var(--dsw-alias-bg-layer-2)}
 .weave-member[data-status="interrupted"]{border-color:#f5222d;background:rgba(245,34,45,.06)}
@@ -476,10 +478,38 @@ function ensureStyle(): void {
 .weave-eventline b{font-weight:550;color:var(--dsw-alias-label-primary);flex:none}
 .weave-event-meta{display:grid;gap:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 @media (max-width:600px){.weave-eventstream{max-height:140px}}
-.weave-session-runtime{display:grid;gap:8px;padding-top:2px}
-.weave-team-stats{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.weave-team-stats b{font-weight:550;color:var(--dsw-alias-label-primary);margin-right:2px}
-.weave-progress-segments{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}
+.weave-split-toggle-row{display:flex;gap:8px;margin-top:4px}
+.weave-split-toggle{border:1px solid var(--dsw-alias-border-l2);background:transparent;border-radius:8px;padding:3px 8px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+.weave-split-toggle-active{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-tertiary)}
+.weave-session-split{display:grid;grid-template-columns:260px minmax(0,1fr);gap:12px;align-items:stretch;min-height:calc(100vh - 220px)}
+.weave-session-split[data-left="closed"]{grid-template-columns:40px minmax(0,1fr)}
+.weave-session-split[data-right="closed"]{grid-template-columns:260px 40px}
+.weave-session-split[data-left="closed"][data-right="closed"]{grid-template-columns:40px 40px}
+.weave-side-collapsed{display:flex;align-items:center;justify-content:center;width:100%;min-height:160px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-size:16px;cursor:pointer}
+.weave-side-collapsed:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-tertiary)}
+body.weave-session-active textarea[placeholder*="发消息"],
+body.weave-session-active textarea[placeholder*="描述你想要构建的内容"]{display:none}
+body.weave-session-active .uV2eYG_grow,
+body.weave-session-active [class*="uV2eYG"]{display:none !important}
+.weave-session-left{display:grid;gap:4px;min-width:0;align-items:start;align-content:start}
+.weave-session-right{display:flex;flex-direction:column;gap:0;width:100%;min-width:0;max-width:100%}
+.weave-session-right > .weave-section{display:flex;flex-direction:column;flex:1}
+.weave-session-right .weave-section-body{display:flex;flex-direction:column;flex:1}
+.weave-session-right .weave-panel-tab-body{flex:1}
+@media (max-width:900px){
+  /* 始终左右布局：只调整面板高度与队员列数，不切上下 */
+  .weave-spanel{min-height:auto}
+  .weave-members{grid-template-columns:1fr}
+}
+@media (orientation:portrait){
+  .weave-spanel{min-height:auto}
+  .weave-members{grid-template-columns:1fr}
+  .weave-session-right .weave-panel-tab-body{height:auto;min-height:0;max-height:none;overflow-y:visible}
+}
+.weave-session-runtime{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0;margin-top:2px}
+.weave-team-stats{display:flex;gap:8px;flex-wrap:wrap;font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary)}
+.weave-team-stats b{font-weight:550;color:var(--dsw-alias-label-primary);margin-right:1px}
+.weave-progress-segments{display:flex;gap:2px;height:4px;flex:1;min-width:100px;border-radius:999px;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}
 .weave-progress-segments span{display:block;height:100%;min-width:2px}
 .weave-progress-segments span[data-state="running"]{background:#1677ff}
 .weave-progress-segments span[data-state="waiting"]{background:#bfbfbf}
@@ -491,8 +521,11 @@ function ensureStyle(): void {
 .weave-tab-active{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));font-weight:550}
 .weave-tab-label{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer}
 .weave-tab-close{border:0;background:transparent;padding:0 0 0 4px;font:inherit;color:var(--dsw-alias-label-tertiary);cursor:pointer}
-.weave-panel-tab-body{min-height:120px;border:1px solid var(--dsw-alias-border-l2);border-top:0;border-radius:0 0 12px 12px;padding:12px;background:var(--dsw-alias-bg-layer-2)}
+.weave-panel-tab-body{min-height:0;height:auto;width:100%;border:1px solid var(--dsw-alias-border-l2);border-top:0;border-radius:0 0 12px 12px;padding:14px;background:var(--dsw-alias-bg-layer-2)}
 .weave-section{display:grid;gap:8px;margin-top:12px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:8px}
+.weave-section-head-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.weave-section-collapse{border:1px solid var(--dsw-alias-border-l2);background:transparent;border-radius:6px;padding:1px 6px;font-size:11px;line-height:14px;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+.weave-section-collapse:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-tertiary)}
 .weave-section-head{display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:0;font:inherit;font-size:13px;font-weight:550;color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left}
 .weave-section-body{display:grid;gap:8px;padding-top:4px}
 .weave-member-assignments{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
@@ -535,6 +568,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const raw = String(value ?? '')
     const parts = raw.split('-')
     const tail = parts.length > 0 ? (parts[parts.length - 1] ?? '') : ''
+    const matched = /^[tT](\d+)$/.exec(tail)
+    if (matched) return `T${matched[1] ?? ''}`
     return tail !== '' ? tail : raw
   }
 
@@ -2525,10 +2560,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ------------------------------ 任务依赖图（t9） ------------------------------ */
 
-  const DAG_CELL_W = 170
-  const DAG_CELL_H = 56
-  const DAG_LEVEL_GAP = 56
-  const DAG_ROW_GAP = 18
+  const DAG_CELL_W = 100
+  const DAG_CELL_H = 32
+  const DAG_LEVEL_GAP = 30
+  const DAG_ROW_GAP = 8
 
   /** 状态 → 节点左边框颜色（与宿主 dag-panel P0 视图同源）。 */
   const DAG_STATUS_COLORS: Record<string, string> = {
@@ -3937,75 +3972,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
 
-  /** 团队消息面板：队长 → 当前成员的稳定双向通信入口。 */
-  function TeamMessagePanel(props: { teamId: string; sessionId: string; roleId: string; roleName: string }): React.ReactElement {
-    const [draft, setDraft] = useState('')
-    const messages = useResource<{ messages?: Array<{ id: number; from_role: string; to_role: string; content: string; created_at: string }> }>(
-      () =>
-        rpc('team/message/list', { teamId: props.teamId, toRole: props.roleId, limit: 50 }) as Promise<{
-          messages?: Array<{ id: number; from_role: string; to_role: string; content: string; created_at: string }>
-        }>,
-      [props.teamId, props.roleId],
-    )
-    const sender = useAction()
-    const send = async (): Promise<void> => {
-      const content = draft.trim()
-      if (content === '') return
-      await sender.run(async () => {
-        await rpc('team/message/send', {
-          teamId: props.teamId,
-          sessionId: props.sessionId,
-          fromRole: 'captain',
-          toRole: props.roleId,
-          content,
-        })
-        setDraft('')
-        void messages.refresh()
-        return `已发送给 ${props.roleName}`
-      })
-    }
-    const rows = messages.data?.messages ?? []
-    return React.createElement(
-      'div',
-      { className: 'weave-panel', 'data-testid': `team-messages-${props.roleId}`, style: { marginTop: 8 } },
-      React.createElement('b', { className: 'weave-subh' }, `与 ${props.roleName} 的消息`),
-      messages.loading
-        ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
-        : rows.length === 0
-          ? React.createElement('span', { className: 'weave-muted' }, '暂无消息。')
-          : React.createElement(
-              'div',
-              { className: 'weave-eventstream', role: 'log' },
-              ...rows.map((message: { id: number; from_role: string; to_role: string; content: string; created_at: string }) =>
-                React.createElement(
-                  'div',
-                  { className: 'weave-eventline', key: message.id },
-                  React.createElement('time', null, fmtTime(message.created_at)),
-                  React.createElement('b', null, message.from_role === 'captain' ? '队长' : message.from_role),
-                  React.createElement('span', null, message.content),
-                ),
-              ),
-            ),
-      React.createElement(
-        'div',
-        { className: 'weave-actions', style: { marginTop: 4 } },
-        React.createElement('input', {
-          className: 'weave-control',
-          style: { minWidth: 180, flex: 1 },
-          value: draft,
-          placeholder: `给 ${props.roleName} 发消息...`,
-          onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
-        }),
-        React.createElement(
-          'button',
-          { className: 'weave-button weave-button-small', type: 'button', disabled: sender.busy || draft.trim() === '', onClick: () => void send() },
-          sender.busy ? '发送中' : '发送',
-        ),
-      ),
-      sender.note ? Note({ text: sender.note }) : null,
-    )
-  }
-
   /** 成员状态徽标色（与节点边框色系一致）。 */
   const memberToneOf = (status: string): string => {
     if (status === 'running') return 'run'
@@ -4117,6 +4083,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [activeTab, setActiveTab] = useState('dag' as string)
     const [membersOpen, setMembersOpen] = useState(true)
     const [tabsOpen, setTabsOpen] = useState(true)
+    const [showLeft, setShowLeft] = useState(true)
+    const [showRight, setShowRight] = useState(true)
+    useEffect(() => {
+      document.body.classList.add('weave-session-active')
+      return () => document.body.classList.remove('weave-session-active')
+    }, [])
     const [streamDrawer, setStreamDrawer] = useState(null as null | { taskId: string; name: string })
     const isDshExecutor = (executor?: string): boolean =>
       executor === 'spawn' || executor === 'fork' || executor === 'dsh_subagent'
@@ -4203,6 +4175,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           status.data?.team
             ? `团队 · ${String(status.data.team.name ?? status.data.team.team_id)}${status.data.resolved_via && status.data.resolved_via !== 'binding' ? '（自动）' : ''}`
             : '未确定团队'),
+        hasActiveTasks
+          ? React.createElement(
+              'span',
+              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px' }, 'data-testid': 'weave-session-team-locked' },
+              '有进行中任务，不能切团队',
+            )
+          : null,
         React.createElement(
           'select',
           {
@@ -4229,9 +4208,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
         React.createElement('span', { className: 'weave-muted', style: { marginLeft: 'auto' } }, `会话 ${sid.slice(0, 18)}${sid.length > 18 ? '…' : ''}`),
       ),
-      hasActiveTasks
-        ? React.createElement('span', { className: 'weave-field-error', 'data-testid': 'weave-session-team-locked' }, '当前团队有进行中任务，不能切换团队；请先完成/取消任务。')
-        : null,
       binder.note ? Note({ text: binder.note }) : null,
       binder.ok === false || actor.ok === false ? Note({ text: binder.note || actor.note, kind: 'error' }) : null,
 
@@ -4250,18 +4226,39 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             ),
             sessionTasks.length > 0
               ? sessionProgressBar(sessionTasks, 'weave-session-progress')
-              : React.createElement('span', { className: 'weave-muted' }, '暂无任务'),
+              : null,
           )
         : null,
 
+      /* ---- 左右分栏：左成员 / 右任务与输出 ---- */
+      React.createElement(
+        'div',
+        {
+          className: 'weave-session-split',
+          'data-left': showLeft ? 'open' : 'closed',
+          'data-right': showRight ? 'open' : 'closed',
+        },
+        showLeft
+          ? React.createElement(
+          'div',
+          { className: 'weave-session-left' },
       /* ---- 成员区（可折叠） ---- */
       React.createElement(
         'div',
         { className: 'weave-section' },
         React.createElement(
-          'button',
-          { className: 'weave-section-head', 'data-testid': 'session-members-toggle', onClick: () => setMembersOpen(!membersOpen) },
-          membersOpen ? '▾ 成员' : '▸ 成员',
+          'div',
+          { className: 'weave-section-head-row' },
+          React.createElement(
+            'button',
+            { className: 'weave-section-head', 'data-testid': 'session-members-toggle', onClick: () => setMembersOpen(!membersOpen) },
+            membersOpen ? '▾ 成员' : '▸ 成员',
+          ),
+          React.createElement(
+            'button',
+            { className: 'weave-section-collapse', 'data-testid': 'session-collapse-left', title: '收起左侧队员区', onClick: () => setShowLeft(false) },
+            '◀',
+          ),
         ),
         membersOpen
           ? React.createElement(
@@ -4298,7 +4295,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                       React.createElement(
                         'b',
                         { key: 'name' },
-                        `${String(member.name ?? member.role_id ?? '成员')}（${executorLabel(member.executor)}）`,
+                        `${String(member.name ?? member.role_id ?? '成员')}`,
                       ),
                       React.createElement(
                         'span',
@@ -4349,6 +4346,18 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             )
           : null,
       ),
+        )
+          : React.createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'weave-side-collapsed',
+                'data-testid': 'session-expand-left',
+                title: '展开队员',
+                onClick: () => setShowLeft(true),
+              },
+              '▶',
+            ),
       /* ---- 完整历史抽屉 ---- */
       streamDrawer
         ? React.createElement(RunEventsDrawer, {
@@ -4357,15 +4366,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             onClose: () => setStreamDrawer(null),
           } as never)
         : null,
-
+        showRight
+          ? React.createElement(
+          'div',
+          { className: 'weave-session-right' },
       /* ---- 底部 Tab 组（可折叠）：任务依赖图 + 队员输出 ---- */
       React.createElement(
         'div',
         { className: 'weave-section' },
         React.createElement(
-          'button',
-          { className: 'weave-section-head', 'data-testid': 'session-tabs-toggle', onClick: () => setTabsOpen(!tabsOpen) },
-          tabsOpen ? '▾ 任务 / 输出' : '▸ 任务 / 输出',
+          'div',
+          { className: 'weave-section-head-row' },
+          React.createElement(
+            'button',
+            { className: 'weave-section-head', 'data-testid': 'session-tabs-toggle', onClick: () => setTabsOpen(!tabsOpen) },
+            tabsOpen ? '▾ 任务 / 输出' : '▸ 任务 / 输出',
+          ),
+          React.createElement(
+            'button',
+            { className: 'weave-section-collapse', 'data-testid': 'session-collapse-right', title: '收起右侧任务/输出区', onClick: () => setShowRight(false) },
+            '▶',
+          ),
         ),
         tabsOpen
           ? React.createElement(
@@ -4421,10 +4442,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 : !status.data?.team
                   ? null
                   : latestDagId === ''
-                    ? EmptyState({
-                        title: '暂无任务',
-                        reason: '直接在对话中描述目标，队长模型会用 weave_plan_tasks 拆解并派发给团队成员。',
-                      })
+                    ? null
                     : !dag
                       ? React.createElement('span', { className: 'weave-muted' }, `加载失败：${detail.error || '未知错误'}`)
                       : React.createElement(
@@ -4494,6 +4512,19 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       )
             )
           : null,
+      ),
+        )
+          : React.createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'weave-side-collapsed',
+                'data-testid': 'session-expand-right',
+                title: '展开任务/输出',
+                onClick: () => setShowRight(true),
+              },
+              '◀',
+            ),
       ),
       actor.note && actor.ok === true ? Note({ text: actor.note }) : null,
       confirmTask

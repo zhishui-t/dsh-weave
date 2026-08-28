@@ -154,7 +154,7 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
       tasks: [
         { description: '并行一', assignee: 'coder' },
         { description: '并行二', assignee: 'reviewer', depends_on: [] },
-        { description: '汇聚', assignee: 'designer', depends_on: ['t1', 't2'] },
+        { description: '汇聚', assignee: 'designer', depends_on: ['T1', 'T2'] },
       ],
     })
     await scheduler.start({ dagId: output.dag_id, sessionId: 'sess-p' })
@@ -285,7 +285,7 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
       session_id: 'sess-mc',
       tasks: [
         { description: '第一段', assignee: 'coder' },
-        { description: '第二段', assignee: 'coder', depends_on: ['t1'] },
+        { description: '第二段', assignee: 'coder', depends_on: ['T1'] },
       ],
     })
     delegation.executeTask = async (task, role, _team, context, signal) => {
@@ -310,7 +310,7 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
     expect(runtimeDuring.every((info) => info.subject === '第二段' || info.subject === '第一段')).toBe(true)
     void duringCalls
     expect(scheduler.memberRuntime('sess-mc')).toHaveLength(0)
-    expect(delegation.calls.map((call) => call.taskId.split('-').pop())).toEqual(['t1', 't2'])
+    expect(delegation.calls.map((call) => call.taskId.split('-').pop())).toEqual(['T1', 'T2'])
   })
 
   it('团队角色同时只执行一个任务：同角色双任务串行（忽略 max_concurrent_tasks>1）', async () => {

@@ -44,6 +44,8 @@ export interface WeaveSchedulerOptions {
   notify: SchedulerNotifyFn
   /** 失败后是否用 fallback_provider/model 重试一次（默认 true）。 */
   retryWithFallback?: boolean
+  /** 反思钩子：任务终态文本沉淀入口，返回沉淀条数；异常不阻断调度。 */
+  onTaskSettledText?: (params: { task: TaskRecord; role: RoleConfig; team: TeamConfig; text: string; status: 'COMPLETED' | 'FAILED' }) => Promise<number | void>
   log?: { warn?: (...args: unknown[]) => void }
 }
 
@@ -432,6 +434,7 @@ export class WeaveScheduler {
         run,
         `[weave] 任务「${subjectLabel(task)}」完成 ✓（${role.name}）\n${excerptOf(text, 600)}`,
       )
+      await this.#runSettledTextHook(run, task, role, text, 'COMPLETED')
       await this.#afterTaskSettled(run, task, 'COMPLETED')
       return
     }
@@ -453,11 +456,32 @@ export class WeaveScheduler {
       run,
       `[weave] 任务「${subjectLabel(task)}」失败 ✗（${mapped.errorType ?? output.stopReason}${diagnostic}）`,
     )
+    await this.#runSettledTextHook(run, task, role, text, 'FAILED')
     await this.#afterTaskSettled(run, task, 'FAILED')
   }
 
   fallbackEnabled(role: RoleConfig): boolean {
     return (this.#opts.retryWithFallback ?? true) && Boolean(role.fallback_provider && role.fallback_model)
+  }
+
+  /** 终态反思钩子：单一入口，COMPLETED/FAILED 共用；异常与通知失败均不阻断主链路。 */
+  async #runSettledTextHook(
+    run: DagRunContext,
+    task: TaskRecord,
+    role: RoleConfig,
+    text: string,
+    status: 'COMPLETED' | 'FAILED',
+  ): Promise<void> {
+    const hook = this.#opts.onTaskSettledText
+    if (!hook) return
+    try {
+      const count = await hook({ task, role, team: run.team, text, status })
+      if (typeof count === 'number' && count > 0) {
+        this.#notifySafe(run, `[weave] 反思沉淀 ${count} 条候选知识（待审核）`)
+      }
+    } catch (error) {
+      this.#opts.log?.warn?.('[dsh-weave] reflection hook failed:', error)
+    }
   }
 
   /** 单任务终态后的公共收敛：失败/取消向下游传播 SKIPPED → 刷 DAG 状态 → 重泵。 */

@@ -234,7 +234,7 @@ export function formatKnowledgeSection(
       entry.content.length > limits.max_chars_per_entry
         ? `${entry.content.slice(0, limits.max_chars_per_entry)}…`
         : entry.content
-    const line = `- [${entry.layer}] ${entry.title}：${content}`
+    const line = `- [${entry.layer}] ${entry.title}（${entry.id}）：${content}`
     if (total + line.length > limits.max_total_chars && lines.length > 0) break
     if (total + line.length > limits.max_total_chars) break
     lines.push(line)
@@ -244,6 +244,18 @@ export function formatKnowledgeSection(
 }
 
 export type ExecutorRunEventType = 'status' | 'output' | 'reasoning' | 'tool_call' | 'tool_result'
+
+/** 派发任务时注入的 DSH memory 提示（本地优先/以实际输出为准等）。 */
+const DSH_MEMORY_HINTS = `- 先查本地源码、配置、文档，不随意联网搜索。
+- 改文件前先重读当前内容，不要凭旧快照改动。
+- 命令输出以真实结果为准，环境/工具失败先分类再定位根因。
+- 完成后沉淀可复用经验，避免重复踩坑。`
+
+/** 派发任务时注入的执行纪律。 */
+const EXECUTION_DISCIPLINE = `- 小步快跑：一次改一处，改完立即验证。
+- 失败即停：回到该步定位根因，不盲目换参数重试。
+- 同一工具/命令连续失败 2 次后，停止相同重试。
+- 连续多种方案仍失败时，向用户如实报告，不假装成功。`
 
 export interface ExecutorRunEvent {
   taskId: string
@@ -792,6 +804,12 @@ export class DelegationService {
     lines.push('')
     lines.push('## 角色人格')
     lines.push(role.personality || '（无）')
+    lines.push('')
+    lines.push('## DSH Memory 提示')
+    lines.push(DSH_MEMORY_HINTS)
+    lines.push('')
+    lines.push('## 执行纪律')
+    lines.push(EXECUTION_DISCIPLINE)
     lines.push('')
     lines.push('## 任务描述')
     lines.push(task.description)

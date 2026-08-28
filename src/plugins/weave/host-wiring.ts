@@ -72,6 +72,12 @@ export interface WeaveHostOptions {
    * weave_plan_tasks 工具的唯一任务下发路径；未注入时工具返回 configuration_error。
    */
   planTasks?: (args: unknown, exec: unknown) => Promise<PlanTasksOutput>
+  /**
+   * 会话 id 解析回调：weave_team_switch 未显式传 session_id 时，从工具执行上下文
+   * （exec.agent 血统回溯到宿主根会话）解析真实会话 id；未注入或解析失败时才回落
+   * 'cli-session'（纯 CLI 场景）。避免绑定落进假 id 导致面板按 sessionId 查空。
+   */
+  resolveSessionId?: (exec: unknown) => string | undefined
 }
 
 export interface WeaveMcpToolsRegistration {
@@ -151,6 +157,8 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
         '队长规划并派发团队任务（唯一的任务下发方式）：用户描述目标后直接调用本工具，把目标拆解为' +
         '一组带依赖的任务并指派给团队成员角色；插件随后按依赖自动调度成员执行并把进度/汇总回灌到会话。' +
         'assignee 必须是团队角色的 id；depends_on 引用本计划内其他任务的 id。' +
+        '重要：文档/方案/架构设计稿里的编号、章节号、序号都不是任务编号；只有通过本工具创建的任务 T1/T2/T3... ' +
+        '才是真正派发给团队成员的唯一任务编号。' +
         '团队无需显式启用：已配置默认团队或仅有一个团队时自动生效；仅当存在多个未指定团队时报错，届时先 team_list 询问用户选择。',
       parameters: {
         goal: { type: 'string', description: '本次规划的整体目标（可选，用于摘要展示）' },
@@ -211,10 +219,16 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
     },
     {
       name: `${prefix}team_switch`,
-      description: '切换当前会话团队并持久化会话绑定',
+      description: '切换当前会话团队并持久化会话绑定（不传 session_id 时自动取当前宿主会话）',
       parameters: { team_id: { type: 'string', required: true }, session_id: { type: 'string' } },
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.teamSwitch(args as unknown as { team_id: string; session_id?: string }),
+      execute: (args, exec) => {
+        const input = args as unknown as { team_id: string; session_id?: string }
+        // 显式 session_id > exec 血统回溯 > 'cli-session'（cli-mcp 内兜底，纯 CLI 场景）。
+        const hasExplicit = typeof input.session_id === 'string' && input.session_id !== ''
+        const resolved = hasExplicit ? input.session_id : options.resolveSessionId?.(exec)
+        return mcp.teamSwitch(resolved === undefined ? input : { ...input, session_id: resolved })
+      },
     },
     {
       name: `${prefix}executor_list`,

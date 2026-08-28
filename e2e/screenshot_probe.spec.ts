@@ -15,7 +15,7 @@ test('screenshot teams page', async ({ page }) => {
   await page.screenshot({ path: '.artifacts/probe-02-weave-panel.png' })
   // 点团队导航
   const navTeams = page.locator('[data-testid="nav-teams"]')
-  try { await navTeams.click({ timeout: 3000 }) } catch {}
+  try { await navTeams.click({ timeout: 3000 }) } catch { /* 导航按钮缺失时容忍失败，继续后续截图 */ }
   await page.waitForTimeout(3000)
   await page.screenshot({ path: '.artifacts/probe-03-teams.png', fullPage: true })
   console.log('ERRORS:', JSON.stringify(errors))

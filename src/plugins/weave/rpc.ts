@@ -476,6 +476,15 @@ export function createWeaveRpcHandler(
   }
 }
 
+/** webServer 服务的最小结构视面（仅用 register 挂 prefix 路由）。 */
+interface WebServerLike {
+  register?(config: {
+    kind: 'prefix'
+    path: string
+    handler: (req: unknown, res: unknown) => unknown
+  }): unknown
+}
+
 /** Connection 是 Web 可选服务；headless 插件加载时自动降级为仅 MCP/CLI。 */
 export function registerWeaveRpc(
   context: Context,
@@ -486,6 +495,7 @@ export function registerWeaveRpc(
   const runtime = context as Context & {
     inject?(services: string[], callback: (scoped: Context & {
       connection?: { rpc?: HostConnectionRpc }
+      webServer?: WebServerLike
     }) => unknown): unknown
     connection?: { rpc?: HostConnectionRpc }
   }
@@ -497,9 +507,13 @@ export function registerWeaveRpc(
   })
 
   // HTTP fallback：注册 POST /dsh-weave/* 路由到 webServer，客户端 WS 不可用时走 HTTP。
-  const handler = createWeaveRpcHandler(deps, zcodeCatalog, settings)
-  const ws = (context as any)?.webServer
-  if (ws?.register) {
+  // webServer 与 connection 同为可选服务：直接读属性会抛
+  // "cannot get property without inject" 并连坐炸掉整个宿主接线（工具/pre-step 钩子
+  // 全部不注册），必须经 inject 延迟获取；headless 无 webServer 时回调不触发，自然降级。
+  runtime.inject?.(['webServer'], (scoped) => {
+    const ws = scoped.webServer
+    if (!ws?.register) return
+    const handler = createWeaveRpcHandler(deps, zcodeCatalog, settings)
     ws.register({
       kind: 'prefix',
       path: WEAVE_RPC_CHANNEL,
@@ -526,6 +540,6 @@ export function registerWeaveRpc(
         }
       },
     })
-  }
+  })
   return Boolean(runtime.inject)
 }

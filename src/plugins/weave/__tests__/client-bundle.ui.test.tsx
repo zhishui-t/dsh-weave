@@ -21,7 +21,7 @@ import React, { createElement, type ComponentType } from 'react'
 import ReactDOM from 'react-dom'
 
 type WeaveActionComponent = ComponentType<{ wide?: boolean }>
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 type ClientExports = {
   apply: (ctx: unknown) => void

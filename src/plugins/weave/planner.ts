@@ -14,7 +14,7 @@ import { WeaveError } from './state/weave-error.js'
  */
 
 export interface PlannedTaskSpec {
-  /** 计划内引用别名；缺省按顺序编号 t1..tN（持久化后为 `${dagId}-${id}`）。 */
+  /** 计划内引用别名；缺省按顺序编号 T1..TN（持久化后为 `${dagId}-${id}`）。 */
   id?: string
   /** 任务短标题；缺省取 description 首行。 */
   subject?: string
@@ -159,7 +159,7 @@ export class TeamPlanner {
     // 引用别名归一：显式 id 或 tN；同一计划内必须唯一。
     const specs = input.tasks.map((spec, index) => ({ spec, index }))
     const refIds = specs.map(({ spec, index }) => {
-      const explicit = typeof spec.id === 'string' && spec.id.trim() !== '' ? spec.id.trim() : `t${index + 1}`
+      const explicit = typeof spec.id === 'string' && spec.id.trim() !== '' ? spec.id.trim() : `T${index + 1}`
       return explicit
     })
     const duplicates = refIds.filter((id, i) => refIds.indexOf(id) !== i)

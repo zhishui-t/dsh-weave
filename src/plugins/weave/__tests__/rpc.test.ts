@@ -318,6 +318,84 @@ describe('Weave Connection RPC：settings/describe 与协议约定', () => {
   it('无 inject 能力的宿主自动降级（返回 false，仅 MCP/CLI）', () => {
     expect(registerWeaveRpc({} as never, {} as never)).toBe(false)
   })
+
+  it('webServer 未注入时 getter 抛错也不炸接线：经 inject(["webServer"]) 延迟注册 HTTP fallback（回归）', () => {
+    // 还原 cordis 真实行为：未 inject 的服务属性由 getter 抛错（dsh-web-restart.log.err 实证，
+    // 曾连坐导致 pre-step 钩子/weave_* 工具全部未注册）。
+    const injectCalls: string[][] = []
+    const routes: Array<{ kind: string; path: string; handler: unknown }> = []
+    const fakeCtx = {
+      get webServer(): unknown {
+        throw new Error('cannot get property "webServer" without inject')
+      },
+      inject(services: string[], cb: (scoped: unknown) => unknown) {
+        injectCalls.push(services)
+        if (services.includes('webServer')) {
+          cb({
+            webServer: {
+              register: (config: { kind: string; path: string; handler: unknown }) => {
+                routes.push(config)
+              },
+            },
+          })
+        } else {
+          cb({ connection: { rpc: { handle: () => () => undefined } } })
+        }
+      },
+    }
+    expect(() => registerWeaveRpc(fakeCtx as never, {} as never)).not.toThrow()
+    expect(injectCalls).toContainEqual(['webServer'])
+    expect(routes[0]).toMatchObject({ kind: 'prefix', path: WEAVE_RPC_CHANNEL })
+  })
+
+  it('HTTP fallback 路由可处理 POST 请求并返回 RpcResult 信封', async () => {
+    const routes: Array<{ kind: string; path: string; handler: (req: unknown, res: unknown) => Promise<void> }> = []
+    const fakeCtx = {
+      inject(services: string[], cb: (scoped: unknown) => unknown) {
+        if (services.includes('webServer')) {
+          cb({
+            webServer: {
+              register: (config: { kind: string; path: string; handler: (req: unknown, res: unknown) => Promise<void> }) => {
+                routes.push(config)
+              },
+            },
+          })
+        } else {
+          cb({ connection: { rpc: { handle: () => () => undefined } } })
+        }
+      },
+    }
+    registerWeaveRpc(fakeCtx as never, {} as never, undefined, { version: 'test' })
+    const route = routes[0]
+    expect(route).toBeDefined()
+
+    const listeners: Record<string, Array<(chunk?: unknown) => void>> = {}
+    const req = {
+      url: `${WEAVE_RPC_CHANNEL}/no-such-endpoint`,
+      on(event: string, cb: (chunk?: unknown) => void) {
+        ;(listeners[event] ??= []).push(cb)
+        return req
+      },
+    }
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '',
+      writeHead(code: number, headers: Record<string, string>) {
+        this.statusCode = code
+        this.headers = headers
+      },
+      end(body: string) {
+        this.body = body
+      },
+    }
+    const pending = Promise.resolve(route!.handler(req, res))
+    listeners['data']?.[0]?.('{}')
+    listeners['end']?.[0]?.()
+    await pending
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+  })
 })
 
 describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () => {

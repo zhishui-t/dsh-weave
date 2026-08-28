@@ -230,6 +230,34 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     await expect(bareDef.execute({}, undefined)).rejects.toMatchObject(/configuration_error/)
   })
 
+  it('weave_team_switch 缺省 session_id 经 options.resolveSessionId 从 exec 解析（显式 > exec > cli-session）', async () => {
+    const calls: Array<{ team_id: string; session_id?: string }> = []
+    const mcpStub = {
+      teamSwitch: async (input: { team_id: string; session_id?: string }) => {
+        calls.push(input)
+        return { session_id: input.session_id ?? 'cli-session', team_id: input.team_id }
+      },
+    } as unknown as WeaveMcp
+    const defs = buildWeaveToolDefinitions(mcpStub, {
+      resolveSessionId: (exec) => (exec as { agent?: { id?: string } } | undefined)?.agent?.id,
+    })
+    const def = defs.find((d) => d.name === 'weave_team_switch')!
+
+    // 缺省：从 exec.agent 解析宿主会话 id，不落假 id
+    await def.execute({ team_id: 'alpha-squad' }, { agent: { id: 'sess-host-1' } })
+    // 空串 session_id 视为缺省，同样走 exec 解析
+    await def.execute({ team_id: 'alpha-squad', session_id: '' }, { agent: { id: 'sess-host-2' } })
+    // 显式 session_id 永远优先
+    await def.execute({ team_id: 'alpha-squad', session_id: 'explicit-1' }, { agent: { id: 'sess-host-3' } })
+    // 无 exec（纯 CLI）：原样透传，由 mcp 层兜底 cli-session
+    await def.execute({ team_id: 'alpha-squad' }, undefined)
+
+    expect(calls[0]).toEqual({ team_id: 'alpha-squad', session_id: 'sess-host-1' })
+    expect(calls[1]).toEqual({ team_id: 'alpha-squad', session_id: 'sess-host-2' })
+    expect(calls[2]).toEqual({ team_id: 'alpha-squad', session_id: 'explicit-1' })
+    expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
+  })
+
   it('buildWeaveToolDefinitions 15 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
