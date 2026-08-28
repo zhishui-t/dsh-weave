@@ -2723,8 +2723,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         className: 'weave-dag-wrap',
         'data-testid': 'dag-panel',
         ref: wrapRef,
-        // fit 收缩成功（未触底）时内容必然完整可见 → 隐藏滚动；触底或未测量回落 auto。
-        style: { height: `${height}px`, overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden' },
+        // 高度铺满页签体（T-fix）：消除"wrap 高度=fit 结果、fit 又量 wrap"的
+        // 自参考反馈环；fit 尺度改由 RO 实测的大盒子（页签体预算高度）驱动，
+        // 内容超限时经 overflow 滚动查看。
+        style: { height: '100%', overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden' },
       },
       React.createElement(
         'svg',
@@ -4494,7 +4496,16 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       ),
       React.createElement(
         'div',
-        { className: 'weave-panel-tab-body', 'data-testid': 'weave-session-tab-body' },
+        {
+          className: 'weave-panel-tab-body',
+          'data-testid': 'weave-session-tab-body',
+          // T-fix（Playwright 实测）：CSS :524 height:auto;min-height:0 会把页签体
+          // 塌缩成内容高度（283px），DAG 图被压成小图。dag 激活时给真实高度预算：
+          // 视口高减固定 chrome，下限 420px；fit 尺度由 RO 实测的大盒子驱动。
+          ...(activeTab === 'dag'
+            ? { style: { minHeight: 'max(calc(100vh - 300px), 420px)' } }
+            : {}),
+        },
         activeTab === 'dag'
           ? React.createElement(
               'div',

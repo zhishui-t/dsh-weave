@@ -671,6 +671,28 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     expect(leftOf('T-B')).toBeGreaterThan(leftOf('T-A'))
   })
 
+  it('dag 激活时页签体有真实高度预算（minHeight）且 dag-panel 渲染（图小修复）', async () => {
+    const { panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 3, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
+      'task/get': THREE_NODE_DAG,
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    await screen.findByTestId('dag-panel')
+    // 页签体在 dag 激活时注入 minHeight 预算（视口高减固定 chrome，下限 420px）
+    const body = screen.getByTestId('weave-session-tab-body') as HTMLElement
+    expect(body.style.minHeight).toContain('100vh')
+    expect(body.style.minHeight).toContain('420px')
+    // 图容器铺满页签体（高度 100%，不再回写 fit px 造成自参考反馈环）
+    const wrap = screen.getByTestId('dag-panel') as HTMLElement
+    expect(wrap.style.height).toBe('100%')
+    // dag 未测量（jsdom 无 RO）回落 base：节点仍在、宽度为基础常量
+    expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
+    const node = screen.getByTestId('dag-node-T-A') as HTMLElement
+    expect(node.style.width).toBe('100px')
+  })
+
   it('节点治理动作：选中 RUNNING 节点出现取消按钮并调用 task/action', async () => {
     const { fixture, panel } = panelFixture({
       'session/status': STATUS_OK,
