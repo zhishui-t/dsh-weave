@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
+import { SingleWriterQueue } from '../persistence/single-writer-queue'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
 import { TeamPlanner } from '../planner'
 import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduler'
+import { TaskStatusNotifier } from '../task-status-notifier'
+import { AuditLog } from '../audit/index'
 import type { SubagentTaskOutput } from '../delegation-service'
 
 const lookup: ExecutorLookup = {
@@ -68,6 +71,17 @@ class FakeDelegation implements SchedulerDelegationLike {
       upstreamTexts: (context.upstreamOutputs ?? []).map((item) => item.output),
       requirement: context.outputRequirements,
     })
+    const gate = this.#gates.get(task.id)
+    if (gate) {
+      await new Promise<void>((resolve) => {
+        const onAbort = (): void => resolve()
+        signal.addEventListener('abort', onAbort, { once: true })
+        void gate.then(() => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        })
+      })
+    }
     await new Promise((resolve) => setTimeout(resolve, 5))
     if (signal.aborted) return { id: task.id, output: [], stopReason: 'aborted', duration_ms: 0 }
     const step = this.script.get(task.id)
@@ -82,6 +96,24 @@ class FakeDelegation implements SchedulerDelegationLike {
     }
   }
 
+  #gates = new Map<string, Promise<void>>()
+  #gateResolvers = new Map<string, () => void>()
+
+  /** 让指定任务挂起在执行中（构造 RUNNING 现场），release 放行。 */
+  gate(taskId: string): void {
+    if (this.#gates.has(taskId)) return
+    this.#gates.set(
+      taskId,
+      new Promise<void>((resolve) => {
+        this.#gateResolvers.set(taskId, resolve)
+      }),
+    )
+  }
+
+  release(taskId: string): void {
+    this.#gateResolvers.get(taskId)?.()
+  }
+
   callsFor(taskIdPrefix: string): CallRecord[] {
     return this.calls.filter((call) => call.taskId.includes(taskIdPrefix))
   }
@@ -91,6 +123,22 @@ async function flush(times = 6): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
+}
+
+async function taskStatusOf(taskId: string): Promise<string> {
+  const row = await persistence.tasks.run((db) =>
+    db.prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as { status: string } | undefined,
+  )
+  return row?.status ?? 'missing'
+}
+
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error('waitUntil 超时：条件未在时限内满足')
 }
 
 async function makeScheduler() {
@@ -373,5 +421,108 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
     await expect(scheduler.start({ dagId: 'ghost-dag', sessionId: 's' })).rejects.toMatchObject({
       code: 'task_not_found',
     })
+  })
+})
+
+describe('WeaveScheduler 旁路发电（doc/05 §6.4 P1-D 接线点 1/2）', () => {
+  it('onExternalCancel：RUNNING 任务发电「user→CANCELLED」并写 task.status_changed 审计', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const delegation = new FakeDelegation()
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const auditDir = mkdtempSync(join(tmpdir(), 'weave-audit-t18-'))
+    const audit = new AuditLog({ dir: auditDir, queue: new SingleWriterQueue() })
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+      // 开启回声验证接线本身（§6.4：user 动作缺省不回声，部署可经 echoSelfActions 打开）
+      statusNotifier: new TaskStatusNotifier({ notify: (sessionId, text) => notified.push({ sessionId, text }), echoSelfActions: true }),
+      audit,
+    })
+
+    const output = await planner.plan({
+      session_id: 'sess-1',
+      tasks: [{ id: 'a', description: '长任务', assignee: 'coder' }],
+    })
+    const dagId = output.dag_id
+    const taskId = output.tasks[0]!.id
+    delegation.gate(taskId)
+    await scheduler.start({ dagId, sessionId: 'sess-1' })
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'RUNNING'))
+
+    await scheduler.onExternalCancel(taskId)
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'CANCELLED'))
+
+    expect(notified).toHaveLength(1)
+    expect(notified[0]!.sessionId).toBe('sess-1')
+    expect(notified[0]!.text).toContain('「长任务」RUNNING → CANCELLED（task_cancel）')
+
+    const records = await audit.query({ types: ['task.status_changed'] })
+    expect(records.some((r) => (r as { task_id: string; from: string; to: string; by: string }).task_id === taskId
+      && (r as { from: string }).from === 'RUNNING'
+      && (r as { to: string }).to === 'CANCELLED'
+      && (r as { by: string }).by === 'user')).toBe(true)
+    rmSync(auditDir, { recursive: true, force: true })
+  })
+
+  it('onExternalRetry：恢复批量 notifyBatch（SKIPPED→WAITING）+ 审计', async () => {
+    await manager.bindTeam('sess-retry', 'alpha')
+    const delegation = new FakeDelegation()
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const auditDir = mkdtempSync(join(tmpdir(), 'weave-audit-t18b-'))
+    const audit = new AuditLog({ dir: auditDir, queue: new SingleWriterQueue() })
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+      statusNotifier: new TaskStatusNotifier({ notify: (sessionId, text) => notified.push({ sessionId, text }), echoSelfActions: true }),
+      audit,
+    })
+
+    // a(designer,挂起) → b(coder) → c(coder)；d(reviewer,挂起) 独立枝，保持 DAG 在途
+    const output = await planner.plan({
+      session_id: 'sess-retry',
+      tasks: [
+        { id: 'a', description: '设计任务', assignee: 'designer' },
+        { id: 'b', description: '开发任务', assignee: 'coder', depends_on: ['a'] },
+        { id: 'c', description: '复审任务', assignee: 'coder', depends_on: ['b'] },
+        { id: 'd', description: '值守任务', assignee: 'reviewer' },
+      ],
+    })
+    const dagId = output.dag_id
+    const ids = output.tasks.map((task) => task.id)
+    delegation.gate(ids[0]!)
+    delegation.gate(ids[3]!)
+    await scheduler.start({ dagId, sessionId: 'sess-retry' })
+    await waitUntil(() => taskStatusOf(ids[0]!).then((s) => s === 'RUNNING'))
+
+    await scheduler.onExternalCancel(ids[0]!)
+    await waitUntil(() => taskStatusOf(ids[2]!).then((s) => s === 'SKIPPED'))
+    expect(await taskStatusOf(ids[3]!)).toBe('RUNNING') // d 在途 → DAG 未收敛，run 存活
+
+    // 模拟 task_retry 前置：a 置回 WAITING 后触发重试联动
+    await persistence.tasks.run((db) =>
+      db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run('WAITING', new Date().toISOString(), ids[0]!),
+    )
+    await scheduler.onExternalRetry(ids[0]!)
+
+    // 第 1 条为取消发电（接线点 1），第 2 条为恢复批量汇总（接线点 2）
+    expect(notified).toHaveLength(2)
+    expect(notified[0]!.text).toContain('「设计任务」RUNNING → CANCELLED（task_cancel）')
+    expect(notified[1]!.text).toContain(`任务图 ${dagId} 状态变更 2 项：`)
+    // b 依赖的 a 处于 WAITING（未完成）→ reactivateSkipped 按就绪度给 BLOCKED；c 依赖 b 同理
+    expect(notified[1]!.text.match(/SKIPPED → BLOCKED（task_retry）/g)).toHaveLength(2)
+    const records = await audit.query({ types: ['task.status_changed'] })
+    // 审计边界（AC-TASK-002）：仅矩阵内转移入账——取消（RUNNING→CANCELLED）在账；
+    // SKIPPED→BLOCKED 属派生规则（AC-TASK-004）被审计拒绝，不虚增账目。
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ task_id: ids[0], from: 'RUNNING', to: 'CANCELLED', by: 'user' })
+
+    // 放行后链路恢复执行：a→b→c 依次完成
+    delegation.release(ids[0]!)
+    await waitUntil(() => taskStatusOf(ids[2]!).then((s) => s === 'COMPLETED'))
+    rmSync(auditDir, { recursive: true, force: true })
   })
 })

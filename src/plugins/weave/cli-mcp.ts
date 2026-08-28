@@ -10,6 +10,7 @@ import type { CircuitBreaker, BreakerRecord } from './safety/circuit-breaker.js'
 import type { TaskRecord, TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
 import type { TeamManager } from './team-manager.js'
+import type { TaskStatusNotifier } from './task-status-notifier.js'
 
 /**
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
@@ -43,6 +44,11 @@ export interface CliMcpDeps {
   importPipeline?: ImportPipeline
   /** 熔断器（P0-SAFETY-015，t8）：ban list 用。 */
   circuitBreaker?: CircuitBreaker
+  /**
+   * 任务状态变更通知单出口（doc/05 §6.4 P1-D 接线点 3）：CLI/MCP 治理动作发电，
+   * actor=captain——回声抑制（echoSelfActions=false）下缺省不通知（发起者已知结果）。
+   */
+  statusNotifier?: TaskStatusNotifier
   /**
    * 运行时执行联动（index.ts 在调度器就绪后注入）：
    * cancelTask → 中止运行中的子代理；resumeTask → 重试后重新泵 DAG。
@@ -188,6 +194,17 @@ export class WeaveMcp {
     }
     void TaskStateMachine.transition(task.status, 'WAITING')
     await this.#updateTask(taskId, { status: 'WAITING' })
+    // 接线点 3（doc/05 §6.4）：CLI/MCP 治理发电，actor=captain（缺省回声抑制不通知）。
+    this.#deps.statusNotifier?.notify({
+      taskId,
+      dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+      sessionId: task.session_id ?? '',
+      subject: task.description.split('\n')[0]?.trim() || taskId,
+      from: task.status,
+      to: 'WAITING',
+      actor: 'captain',
+      source: 'task_retry',
+    })
     try {
       await this.#deps.executionHooks?.resumeTask?.(taskId)
     } catch {
@@ -206,6 +223,17 @@ export class WeaveMcp {
     await this.#deps.persistence.tasks.run((db) => {
       db.prepare("UPDATE tasks SET status = 'SKIPPED', skip_override = 1, skip_reason = ?, updated_at = ? WHERE id = ?")
         .run('人工跳过', new Date().toISOString(), taskId)
+    })
+    // 接线点 3（doc/05 §6.4）：跳过发电，actor=captain（缺省回声抑制不通知）。
+    this.#deps.statusNotifier?.notify({
+      taskId,
+      dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+      sessionId: task.session_id ?? '',
+      subject: task.description.split('\n')[0]?.trim() || taskId,
+      from: task.status,
+      to: 'SKIPPED',
+      actor: 'captain',
+      source: 'task_skip',
     })
     return this.#loadTask(taskId)
   }
@@ -230,6 +258,17 @@ export class WeaveMcp {
     const task = await this.#loadTask(taskId)
     void TaskStateMachine.transition(task.status, 'CANCELLED')
     await this.#updateTask(taskId, { status: 'CANCELLED' })
+    // 接线点 3（doc/05 §6.4）：无 dag 兼容路径同样发电，actor=captain。
+    this.#deps.statusNotifier?.notify({
+      taskId,
+      dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+      sessionId: task.session_id ?? '',
+      subject: task.description.split('\n')[0]?.trim() || taskId,
+      from: task.status,
+      to: 'CANCELLED',
+      actor: 'captain',
+      source: 'task_cancel',
+    })
     return this.#loadTask(taskId)
   }
 

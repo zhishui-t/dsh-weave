@@ -1,6 +1,9 @@
 /// <reference lib="dom" />
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // vitest 未开启 globals，RTL 不会自动清理；显式清理避免跨用例 DOM 污染
@@ -15,8 +18,11 @@ import {
   fitDagLayout,
   isCancelable,
 } from '../dag/dag-panel'
-import { DagRepository } from '../dag/repository'
+import { DagRepository, type DagRepositoryOptions } from '../dag/repository'
 import { WeavePersistence } from '../persistence/persistence'
+import { SingleWriterQueue } from '../persistence/single-writer-queue'
+import { TaskStatusNotifier } from '../task-status-notifier'
+import { AuditLog } from '../audit/index'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types'
 
 /* ------------------------------- 测试数据 ------------------------------- */
@@ -71,9 +77,9 @@ function sampleDag(): TaskDag {
 }
 
 /** 用内存持久化 + 内置 DDL 建库，插入 DAG 数据。 */
-async function seedRepository(): Promise<DagRepository> {
+async function seedRepository(options: DagRepositoryOptions = {}): Promise<DagRepository> {
   const persistence = new WeavePersistence({ inMemory: true })
-  const repo = new DagRepository(persistence)
+  const repo = new DagRepository(persistence, options)
   const dag = sampleDag()
   await persistence.tasks.run((db) => {
     db.prepare(
@@ -242,5 +248,42 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
     expect(body.style.width).toBe('744px')
     expect(body.style.height).toBe('88px')
     expect((screen.getByTestId('dag-task-t-design') as HTMLElement).style.fontSize).toBe('10px')
+  })
+
+  it('cancelTask 接线通知与审计（doc/05 §6.4 P1-D 接线点 4）', async () => {
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const auditDir = mkdtempSync(join(tmpdir(), 'weave-audit-dagpanel-'))
+    const audit = new AuditLog({ dir: auditDir, queue: new SingleWriterQueue() })
+    // echoSelfActions=true 验证接线本身；缺省部署下面板取消（actor=user）不回声
+    const repo = await seedRepository({
+      statusNotifier: new TaskStatusNotifier({
+        notify: (sessionId, text) => notified.push({ sessionId, text }),
+        echoSelfActions: true,
+      }),
+      audit,
+    })
+    render(<DagPanel dagId={DAG_ID} repository={repo} />)
+    await screen.findByText('任务 t-implement')
+    fireEvent.click(screen.getByLabelText('取消任务 t-implement'))
+    await waitFor(() => {
+      expect(screen.getByTestId('dag-task-status-t-implement').textContent).toBe('CANCELLED')
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('dag-task-status-t-test').textContent).toBe('SKIPPED')
+    })
+
+    // 主变更单条（RUNNING→CANCELLED）+ 传播批量（t-test WAITING→SKIPPED）
+    expect(notified).toHaveLength(2)
+    expect(notified[0]!.sessionId).toBe('sess-1')
+    expect(notified[0]!.text).toContain('「任务 t-implement」RUNNING → CANCELLED（ui_cancel）')
+    expect(notified[1]!.text).toContain(`任务图 ${DAG_ID} 状态变更 1 项：`)
+    expect(notified[1]!.text).toContain('「任务 t-test」WAITING → SKIPPED（ui_cancel）')
+
+    // 审计边界（AC-TASK-002）：矩阵内 RUNNING→CANCELLED 入账；WAITING→SKIPPED
+    // 属派生规则（AC-TASK-003）被审计拒绝，不虚增账目。
+    const records = await audit.query({ types: ['task.status_changed'] })
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ task_id: 't-implement', from: 'RUNNING', to: 'CANCELLED', by: 'user' })
+    rmSync(auditDir, { recursive: true, force: true })
   })
 })

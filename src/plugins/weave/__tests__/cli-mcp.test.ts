@@ -14,6 +14,7 @@ import { KnowledgeReviewService } from '../knowledge-review'
 import { KnowledgeStore } from '../knowledge-model'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
+import { TaskStatusNotifier } from '../task-status-notifier'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 
 const GOOD_TEAM = `schema_version: "1"
@@ -88,7 +89,7 @@ afterAll(() => {
   for (const env of envs) env.close()
 })
 
-async function newEnv(registry?: ExecutorRegistry): Promise<Env> {
+async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNotifier): Promise<Env> {
   const rootDir = mkdtempSync(join(tmpdir(), 'weave-cli-'))
   writeFileSync(join(rootDir, 'alpha-squad.yaml'), GOOD_TEAM)
   const p = openPersistence({ inMemory: true })
@@ -109,6 +110,7 @@ async function newEnv(registry?: ExecutorRegistry): Promise<Env> {
   const breaker = new CircuitBreaker()
   const mcp = new WeaveMcp({
     persistence: p,
+    statusNotifier,
     teamManager: new (await import('../team-manager')).TeamManager(registry2, { teamsDir: rootDir, persistence: p }),
     executorRegistry: registry2,
     feedbackRouter: router,
@@ -557,5 +559,50 @@ describe('WeaveCli 动态 provider 路由', () => {
     expect(parsed.ok).toBe(false)
     expect(parsed.error.code).toBe('internal_error')
     expect(parsed.error.message).toBe('registry boom')
+  })
+})
+
+describe('WeaveMcp 治理发电（doc/05 §6.4 P1-D 接线点 3）', () => {
+  it('taskSkip/taskRetry 发电：actor=captain，文案含转移与来源', async () => {
+    const notified: Array<{ sessionId: string; text: string }> = []
+    // echoSelfActions=true 验证接线本身；缺省部署下 captain 动作不回声（§6.4 噪声控制①）
+    const { mcp, p } = await newEnv(undefined, new TaskStatusNotifier({
+      notify: (sessionId, text) => notified.push({ sessionId, text }),
+      echoSelfActions: true,
+    }))
+    const seeded = await seedTask(p)
+    const taskId = seeded.tasks[0]!.id
+
+    // 置 FAILED：FAILED→SKIPPED / FAILED→WAITING 均为矩阵内合法转移
+    const markFailed = async (): Promise<void> => {
+      await p.tasks.run((db) => db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('FAILED', taskId))
+    }
+    await markFailed()
+
+    await mcp.taskSkip(taskId)
+    expect(notified).toHaveLength(1)
+    expect(notified[0]!.sessionId).toBe('cli-session')
+    expect(notified[0]!.text).toContain('「实现 CLI」FAILED → SKIPPED（task_skip）')
+
+    // SKIPPED 不可重试 → 置 FAILED 后重试：FAILED → WAITING（task_retry）
+    await markFailed()
+    await mcp.taskRetry(taskId)
+    expect(notified).toHaveLength(2)
+    expect(notified[1]!.text).toContain('「实现 CLI」FAILED → WAITING（task_retry）')
+  })
+
+  it('缺省（未开回声）captain 动作不发电', async () => {
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const { mcp, p } = await newEnv(undefined, new TaskStatusNotifier({
+      notify: (sessionId, text) => notified.push({ sessionId, text }),
+    }))
+    const seeded = await seedTask(p)
+    const taskId = seeded.tasks[0]!.id
+    // WAITING→SKIPPED 非法；置 FAILED（矩阵内合法转移）后再跳过
+    await p.tasks.run((db) =>
+      db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('FAILED', taskId),
+    )
+    await mcp.taskSkip(taskId)
+    expect(notified).toHaveLength(0)
   })
 })

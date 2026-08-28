@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WeaveDatabase } from './persistence/weave-database.js'
 import { AuditLog } from './audit/audit-log.js'
+import type { TaskStatusNotifier } from './task-status-notifier.js'
+import type { TaskStatus } from './state/types.js'
 
 /**
  * P0-RECOVERY-018 崩溃恢复一致性 — 对应 SDD 6.6 / AC-RECOVERY-001。
@@ -37,6 +39,8 @@ export interface RecoveryOptions {
   knowledgeRoot: string
   /** 审计日志；默认 new AuditLog()（~/.dsh/audit 目录模型） */
   audit?: AuditLog
+  /** 任务状态变更通知单出口（doc/05 §6.4 P1-D 接线点 6）：崩溃修复发电，actor=recovery。 */
+  statusNotifier?: TaskStatusNotifier
   now?: () => Date
 }
 
@@ -78,7 +82,7 @@ export class RecoveryService {
     const placeholders = RUNNING_TASK_STATUSES.map(() => '?').join(', ')
     const rows = await this.#options.tasksDb.run((raw) => {
       return raw
-        .prepare(`SELECT id, status FROM tasks WHERE status IN (${placeholders})`)
+        .prepare(`SELECT id, status, session_id, dag_id, description FROM tasks WHERE status IN (${placeholders})`)
         .all(...RUNNING_TASK_STATUSES)
     })
     report.scanned = rows.length
@@ -101,6 +105,18 @@ export class RecoveryService {
       })
       report.repaired++
       report.actions.push(`task ${taskId}: ${from} → FAILED (crash_recovery)`)
+      // 接线点 6（doc/05 §6.4）：崩溃修复发电（与既有 audit.record 同位置），actor=recovery。
+      const description = String((row as { description?: unknown }).description ?? '')
+      this.#options.statusNotifier?.notify({
+        taskId,
+        dagId: String((row as { dag_id?: unknown }).dag_id ?? ''),
+        sessionId: String((row as { session_id?: unknown }).session_id ?? ''),
+        subject: description.split('\n')[0]?.trim() || taskId,
+        from: from as TaskStatus,
+        to: 'FAILED',
+        actor: 'recovery',
+        source: 'crash_recovery',
+      })
       await this.#auditSafe(report, {
         type: 'recovery.task_repaired',
         task_id: taskId,

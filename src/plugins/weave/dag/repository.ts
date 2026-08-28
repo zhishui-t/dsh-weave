@@ -3,6 +3,8 @@ import type { WeavePersistence } from '../persistence/persistence.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskEdge, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
+import type { TaskStatusNotifier } from '../task-status-notifier.js'
+import type { AuditLog } from '../audit/audit-log.js'
 
 /**
  * DAG 持久化仓库（HI-3：tasks.dag_id + dags/edges 表，TDD §2.6.6/2.6.7）。
@@ -111,10 +113,25 @@ export function toDagStatus(tasks: TaskRecord[]): TaskDag['status'] {
   return dagStatusOf(tasks)
 }
 
+export interface DagRepositoryOptions {
+  /** 任务状态变更通知单出口（doc/05 §6.4 P1-D 接线点 4）；未注入则不发电（向后兼容）。 */
+  statusNotifier?: TaskStatusNotifier
+  /** 审计（同步补 task.status_changed）；未注入则只通知不审计。 */
+  audit?: AuditLog
+}
+
 export class DagRepository {
   #ready = false
+  readonly #statusNotifier?: TaskStatusNotifier
+  readonly #audit?: AuditLog
 
-  constructor(private readonly persistence: WeavePersistence) {}
+  constructor(
+    private readonly persistence: WeavePersistence,
+    options: DagRepositoryOptions = {},
+  ) {
+    this.#statusNotifier = options.statusNotifier
+    this.#audit = options.audit
+  }
 
   /** 幂等确保 dags/edges 表存在（兼容早于 HI-3 规格迁移的库）。 */
   async #ensure(): Promise<void> {
@@ -173,6 +190,9 @@ export class DagRepository {
         { taskId, status: task.status },
       )
     }
+    // 传播前状态快照：propagateFailure 会原地改写共享 task 对象，通知/审计的
+    // from 必须取快照（否则 SKIPPED 传播项的 from 误报为 SKIPPED）。
+    const preStatuses = new Map(dag.tasks.map((t) => [t.id, t.status]))
     const now = new Date().toISOString()
     await this.persistence.tasks.run((db) => {
       db.prepare(`UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE id = ?`).run(
@@ -180,6 +200,29 @@ export class DagRepository {
         taskId,
       )
     })
+    // 接线点 4（doc/05 §6.4）：主变更单条发电 + 审计（actor=user；面板发起者已知
+    // 结果，echoSelfActions=false 时不回声，行为可经注入配置）。
+    try {
+      this.#statusNotifier?.notify({
+        taskId,
+        dagId,
+        sessionId: task.session_id,
+        subject: task.description.split('\n')[0]?.trim() || taskId,
+        from: task.status,
+        to: 'CANCELLED',
+        actor: 'user',
+        source: 'ui_cancel',
+      })
+      await this.#audit?.record({
+        type: 'task.status_changed',
+        task_id: taskId,
+        from: task.status,
+        to: 'CANCELLED',
+        by: 'user',
+      })
+    } catch {
+      // 通知/审计失败不影响取消本身。
+    }
     // 失败终态传播：WAITING/BLOCKED 下游 → SKIPPED（AC-TASK-003，迭代保护 100）
     const next = this.#withStatus(dag, taskId, 'CANCELLED')
     const propagated = TaskStateMachine.propagateFailure(next, taskId)
@@ -190,6 +233,41 @@ export class DagRepository {
           stmt.run(now, id)
         }
       })
+      // 接线点 4（续）：传播批量合并发电 + 审计（from 取传播前快照状态）。
+      try {
+        this.#statusNotifier?.notifyBatch(
+          propagated.skipped.map((id) => {
+            const upstream = dag.tasks.find((t) => t.id === id)
+            return {
+              taskId: id,
+              dagId,
+              sessionId: upstream?.session_id ?? task.session_id,
+              subject: upstream?.description.split('\n')[0]?.trim() || id,
+              from: (preStatuses.get(id) ?? 'WAITING') as TaskStatus,
+              to: 'SKIPPED' as TaskStatus,
+              actor: 'user' as const,
+              source: 'ui_cancel',
+            }
+          }),
+        )
+        for (const id of propagated.skipped) {
+          // 注意：WAITING/BLOCKED→SKIPPED 属派生规则（AC-TASK-003，不入 32 行矩阵），
+          // AC-TASK-002 下审计会拒绝——逐条容错跳过，通知已在上方发出。
+          try {
+            await this.#audit?.record({
+              type: 'task.status_changed',
+              task_id: id,
+              from: (preStatuses.get(id) ?? 'WAITING') as TaskStatus,
+              to: 'SKIPPED',
+              by: 'user',
+            })
+          } catch {
+            // 派生转移不被审计（AC-TASK-002）。
+          }
+        }
+      } catch {
+        // 通知/审计失败不影响取消本身。
+      }
     }
     const after = this.#withStatuses(next, propagated.skipped)
     await this.persistence.tasks.run((db) => {

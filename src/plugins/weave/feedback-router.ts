@@ -1,5 +1,6 @@
 import type { WeaveDatabase } from './persistence/weave-database.js'
 import type { SessionTracker } from './session-tracker.js'
+import type { TaskStatusNotifier } from './task-status-notifier.js'
 import { TaskStateMachine } from './state/task-state-machine.js'
 import type { TaskRecord, TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
@@ -56,6 +57,11 @@ export interface FeedbackRouterOptions {
   config?: Partial<FeedbackConfig>
   /** 可注入时钟（测试用），默认 Date.now。 */
   clock?: () => Date
+  /**
+   * 任务状态变更通知单出口（doc/05 §6.4 P1-D 接线点 5）：五动作 + closeExpired
+   * 批量发电，actor=user——回声抑制缺省下不通知（反馈由会话对话本身承载）。
+   */
+  statusNotifier?: TaskStatusNotifier
 }
 
 interface FeedbackRouteRow {
@@ -85,6 +91,7 @@ export class FeedbackRouter {
   readonly #sessionTracker: SessionTracker
   readonly #config: FeedbackConfig
   readonly #clock: () => Date
+  readonly #statusNotifier?: TaskStatusNotifier
 
   constructor(options: FeedbackRouterOptions) {
     this.#tasks = options.tasks
@@ -92,6 +99,21 @@ export class FeedbackRouter {
     this.#sessionTracker = options.sessionTracker
     this.#config = { ...DEFAULT_FEEDBACK_CONFIG, ...options.config }
     this.#clock = options.clock ?? (() => new Date())
+    this.#statusNotifier = options.statusNotifier
+  }
+
+  /** 接线点 5（doc/05 §6.4）：状态变更发电，actor=user（缺省回声抑制不通知）。 */
+  #emitStatus(task: TaskRecord, from: TaskStatus, to: TaskStatus, source: string): void {
+    this.#statusNotifier?.notify({
+      taskId: task.id,
+      dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+      sessionId: task.session_id ?? '',
+      subject: task.description.split('\n')[0]?.trim() || task.id,
+      from,
+      to,
+      actor: 'user',
+      source,
+    })
   }
 
   /**
@@ -108,6 +130,7 @@ export class FeedbackRouter {
       feedback_expires_at: expires,
       revision_count: task.revision_count,
     })
+    this.#emitStatus(task, task.status as TaskStatus, 'AWAITING_FEEDBACK', 'feedback_enter_awaiting')
     await this.#upsertRoute(taskId, {
       executor_id: task.executor ?? task.assigned_agent ?? 'unknown',
       status: 'AWAITING_FEEDBACK',
@@ -139,6 +162,7 @@ export class FeedbackRouter {
     void TaskStateMachine.transition('AWAITING_FEEDBACK', 'CLOSED')
     await this.#sessionTracker.clearRevision(taskId)
     await this.#saveTask(task, { status: 'CLOSED', feedback_expires_at: null, revision_count: task.revision_count })
+    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CLOSED', 'feedback_accept')
     await this.#patchRoute(taskId, { status: 'CLOSED', closed_at: this.#iso(this.#clock()) })
     return this.#loadTask(taskId)
   }
@@ -163,6 +187,7 @@ export class FeedbackRouter {
       feedback_expires_at: null,
       revision_count: nextCount,
     })
+    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'REVISION_RUNNING', 'feedback_revise')
     await this.#patchRoute(taskId, { status: 'REVISION_RUNNING', revision_count: nextCount })
     return this.#loadTask(taskId)
   }
@@ -173,6 +198,7 @@ export class FeedbackRouter {
     this.#assertStatus(task, 'AWAITING_FEEDBACK')
     void TaskStateMachine.transition('AWAITING_FEEDBACK', 'CANCELLED')
     await this.#saveTask(task, { status: 'CANCELLED', feedback_expires_at: null, revision_count: task.revision_count })
+    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CANCELLED', 'feedback_cancel')
     await this.#patchRoute(taskId, { status: 'CANCELLED' })
     return this.#loadTask(taskId)
   }
@@ -203,6 +229,7 @@ export class FeedbackRouter {
     void TaskStateMachine.transition('CLOSED', 'AWAITING_FEEDBACK')
     const expires = this.#addSeconds(now, this.#timeoutOf(task))
     await this.#saveTask(task, { status: 'AWAITING_FEEDBACK', feedback_expires_at: expires, revision_count: task.revision_count })
+    this.#emitStatus(task, 'CLOSED', 'AWAITING_FEEDBACK', 'feedback_reopen')
     await this.#patchRoute(taskId, {
       status: 'AWAITING_FEEDBACK',
       closed_at: null,
@@ -223,6 +250,7 @@ export class FeedbackRouter {
         .all() as { id: string }[]
     })
     const closed: string[] = []
+    const expiredChanges: Parameters<TaskStatusNotifier['notifyBatch']>[0] = []
     for (const { id } of rows) {
       const task = await this.#loadTask(id)
       const expiresMs = task.feedback_expires_at ? Date.parse(task.feedback_expires_at) : Infinity
@@ -231,8 +259,20 @@ export class FeedbackRouter {
       await this.#sessionTracker.clearRevision(id)
       await this.#saveTask(task, { status: 'CLOSED', feedback_expires_at: null, revision_count: task.revision_count })
       await this.#patchRoute(id, { status: 'CLOSED', closed_at: this.#iso(now) })
+      // 接线点 5（续）：保温期超时批量关闭收集后走 notifyBatch 一次性合并（噪声控制②）。
+      expiredChanges.push({
+        taskId: task.id,
+        dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+        sessionId: task.session_id ?? '',
+        subject: task.description.split('\n')[0]?.trim() || task.id,
+        from: 'AWAITING_FEEDBACK',
+        to: 'CLOSED',
+        actor: 'user',
+        source: 'close_expired',
+      })
       closed.push(id)
     }
+    if (expiredChanges.length > 0) this.#statusNotifier?.notifyBatch(expiredChanges)
     return closed
   }
 

@@ -6,6 +6,8 @@ import { TaskStateMachine } from './state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
 import type { NoticeSessionLike } from './session-delegation.js'
+import type { TaskStatusNotifier } from './task-status-notifier.js'
+import type { AuditLog } from './audit/audit-log.js'
 
 /**
  * 队长调度器（会话即团队·队长调度模式）：
@@ -48,6 +50,10 @@ export interface WeaveSchedulerOptions {
   retryWithFallback?: boolean
   /** 反思钩子：任务终态文本沉淀入口，返回沉淀条数；异常不阻断调度。 */
   onTaskSettledText?: (params: { task: TaskRecord; role: RoleConfig; team: TeamConfig; text: string; status: 'COMPLETED' | 'FAILED' }) => Promise<number | void>
+  /** 任务状态变更通知单出口（doc/05 §6.4 P1-D）：旁路（外部取消/重试）发电；未注入则不发电（向后兼容）。 */
+  statusNotifier?: TaskStatusNotifier
+  /** 审计（接线点同步补 task.status_changed）；未注入则只通知不审计。 */
+  audit?: AuditLog
   log?: { warn?: (...args: unknown[]) => void }
 }
 
@@ -151,11 +157,41 @@ export class WeaveScheduler {
     await this.#enqueue(input.dagId)
   }
 
-  /** UI/MCP 取消联动：中止运行中的子代理并重泵该任务所在 DAG 以收敛状态。 */
+  /** UI/MCP 取消联动：中止运行中的子代理并重泵该 DAG 以收敛状态。 */
   async onExternalCancel(taskId: string): Promise<void> {
     this.#controllers.get(taskId)?.abort()
     const dagId = await this.#dagIdOf(taskId)
-    if (dagId) await this.#enqueue(dagId)
+    if (dagId) {
+      // 接线点 1（doc/05 §6.4）：用户发起取消 → 发电 + 审计（from 取库内当前状态；
+      // 已是 CANCELLED 的重复调用不重复发电）。运行中任务的"已取消"收敛通知由
+      // 主链路既有路径负责，此处为旁路单出口。
+      try {
+        const dag = await this.loadDag(dagId)
+        const task = dag.tasks.find((item) => item.id === taskId)
+        if (task && task.status !== 'CANCELLED') {
+          this.#opts.statusNotifier?.notify({
+            taskId,
+            dagId,
+            sessionId: task.session_id,
+            subject: subjectLabel(task),
+            from: task.status,
+            to: 'CANCELLED',
+            actor: 'user',
+            source: 'task_cancel',
+          })
+          await this.#opts.audit?.record({
+            type: 'task.status_changed',
+            task_id: taskId,
+            from: task.status,
+            to: 'CANCELLED',
+            by: 'user',
+          })
+        }
+      } catch (error) {
+        this.#opts.log?.warn?.('[dsh-weave] external cancel notify failed:', error)
+      }
+      await this.#enqueue(dagId)
+    }
   }
 
   /**
@@ -178,6 +214,35 @@ export class WeaveScheduler {
             if (status !== undefined) stmt.run(status, now, id)
           }
         })
+        // 接线点 2（doc/05 §6.4）：恢复批量发电（SKIPPED → WAITING）+ 审计。
+        const byId = new Map(dag.tasks.map((item) => [item.id, item]))
+        this.#opts.statusNotifier?.notifyBatch(
+          reactivated.reactivated.map((id) => ({
+            taskId: id,
+            dagId,
+            sessionId: byId.get(id)?.session_id ?? '',
+            subject: byId.get(id) ? subjectLabel(byId.get(id)!) : id,
+            from: 'SKIPPED' as TaskStatus,
+            to: (statusById.get(id) ?? 'WAITING') as TaskStatus,
+            actor: 'user' as const,
+            source: 'task_retry',
+          })),
+        )
+        for (const id of reactivated.reactivated) {
+          // 注意：SKIPPED→BLOCKED/WAITING 属派生规则（AC-TASK-004，不入 32 行矩阵），
+          // AC-TASK-002 下审计会拒绝该转移——逐条容错跳过，矩阵内转移正常入账。
+          try {
+            await this.#opts.audit?.record({
+              type: 'task.status_changed',
+              task_id: id,
+              from: 'SKIPPED',
+              to: (statusById.get(id) ?? 'WAITING') as TaskStatus,
+              by: 'user',
+            })
+          } catch {
+            // 派生转移不被审计（AC-TASK-002）；通知已在上方发出，不回滚。
+          }
+        }
       }
     } catch (error) {
       this.#opts.log?.warn?.('[dsh-weave] resume reactivate failed:', error)

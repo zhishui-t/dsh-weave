@@ -6,6 +6,7 @@ import { openPersistence, type WeavePersistence } from '../persistence/index.js'
 import { AuditLog } from '../audit/audit-log.js'
 import { KnowledgeStore } from '../knowledge-model.js'
 import { RecoveryService } from '../recovery.js'
+import { TaskStatusNotifier } from '../task-status-notifier.js'
 
 const insertTask = async (
   p: WeavePersistence,
@@ -293,5 +294,34 @@ describe('RecoveryService：事务与审计容错（recoverAll 汇总）', () =>
     p.tasks.close()
     await expect(recovery.repairTasks()).rejects.toThrow(/已关闭/)
     expect(existsSync(join(root, 'knowledge'))).toBe(false) // 无副作用
+  })
+})
+
+describe('RecoveryService 崩溃修复发电（doc/05 §6.4 P1-D 接线点 6）', () => {
+  it('RUNNING→FAILED 修复发电：actor=recovery，sessionId/dagId 路由', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'weave-recovery-notify-'))
+    const p = openPersistence({ inMemory: true })
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const recovery = new RecoveryService({
+      tasksDb: p.tasks,
+      importsDb: p.imports,
+      knowledgeMetaDb: p.knowledgeMeta,
+      knowledgeRoot: join(root, 'knowledge'),
+      audit: new AuditLog({ dir: join(root, 'audit') }),
+      statusNotifier: new TaskStatusNotifier({
+        notify: (sessionId, text) => notified.push({ sessionId, text }),
+      }),
+    })
+
+    await insertTask(p, 't-notify', 'RUNNING')
+    const report = await recovery.repairTasks()
+    expect(report.repaired).toBe(1)
+    expect(notified).toHaveLength(1)
+    // recovery actor 不在回声抑制集合内：缺省即通知
+    expect(notified[0]!.sessionId).toBe('sess-1')
+    expect(notified[0]!.text).toContain('「desc-t-notify」RUNNING → FAILED（crash_recovery）')
+
+    p.close()
+    rmSync(root, { recursive: true, force: true })
   })
 })

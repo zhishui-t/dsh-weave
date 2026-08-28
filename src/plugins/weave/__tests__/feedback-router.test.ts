@@ -7,6 +7,7 @@ import {
 } from '../feedback-router'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
+import { TaskStatusNotifier } from '../task-status-notifier'
 import type { TaskRecord } from '../state/types'
 
 const BASE = new Date('2026-08-25T08:00:00.000Z')
@@ -359,5 +360,80 @@ describe('FeedbackRouter（保温期全链路）', () => {
     })
     const task = await cfgRouter.enterAwaitingFeedback('t-cfg-1')
     expect(task.feedback_expires_at).toBe(new Date(BASE.getTime() + 60_000).toISOString())
+  })
+})
+
+describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）', () => {
+  let p: WeavePersistence
+  let tracker: SessionTracker
+  let notified: Array<{ sessionId: string; text: string }>
+  let echoRouter: FeedbackRouter
+  let quietRouter: FeedbackRouter
+
+  beforeAll(() => {
+    p = openPersistence({ inMemory: true })
+    tracker = new SessionTracker(p.feedback)
+    notified = []
+    echoRouter = new FeedbackRouter({
+      tasks: p.tasks,
+      feedback: p.feedback,
+      sessionTracker: tracker,
+      statusNotifier: new TaskStatusNotifier({
+        notify: (sessionId, text) => notified.push({ sessionId, text }),
+        echoSelfActions: true, // 验证接线本身；缺省部署 feedback=user 不回声
+      }),
+    })
+    quietRouter = new FeedbackRouter({
+      tasks: p.tasks,
+      feedback: p.feedback,
+      sessionTracker: tracker,
+    })
+  })
+
+  afterAll(() => {
+    p.close()
+  })
+
+  it('五动作依次发电：enter/revise/accept/reopen/cancel 文案含转移与来源', async () => {
+    await insertTask(p, { id: 'n-accept' })
+    await echoRouter.enterAwaitingFeedback('n-accept')
+    await echoRouter.accept('n-accept')
+    expect(notified.map((n) => n.text)).toEqual([
+      '[weave] 任务「测试任务」COMPLETED → AWAITING_FEEDBACK（feedback_enter_awaiting）',
+      '[weave] 任务「测试任务」AWAITING_FEEDBACK → CLOSED（feedback_accept）',
+    ])
+
+    await insertTask(p, { id: 'n-revise' })
+    await echoRouter.enterAwaitingFeedback('n-revise')
+    await echoRouter.revise('n-revise', '改成支持手机号')
+    expect(notified.at(-1)!.text).toContain('AWAITING_FEEDBACK → REVISION_RUNNING（feedback_revise）')
+
+    await insertTask(p, { id: 'n-cancel' })
+    await echoRouter.enterAwaitingFeedback('n-cancel')
+    await echoRouter.cancel('n-cancel')
+    expect(notified.at(-1)!.text).toContain('AWAITING_FEEDBACK → CANCELLED（feedback_cancel）')
+
+    await insertTask(p, { id: 'n-reopen' })
+    await echoRouter.enterAwaitingFeedback('n-reopen')
+    await echoRouter.accept('n-reopen')
+    await echoRouter.reopen('n-reopen')
+    expect(notified.at(-1)!.text).toContain('CLOSED → AWAITING_FEEDBACK（feedback_reopen）')
+  })
+
+  it('closeExpired 批量合并为一条汇总（噪声控制②）', async () => {
+    await insertTask(p, { id: 'n-exp-1', feedback_expires_at: '2026-08-01T00:00:00.000Z', status: 'AWAITING_FEEDBACK' })
+    await insertTask(p, { id: 'n-exp-2', feedback_expires_at: '2026-08-01T00:00:00.000Z', status: 'AWAITING_FEEDBACK' })
+    const closed = await echoRouter.closeExpired(new Date('2026-08-28T00:00:00.000Z'))
+    expect(closed.sort()).toEqual(['n-exp-1', 'n-exp-2'])
+    const batch = notified.at(-1)!.text
+    expect(batch).toContain('状态变更 2 项：')
+    expect(batch.match(/AWAITING_FEEDBACK → CLOSED（close_expired）/g)).toHaveLength(2)
+  })
+
+  it('缺省（未开回声）feedback=user 动作不发电', async () => {
+    await insertTask(p, { id: 'n-quiet' })
+    const before = notified.length
+    await quietRouter.enterAwaitingFeedback('n-quiet')
+    expect(notified.length).toBe(before)
   })
 })

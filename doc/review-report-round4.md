@@ -51,3 +51,39 @@ Map 的 `'throw'` 联合类型未收窄（TS2339 ×2），补 `step === 'throw' 
 四门全绿 + 追加批核对通过 + §6.1–6.3 一致性核对通过。执行收口提交（不 push）。
 遗留：P1-D（T17–T20）按 doc/07 派发时机约束留待下一轮；40 个存量
 `no-explicit-any` warning 维持既有策略。
+
+---
+
+## P1-D 验收（T20/T23，2026-08-28 13:15 追加；六组接线点核对）
+
+### 四门：全部通过
+
+| 门禁 | 结果 |
+| --- | --- |
+| `pnpm test` | ✅ **38 文件 / 554 测试全绿**（Round4 收口基线 37/537，+1 文件 +17 测试） |
+| `pnpm typecheck` / `pnpm lint` / `pnpm build` | ✅ 全部 exit 0 |
+
+### 六组接线点逐条核对（doc/05 §6.4）
+
+| # | 接线点 | actor / source | 批量合并 | 回声抑制 | 审计 | 测试锚定 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | scheduler.onExternalCancel | user / task_cancel | — | 测试双向锚定 | ✅ 矩阵内入账 | scheduler.test（RUNNING→CANCELLED 全字段） |
+| 2 | scheduler.onExternalRetry 恢复 | user / task_retry | ✅ notifyBatch | 同上 | ⚠️ 派生转移（SKIPPED→BLOCKED）被 AC-TASK-002 拒绝（正确行为，见下） | scheduler.test（批量 2 项+链路复活） |
+| 3 | cli-mcp taskRetry/taskSkip/taskCancel-legacy | captain / task_retry·task_skip·task_cancel | — | ✅ 缺省不回声（测试锚定） | ❌ **未补审计（T19 遗漏，见缺口 G1）** | cli-mcp.test 2 例 |
+| 4 | repository.cancelTask + 传播 | user / ui_cancel | ✅ notifyBatch（preStatuses 快照） | 测试以 echo=true 验证接线 | 主变更 ✅；传播为派生转移按 AC-TASK-002 拒绝 | dag-panel.test（单条+批量+审计边界） |
+| 5 | feedback-router 五动作 + closeExpired | user / feedback_*·close_expired | ✅ closeExpired 一次性合并 | ✅ 缺省不回声 | ❌ **未补审计（T19 遗漏，G1）** | feedback-router.test 3 例（五动作文案逐一比对） |
+| 6 | recovery task_repaired | recovery / crash_recovery | — | 不受抑制（缺省即通知，测试锚定） | ✅ 既有 recovery.task_repaired（同位置） | recovery.test 1 例 |
+
+文案格式全部符合 §6.4（`[weave] 任务「{subject}」{from} → {to}（{source}）`；批量头含任务图与项数，超 10 行折叠——notifier 单测 8 例锚定）。**propagateFailure 原地改写共享对象**的 from 误报缺陷已在 T18 修复（preStatuses 快照）并有测试断言。
+
+### 缺口登记（G1，建议微任务）
+
+**接线点 3/5 审计补齐**：cli-mcp 与 feedback-router 的 options 未注入 AuditLog、发电点未同步 `task.status_changed`——违反 §6.4"一处接线同时发审计+通知"条款（属 T19 实施遗漏；两处转移均为矩阵内合法，补齐无 AC-TASK-002 障碍）。**修法**：两模块 options 增 `audit?`，六个发电点各补一条 `audit.record`（约 30 分钟 + 2 测试断言）。按 QA 所有权边界（仅报告与 commit）未代改，回报队长派发。
+
+**AC-TASK-002 审计边界（设计级，非缺陷）**：派生规则转移（WAITING/BLOCKED→SKIPPED、SKIPPED→BLOCKED/WAITING）不入 32 行矩阵，审计按既有校验正确拒绝——通知不受影响、逐条容错。若产品要求派生转移入账，需状态机层新增专用审计事件类型，建议另轮决策（不阻塞本次）。
+
+**生产装配提醒（非缺口）**：六组接线均为可选注入（缺省不发、向后兼容），生产通电需 index/cli 装配层传入共享 `AuditLog` + `TaskStatusNotifier`（notifySession 包装、echoSelfActions 按部署策略）——与 G1 可并入同一装配微任务。
+
+### 结论：**有条件通过（Go with condition）** — P1-D 通知单出口收口
+
+核心目标（旁路全部发电、单出口、噪声控制）六组接线全部验收通过且四门全绿；G1 审计补齐为规格次要条款缺口（3/6 组缺，其中 1 组既有 recovery 审计），已登记待微任务，不构成回退理由。执行收口提交（不 push）。
