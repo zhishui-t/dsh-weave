@@ -46,10 +46,15 @@ export function fitDagLayout(
 ): DagFitLayout {
   const naturalW = maxLevel * (base.cellW + base.levelGap)
   const naturalH = maxRows * (base.cellH + base.rowGap)
-  if (viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0) {
+  // NaN/非有限视口（未测量/异常数据）回落 base，防止 NaN 尺寸污染布局。
+  if (
+    !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h) ||
+    viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0
+  ) {
     return { ...base, overflow: false }
   }
-  const scale = Math.min(1, viewport.w / naturalW, viewport.h / naturalH)
+  // 上限 3：内容小于视口时允许放大铺满（用户实测大界面图小），防节点过大。
+  const scale = Math.min(3, viewport.w / naturalW, viewport.h / naturalH)
   const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
   const cellW = shrink(base.cellW * scale, floor.cellW)
   const cellH = shrink(base.cellH * scale, floor.cellH)

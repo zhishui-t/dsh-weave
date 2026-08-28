@@ -143,11 +143,26 @@ describe('DagPanel 纯函数', () => {
   })
 })
 
-describe('fitDagLayout（doc/05 §6.3 自适应布局）', () => {
-  it('大视口：scale 封顶 1，返回 base 原尺寸且 overflow=false（只缩不放）', () => {
-    expect(fitDagLayout({ w: 1000, h: 800 }, 1, 1)).toEqual({
-      cellW: 200, cellH: 64, levelGap: 48, rowGap: 24, overflow: false,
+describe('fitDagLayout（doc/05 §6.3 自适应布局，用户实测大界面图小后放大语义）', () => {
+  it('大视口小图：放大铺满视口，cellW 明显大于 base 且 overflow=false（用户实测修复）', () => {
+    // natural = 3×248=744 × 5×88=440；viewport 1600×900 → scale=min(3, 2.15, 2.05)≈2.05
+    const fit = fitDagLayout({ w: 1600, h: 900 }, 3, 5)
+    expect(fit.cellW).toBeGreaterThan(DAG_BASE.cellW)
+    expect(fit.cellH).toBeGreaterThan(DAG_BASE.cellH)
+    expect(fit.overflow).toBe(false)
+  })
+
+  it('超大视口：scale 封顶 3，防节点过大', () => {
+    // natural = 248×88；viewport 极大 → scale=min(3, 403, 1136)=3
+    expect(fitDagLayout({ w: 99999, h: 99999 }, 1, 1)).toEqual({
+      cellW: 600, cellH: 192, levelGap: 144, rowGap: 72, overflow: false,
     })
+  })
+
+  it('非法视口（NaN/Infinity）回落 base，不产生 NaN 尺寸', () => {
+    const base = { cellW: 200, cellH: 64, levelGap: 48, rowGap: 24, overflow: false }
+    expect(fitDagLayout({ w: Number.NaN, h: 900 }, 3, 5)).toEqual(base)
+    expect(fitDagLayout({ w: Number.POSITIVE_INFINITY, h: 900 }, 3, 5)).toEqual(base)
   })
 
   it('小视口：按 scale=min(vw/W, vh/H) 等比收缩，不触 floor 时 overflow=false', () => {

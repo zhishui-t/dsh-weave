@@ -2579,10 +2579,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   ) {
     const naturalW = (maxLevel + 1) * base.cellW + maxLevel * base.levelGap
     const naturalH = maxRows * base.cellH + Math.max(0, maxRows - 1) * base.rowGap
-    if (viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0) {
+    if (
+      !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h) ||
+      viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0
+    ) {
       return { ...base, overflow: false }
     }
-    const scale = Math.min(1, viewport.w / naturalW, viewport.h / naturalH)
+    // 上限 3：内容小于视口时允许放大铺满（用户实测大界面图小），防节点过大。
+    const scale = Math.min(3, viewport.w / naturalW, viewport.h / naturalH)
     const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
     const cellW = shrink(base.cellW * scale, floor.cellW)
     const cellH = shrink(base.cellH * scale, floor.cellH)
