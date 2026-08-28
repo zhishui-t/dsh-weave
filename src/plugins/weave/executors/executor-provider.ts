@@ -174,6 +174,10 @@ export class ExecutorProviderRegistry {
   }
 
   resolve(executor: string): ExecutorProvider | undefined {
+    // 同名精确 Provider 优先于通配 fallback：动态 ACP provider 注册较晚，
+    // 不能被注册更早的 DSH 通用 fallback（supports() 恒 true）抢占。
+    const exact = this.#providers.get(executor)
+    if (exact && exact.supports(executor)) return exact
     for (const provider of this.#providers.values()) {
       if (provider.supports(executor)) return provider
     }

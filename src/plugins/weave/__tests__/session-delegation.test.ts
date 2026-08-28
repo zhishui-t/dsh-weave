@@ -132,10 +132,11 @@ describe('自然语言团队启停（会话控制通道）', () => {
     const env = makeHookEnv()
     const first = makePayload('dup-1', '启用 pipe-team')
     await env.hook(first.payload, nextOk)
-    // 第二次投递同一 id：此时绑定已存在，重复 reject 才说明去重失效。
-    // 实现里 markProcessed 在命中后执行；未命中消息每次都会重新判定，
-    // 这里验证的是控制路径本身幂等性 —— 二次投递仍安全返回 enter/reject 之一且无异常。
-    await env.hook(first.payload, nextOk)
+    expect(env.notices).toHaveLength(1)
+
+    // 第二次投递同一 id：模块级去重命中，必须放行且不再追加 notice。
+    await expect(env.hook(first.payload, nextOk)).resolves.toEqual({ kind: 'enter', messages: [] })
+    expect(env.notices).toHaveLength(1)
     expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
 
     const pluginOnly = makePayload('p-only', '启用 pipe-team')
@@ -144,6 +145,20 @@ describe('自然语言团队启停（会话控制通道）', () => {
     )
     await env.hook(pluginOnly.payload, nextOk)
     expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' }) // 未被改写
+    expect(env.notices).toHaveLength(1)
+  })
+
+  it('同一消息并发投递只发一条 notice（先占位再 await，防 3 连通知）', async () => {
+    const env = makeHookEnv()
+    const { payload } = makePayload('dup-concurrent', '启用 pipe-team')
+    const decisions = await Promise.all([
+      env.hook(payload, nextOk),
+      env.hook(payload, nextOk),
+      env.hook(payload, nextOk),
+    ])
+    expect(env.notices).toHaveLength(1)
+    expect(decisions.filter((decision) => decision.kind === 'reject')).toHaveLength(1)
+    expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
   })
 
   it('hook 自身异常不破坏 pre-step 主链路（降级为放行）', async () => {
@@ -180,7 +195,7 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
     const call = rpcEnv()
     await expect(call('session/team-selection/set', { teamId: 'pipe-team' })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_argument', message: expect.stringContaining('显式') },
+      error: { code: 'bad-request', message: expect.stringContaining('显式'), details: { original_code: 'invalid_argument' } },
     })
   })
 
@@ -208,11 +223,11 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
     const call = rpcEnv()
     await expect(call('session/team-selection/set', { sessionId: 's', teamId: 'ghost' })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_team' },
+      error: { code: 'bad-request', details: { original_code: 'invalid_team' } },
     })
     await expect(call('session/team-selection/get', {})).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_argument' },
+      error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
     })
   })
 })

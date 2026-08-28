@@ -69,6 +69,10 @@ export interface SubagentStartRequestLike {
   signal: AbortSignal;
   /** DSH 官方模型路由覆盖（provider/model）。 */
   agentOptions?: SubagentAgentOptionsLike;
+  /** ACP 会话隔离主键（DSH 原样透传给 provider）。 */
+  sessionKey?: string;
+  /** Weave 注入的 ACP 运行时扩展（兼容旧路径把 sessionKey 内嵌于此）。 */
+  weave?: { sessionKey?: string; [key: string]: unknown };
   outputSchema?: unknown;
   maxDepth?: number;
   toolFilter?: unknown;

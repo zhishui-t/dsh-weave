@@ -1,3 +1,4 @@
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun } from './executor-provider.js'
 
 interface DshSubagentsContext {
@@ -34,8 +35,8 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
     sessionResume: false,
     modelSelection: true,
     providerSelection: true,
-    thoughtControl: false,
-    thoughtLevels: [],
+    thoughtControl: true,
+    thoughtLevels: ['off', 'low', 'high', 'max'],
     modeControl: false,
     modes: [],
     tools: {
@@ -66,9 +67,6 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
     if (!this.supports(request.executor)) {
       throw new Error(`dsh-subagent: unsupported executor "${request.executor}"`)
     }
-    if (request.runtime?.thoughtLevel && this.capabilities.thoughtControl === false) {
-      throw new Error(`dsh-subagent: executor "${request.executor}" does not support thoughtLevel`)
-    }
     if (request.runtime?.mode && this.capabilities.modeControl === false) {
       throw new Error(`dsh-subagent: executor "${request.executor}" does not support mode`)
     }
@@ -85,6 +83,31 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       } : {}),
     })
 
+    // DSH 子代理的 AgentOptions 本身不接收 reasoningEffort；
+    // 但子代理以 localAgent 暴露时，可把 thought_level 安装到其 scope 的模型选择上。
+    if (request.runtime?.thoughtLevel) {
+      const child = run.localAgent as {
+        ctx?: { on?: (event: string, listener: unknown) => unknown }
+        options?: { provider?: string; model?: string }
+      } | undefined
+      if (!child?.ctx?.on || typeof child.ctx.on !== 'function') {
+        throw new Error(`dsh-subagent: executor "${request.executor}" cannot apply thoughtLevel without an in-process localAgent`)
+      }
+      const provider = request.runtime.model?.provider ?? child.options?.provider
+      const model = request.runtime.model?.id ?? child.options?.model
+      if (!provider || !model) {
+        throw new Error(`dsh-subagent: executor "${request.executor}" needs provider/model when applying thoughtLevel`)
+      }
+      installModelSelection(child.ctx as Parameters<typeof installModelSelection>[0], {
+        current: {
+          provider,
+          model,
+          reasoningEffort: request.runtime.thoughtLevel as never,
+        },
+        assembled: undefined,
+      })
+    }
+
     return {
       ...run,
       providerId: this.id,
@@ -97,9 +120,8 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
         },
         thinking: {
           requested: request.runtime?.thoughtLevel,
-          effective: null,
-          supported: false,
-          fallback: true,
+          effective: request.runtime?.thoughtLevel ?? null,
+          supported: request.runtime?.thoughtLevel ? true : false,
         },
         mode: {
           requested: request.runtime?.mode,

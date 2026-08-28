@@ -182,6 +182,31 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     }
   })
 
+  it('iso-1 会话隔离：ACP/zcode 同一角色固定 sessionKey、不同角色不同 key，且顶层透传', async () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    const zcodeTask = { ...BASE_TASK, executor: 'zcode' }
+    const devRole = { ...BASE_ROLE, id: 'developer-1', executor: 'zcode' }
+    const feRole = { ...BASE_ROLE, id: 'frontend-1', executor: 'zcode' }
+
+    await service.executeTask(zcodeTask, devRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    await service.executeTask({ ...zcodeTask, id: 'task-2' }, devRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    await service.executeTask({ ...zcodeTask, id: 'task-3' }, feRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+
+    const requests = ctx.started.map((record) => record.request)
+    const devKey = 'team-1:developer-1:proj-weave:v0.2.0'
+    const feKey = 'team-1:frontend-1:proj-weave:v0.2.0'
+    expect(requests[0]!.sessionKey).toBe(devKey)
+    expect(requests[1]!.sessionKey).toBe(devKey)
+    expect(requests[2]!.sessionKey).toBe(feKey)
+    // DSH 会把 request 原样透传给 provider；weave.sessionKey 仅作兼容兜底，
+    // 顶层 sessionKey 必须存在，否则生产 zcode 会以 undefined 键共用会话。
+    expect(requests[0]!.weave?.sessionKey).toBe(devKey)
+    expect(requests[1]!.weave?.sessionKey).toBe(devKey)
+    expect(requests[2]!.weave?.sessionKey).toBe(feKey)
+    expect(requests[0]!.sessionKey).not.toBe(requests[2]!.sessionKey)
+  })
+
   it('buildPrompt 模板：角色/任务/项目/上游/知识/可用命令/沉淀要求/输出要求齐全', async () => {
     const ctx = new MockSubagentsContext()
     const { service: s2 } = makeService({ mock: ctx })

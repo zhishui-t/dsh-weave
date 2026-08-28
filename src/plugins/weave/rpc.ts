@@ -6,7 +6,7 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import type { CliMcpDeps } from './cli-mcp.js'
-import type { ExecutorSessionConfig } from './executors/executor-provider.js'
+import type { ExecutorProviderRegistry, ExecutorSessionConfig } from './executors/executor-provider.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import type { WeaveQueryService } from './web/query-service.js'
 import { WeaveError } from './state/weave-error.js'
@@ -45,12 +45,17 @@ function success<T>(value: T): RpcResult<T> {
 
 function failure(error: unknown): RpcResult<never> {
   if (error instanceof WeaveError) {
+    // host 连接层对 error.code 有协议白名单（bad-request/internal/session-*/workspace-*/…）。
+    // Weave 业务码（invalid_team/conflict/invalid_argument/configuration_error 等）不在名单内，
+    // 整个响应信封会被 host 校验拒绝（"No matching discriminator"），真实 message 随之丢失，
+    // Web 端只会看到一坨 union JSON。统一归一为白名单码，原始码保进 details 保留语义。
+    const known = error.code === 'internal' || error.code === 'bad-request'
     return {
       ok: false,
       error: {
-        code: error.code,
+        code: known ? error.code : 'bad-request',
         message: error.message,
-        details: error.details ?? {},
+        details: known ? (error.details ?? {}) : { ...(error.details ?? {}), original_code: error.code },
       },
     }
   }
@@ -96,6 +101,13 @@ export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> 
     settingsFile?: string
     /** 执行器运行快照查询（P3 实时输出）；由 DelegationService 提供。 */
     executorRuns?: ExecutorRunsQuery
+    /**
+     * 诊断联调：在插件进程内直接走 weave_plan_tasks 同款规划+调度（带会话 cwd），
+     * 让 executor/run-events 有真实事件缓冲，用于 UI 实时输出验证。
+     */
+    debugPlanTasks?: (args: Record<string, unknown>) => Promise<unknown>
+    /** 统一执行器 Provider 注册表（能力面：thoughtControl/modes 等）。 */
+    executorProviders?: ExecutorProviderRegistry
 
     /**
      * t4：任务/知识/审计/会话四域查询服务。
@@ -196,11 +208,18 @@ export function createWeaveRpcHandler(
         const currentMode = modeOption?.currentValue ?? zcodeSessionConfig?.modes?.currentModeId
         const modeOptions = modeOption?.options ?? zcodeSessionConfig?.modes?.availableModes?.map((mode) => ({ value: mode.id, name: mode.name }))
         const teams = resolvedDeps.teamManager.listTeams().map(serializeTeam)
-        const executors = resolvedDeps.executorRegistry.list().map((executor) => ({
-          id: executor.id,
-          kind: executor.kind,
-          capabilities: executor.capabilities,
-        }))
+        const executors = resolvedDeps.executorRegistry.list().map((executor) => {
+          const provider = resolvedDeps.executorProviders?.resolve(executor.id)
+          return {
+            id: executor.id,
+            kind: executor.kind,
+            capabilities: {
+              ...executor.capabilities,
+              // 统一 Provider 能力面：DSH 原生执行器现在可配置 thoughtLevel（reasoningEffort）。
+              ...(provider ? provider.capabilities : {}),
+            },
+          }
+        })
         let bindingsCount: number | undefined
         if (resolvedDeps.persistence) {
           try {
@@ -236,7 +255,10 @@ export function createWeaveRpcHandler(
         const input = objectPayload(payload)
         let yaml = typeof input.yaml === 'string' ? input.yaml : ''
         if (!yaml && typeof input.config === 'object' && input.config !== null) {
-          yaml = stringifyYaml(input.config)
+          // team/get 的 serializeTeam 不返回 schema_version（Web 端 get→import 回写闭环必需），
+          // 缺省补 "1"（与 parseTeam 的强校验一致），避免整队回写必然失败。
+          const config = { schema_version: '1', ...(input.config as Record<string, unknown>) }
+          yaml = stringifyYaml(config)
         }
         if (yaml.trim() === '') {
           throw new WeaveError('invalid_argument', 'team/import 需要 yaml 文本或 config 对象')
@@ -259,7 +281,7 @@ export function createWeaveRpcHandler(
       if (endpoint === 'executor/run-events') {
         const input = objectPayload(payload)
         const runs = resolvedDeps.executorRuns
-        if (!runs) return success({ runs: [], detail: undefined })
+        if (!runs) return success({ session_id: undefined, events: [], runs: [] })
         const runId = typeof input.runId === 'string' ? input.runId : undefined
         const taskId = typeof input.taskId === 'string' ? input.taskId : undefined
         const tail = typeof input.tail === 'number' ? Math.min(input.tail, 200) : 50
@@ -271,15 +293,28 @@ export function createWeaveRpcHandler(
         })
         if (runId) {
           const snap = runs.getExecutorRun(runId)
-          if (!snap) return success({ detail: undefined, runs: [] })
-          const evts = snap.events.slice(-tail)
-          return success({ detail: { session_id: snap.sessionId, events: evts.map(toClientEvent) }, runs: [] })
+          if (!snap) return success({ session_id: undefined, events: [], runs: [] })
+          return success({ session_id: snap.sessionId, events: snap.events.slice(-tail).map(toClientEvent), runs: [] })
         }
         const all = runs.listExecutorRuns()
         const filtered = taskId ? all.filter((r) => r.taskId === taskId) : all
         const withTails = filtered.map((r) => ({ ...r, events: r.events.slice(-tail).map(toClientEvent) }))
-        if (taskId && withTails.length > 0) { const first = withTails[0]!; return success({ detail: { session_id: first.sessionId, events: first.events }, runs: withTails }) }
-        return success({ detail: undefined, runs: withTails })
+        // E 块契约（doc/REDESIGN_UI_SPEC）：出参 ExecutorRunSnapshot 为顶层
+        // session_id/events；前端 fetchRunEvents 只读顶层。曾因包在 detail 内
+        // 导致 UI 拿到 events=[]（后端缓冲有数据但面板永远空白）。
+        if (taskId && withTails.length > 0) {
+          const first = withTails[0]!
+          return success({ session_id: first.sessionId, events: first.events, runs: withTails })
+        }
+        return success({ session_id: undefined, events: [], runs: withTails })
+      }
+
+      if (endpoint === 'debug/plan-tasks') {
+        const input = objectPayload(payload)
+        if (!resolvedDeps.debugPlanTasks) {
+          throw new WeaveError('configuration_error', 'debugPlanTasks 未注入')
+        }
+        return success(await resolvedDeps.debugPlanTasks(input))
       }
 
       if (endpoint === 'team/get') {

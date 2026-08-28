@@ -426,6 +426,9 @@ function ensureStyle(): void {
 .weave-spanel{display:grid;gap:14px;align-content:start;padding:14px;border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);min-height:calc(100vh - 80px)}
 .weave-spanel-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:6px;align-items:start;align-content:start}
+/* 团队详情弹窗（.weave-dialog-wide）与抽屉内的队员卡固定网格：一行 4 个、同行等高；
+   覆盖窄屏/竖屏单列媒体查询（其本意只作用于会话页 spanel） */
+.weave-dialog-wide .weave-members,.weave-drawer .weave-members{grid-template-columns:repeat(4,1fr);align-items:stretch}
 .weave-member{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;display:grid;gap:2px;background:var(--dsw-specific-menu)}
 .weave-member b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:16px}
 .weave-member .weave-muted{font-size:11px;line-height:15px}
@@ -1281,12 +1284,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 role.model = draft.model
               }
             }
-            if (draft.thoughtLevel) role.thought_level = draft.thoughtLevel
             if (draft.mode) role.mode = draft.mode
           } else {
             if (draft.provider) role.provider = draft.provider
             if (draft.model) role.model = draft.model
           }
+          // DSH 原生子代理也支持 thought_level（Weave 安装到子代理模型选择）。
+          if (draft.thoughtLevel) role.thought_level = draft.thoughtLevel
           if (draft.fallbackProvider && draft.fallbackModel) {
             role.fallback_provider = draft.fallbackProvider
             role.fallback_model = draft.fallbackModel
@@ -1533,7 +1537,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           : []
       const thoughtValues = toValues(caps?.thoughtLevels)
       const modeValues = toValues(caps?.modes)
-      const thoughtSupported = caps?.thoughtControl === true
+      const thoughtSupported = caps?.thoughtControl === true || executorId === 'spawn' || executorId === 'fork'
       const modeSupported = caps?.modeControl === true
       const disabledSelect = (label: string, unsupported: string): React.ReactElement =>
         React.createElement(
@@ -2135,11 +2139,21 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                             className: 'weave-button weave-button-secondary weave-button-small',
                             type: 'button',
                             onClick: () => {
-                              removeRole(index)
+                              // 「编辑队员」模式（memberFocus）下 removeRole 只改表单本地 state，
+                              // 编辑器直接关闭即丢弃、不落盘（submit 是唯一写入路径）；
+                              // 必须改走与详情抽屉 × 相同的确认删除链路（team/get → splice → team/import）。
                               if (memberFocus !== null) {
+                                const role = roles[index]
                                 setMemberFocus(null)
                                 setEditorMode(null)
+                                setDeleteMember({
+                                  teamId: detailTeamId ?? '',
+                                  name: String(role?.name?.trim() || role?.id?.trim() || '队员'),
+                                  roleIndex: index,
+                                })
+                                return
                               }
+                              removeRole(index)
                             },
                           },
                           '删除角色',
@@ -2420,6 +2434,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 { style: { margin: 0, fontSize: 13, lineHeight: '20px' } },
                 `即将从团队「${deleteMember.teamId}」移除队员「${deleteMember.name}」，其配置将从团队配置中删除。`,
               ),
+              // 删除失败（如「团队至少保留一名队员，无法删除」、team/import 失败）必须可见，
+              // 否则弹窗原样保留、无任何反馈，表现为“点了没反应”。
+              memberRemover.ok === false ? Note({ text: memberRemover.note, kind: 'error' }) : null,
               React.createElement(
                 'div',
                 { className: 'weave-dialog-actions' },
@@ -3868,7 +3885,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return {
       ts,
       type: String(row['type'] ?? 'status'),
-      ...(row['name'] !== undefined ? { tool: String(row['name']) } : {}),
+      // RPC 侧 toClientEvent 输出键为 tool；mock 数据用 name，两者都兼容。
+      ...((row['tool'] ?? row['name']) !== undefined ? { tool: String(row['tool'] ?? row['name']) } : {}),
       ...(row['text'] !== undefined ? { text: String(row['text']) } : {}),
     }
   }

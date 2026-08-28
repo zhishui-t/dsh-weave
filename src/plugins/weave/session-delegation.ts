@@ -115,13 +115,17 @@ export function parseTeamSelectionCommand(text: string, teams: readonly TeamConf
   return team ? { action: 'enable', team } : null
 }
 
-function markProcessed(seen: Map<string, true>, messageId: string, limit: number): void {
-  if (seen.has(messageId)) return
-  seen.set(messageId, true)
-  while (seen.size > limit) {
-    const oldest = seen.keys().next().value
+const DEFAULT_PROCESSED_MESSAGE_LIMIT = 2048
+/** 模块级去重：所有 hook 实例共享（重复注册/HMR 后同一条 pre-step 消息也不会重复通知）。 */
+const processedMessages = new Map<string, true>()
+
+function markProcessed(messageId: string, limit: number): void {
+  if (processedMessages.has(messageId)) return
+  processedMessages.set(messageId, true)
+  while (processedMessages.size > limit) {
+    const oldest = processedMessages.keys().next().value
     if (oldest === undefined) break
-    seen.delete(oldest)
+    processedMessages.delete(oldest)
   }
 }
 
@@ -133,7 +137,6 @@ function markProcessed(seen: Map<string, true>, messageId: string, limit: number
  * - 其余消息一律放行（队长模型按需调用 weave_plan_tasks 派发任务）。
  */
 export function createPreStepDelegationHook(deps: PreStepHookDeps) {
-  const processed = new Map<string, true>()
   return async (
     payload: PreStepPayloadLike,
     next: () => Promise<PreStepDecisionLike>,
@@ -141,7 +144,7 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
     try {
       const userMessages = (payload.messages ?? []).filter((message) => message?.source?.kind === 'user')
       const latest = userMessages[userMessages.length - 1]
-      if (!latest || processed.has(latest.id)) return await next()
+      if (!latest || processedMessages.has(latest.id)) return await next()
 
       const sessionId = String(payload.agent?.id ?? '')
       if (sessionId === '' || !deps.listTeams || !deps.setSelection) return await next()
@@ -156,8 +159,16 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
       const command = parseTeamSelectionCommand(text, deps.listTeams())
       if (!command) return await next()
 
-      await deps.setSelection(sessionId, command.action === 'enable' ? command.team.team_id : null)
-      markProcessed(processed, latest.id, deps.dedupeLimit ?? 512)
+      // 先占位再 await：同一消息并发投递/多 hook 实例共享模块级去重表，
+      // 不会在 setSelection 完成前各自通过检查造成 3 条重复 notice。
+      markProcessed(latest.id, deps.dedupeLimit ?? DEFAULT_PROCESSED_MESSAGE_LIMIT)
+      try {
+        await deps.setSelection(sessionId, command.action === 'enable' ? command.team.team_id : null)
+      } catch (error) {
+        // 绑定失败时释放占位，允许后续重试；异常仍由外层统一降级为放行。
+        processedMessages.delete(latest.id)
+        throw error
+      }
       deps.notify(
         sessionId,
         command.action === 'enable'

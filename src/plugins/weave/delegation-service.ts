@@ -102,6 +102,21 @@ export interface DelegationContext {
         parent: unknown
         signal: AbortSignal
         agentOptions?: ExecutorAgentOptions
+        /**
+         * ACP 会话隔离键。DSH 会把 request 原样透传给 provider；必须作为顶层
+         * 字段携带（provider 主键），weave.sessionKey 仅作向后兼容兜底。
+         */
+        sessionKey?: string
+        /** ACP 运行时扩展（会话隔离 / 模型 / 思考深度 / 模式）。 */
+        weave?: {
+          sessionKey?: string
+          resumeSessionId?: string
+          modelProvider?: string
+          model?: string
+          thoughtLevel?: string
+          mode?: string
+          tools?: ExecutorRuntimeOptions['tools']
+        }
       },
     ): Promise<DelegationRunLike>
   }
@@ -650,12 +665,15 @@ export class DelegationService {
       const startedAt = this.#now()
       const runtime = this.#resolveRuntime(role, context)
       const provider = this.#executorProviders?.resolve(executor)
+      // iso-1 会话隔离键：团队+角色+项目+版本。角色维度不同 ⇒ 键不同；
+      // 同一角色重复执行同项目同版本任务 ⇒ 复用同一 ACP/zcode 会话。
+      const sessionKey = `${team.team_id}:${role.id}:${task.project_id}:${task.version}`
 
       let run: DelegationRunLike
       if (provider) {
         run = await provider.start({
           executor,
-          sessionKey: `${team.team_id}:${role.id}:${task.project_id}:${task.version}`,
+          sessionKey,
           prompt: [{ type: 'text', text: prompt }],
           parent: context.parentAgent,
           signal: cancelSignal,
@@ -665,7 +683,7 @@ export class DelegationService {
         const agentOptions = this.#buildAgentOptions(runtime)
         const weave = executorInfo.kind === 'acp'
           ? {
-              sessionKey: `${team.team_id}:${role.id}:${task.project_id}:${task.version}`,
+              sessionKey,
               ...(runtime.model?.provider !== undefined ? { modelProvider: runtime.model.provider } : {}),
               ...(runtime.model?.id !== undefined ? { model: runtime.model.id } : {}),
               ...(runtime.thoughtLevel !== undefined ? { thoughtLevel: runtime.thoughtLevel } : {}),
@@ -678,7 +696,9 @@ export class DelegationService {
           parent: context.parentAgent,
           signal: cancelSignal,
           ...(agentOptions ? { agentOptions } : {}),
-          ...(weave ? { weave } : {}),
+          // DSH 会把 request 原样透传给 provider：sessionKey 必须顶层携带；
+          // weave.sessionKey 保留为 provider 侧的兼容兜底。
+          ...(weave ? { sessionKey, weave } : {}),
         })
       }
 

@@ -207,6 +207,13 @@ export interface SessionKeyIndexFile {
 /** 生产缺省索引路径（~/.dsh/weave/acp-session-index.json）；构造时可覆盖。 */
 export const DEFAULT_ACP_SESSION_INDEX_FILE = join(homedir(), '.dsh', 'weave', 'acp-session-index.json')
 
+/** 合法 sessionKey：非空且不等于历史 "undefined" 键（生产旧路径 sessionKey 未传的脏数据）。 */
+function normalizeSessionKey(sessionKey: string | undefined): string | undefined {
+  if (typeof sessionKey !== 'string') return undefined
+  const trimmed = sessionKey.trim()
+  return trimmed !== '' && trimmed !== 'undefined' ? trimmed : undefined
+}
+
 /** 读持久索引（best-effort：任何异常按无记录处理，绝不阻断委托）。 */
 function readSessionIndexFile(file: string | undefined, sessionKey: string): SessionKeyIndexRecord | undefined {
   if (!file) return undefined
@@ -228,7 +235,14 @@ function writeSessionIndexFile(file: string | undefined, sessionKey: string, acp
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
       if (raw && typeof raw === 'object' && raw.keys && typeof raw.keys === 'object') {
-        base = { version: 1, keys: raw.keys as Record<string, SessionKeyIndexRecord> }
+        const cleaned: Record<string, SessionKeyIndexRecord> = {}
+        for (const [key, value] of Object.entries(raw.keys as Record<string, SessionKeyIndexRecord>)) {
+          const cleanKey = normalizeSessionKey(key)
+          if (cleanKey && value && typeof value.acpSid === 'string' && value.acpSid !== '') {
+            cleaned[cleanKey] = value
+          }
+        }
+        base = { version: 1, keys: cleaned }
       }
     } catch {
       // 首次写或旧文件损坏：从空表起写。
@@ -258,7 +272,8 @@ interface RunController {
 
 export interface AcpSessionStartRequest {
   executor?: string
-  sessionKey: string
+  /** ACP 会话隔离主键；旧调用可能只经 weave.sessionKey 携带。 */
+  sessionKey?: string
   prompt: Array<{ type: string; text?: string }>
   parent?: unknown
   signal: AbortSignal
@@ -364,7 +379,13 @@ export class AcpSessionProvider {
     const cwd = this.#configuredCwd ?? parent?.session?.header?.cwd
     if (!cwd) throw new Error(`${this.name}: cwd is required`)
 
-    const sessionKey = request.sessionKey
+    // iso-1 会话隔离：顶层 sessionKey 是 DSH 透传的规范主键，weave.sessionKey
+    // 仅兼容历史调用。两者皆缺时必须 fail fast——绝不能回落到 undefined 键，
+    // 否则多个角色会复用同一 ACP/zcode 会话（索引文件出现 "undefined" 脏键）。
+    const sessionKey = normalizeSessionKey(request.sessionKey) ?? normalizeSessionKey(weave.sessionKey)
+    if (sessionKey === undefined) {
+      throw new Error(`${this.name}: sessionKey is required for ACP session isolation`)
+    }
     const connection = await this.#acquireConnection(cwd)
     // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
     // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，

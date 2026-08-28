@@ -159,6 +159,9 @@ export function apply(ctx: Context): void {
         { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
         {
           executorRegistry: deps.executorRegistry,
+          // iso-1：生产必须走统一 Provider 注册表（ZcodeAcpExecutorProvider），
+          // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
+          executorProviders: service.executorProviders,
           sessionTracker: new SessionTracker(deps.persistence.feedback),
           processLimiter: new ProcessLimiter(),
           knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
@@ -243,7 +246,10 @@ export function apply(ctx: Context): void {
       // 安全捕获：不可用时跳过（会话归属追踪降级，不影响核心委派）。
       let agentsRegistry: { get(id: string): unknown } | undefined
       try {
-        agentsRegistry = (runtime as Context & { agents?: { get(id: string): unknown } }).agents
+        // agents 不在 inject 列表，直接读属性会抛错；用 reflect 安全读取。
+        agentsRegistry = (runtime as Context & { reflect?: { get(name: string, fallback?: boolean): unknown } }).reflect?.get('agents', false) as
+          | { get(id: string): unknown }
+          | undefined
       } catch {
         // agents 服务未注入——跳过
       }
@@ -276,7 +282,30 @@ export function apply(ctx: Context): void {
 
       // RPC 通道（WS handler + HTTP fallback）：传输层失败只降级面板/远程调用。
       try {
-        registerWeaveRpc(runtime, { ...deps, queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }), executorRuns: delegation, providerStore: new ProviderStore({ file: effectiveProvidersFile }), settingsFile: weaveSettingsFile, ...(llmCatalog ? { llmCatalog } : {}) }, async () => {
+        registerWeaveRpc(runtime, {
+          ...deps,
+          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }),
+          executorRuns: delegation,
+          executorProviders: service.executorProviders,
+          providerStore: new ProviderStore({ file: effectiveProvidersFile }),
+          settingsFile: weaveSettingsFile,
+          // 诊断联调：在插件进程内用会话 cwd 合成父代理，走真实规划+调度，
+          // 让 UI 的 executor/run-events 能读取到进程内实时事件缓冲。
+          debugPlanTasks: async (args) => {
+            const sessionId = String(args['session_id'] ?? '')
+            const cwd = typeof args['cwd'] === 'string' && args['cwd'] !== '' ? args['cwd'] : process.cwd()
+            // 优先用真实会话 Agent 作为父代理（DSH 子代理需要真实 parent.ctx），
+            // 取不到时再回落合成 cwd 父代理（仅 ACP/zcode 路径可用）。
+            const realAgent = agentsRegistry?.get(sessionId) as
+              | { id?: string; session?: { header?: { cwd?: string } } }
+              | undefined
+            const parentAgent = realAgent?.id
+              ? realAgent
+              : { id: sessionId, session: { header: { cwd } } }
+            return planTasks(args, { agent: parentAgent })
+          },
+          ...(llmCatalog ? { llmCatalog } : {}),
+        }, async () => {
           if (!zcodeProvider) return undefined
           return await zcodeProvider.describeSession(process.cwd())
         }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })

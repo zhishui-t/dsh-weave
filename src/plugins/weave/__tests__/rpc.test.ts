@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup } from '../team-manager'
-import { createWeaveRpcHandler, registerWeaveRpc, WEAVE_RPC_CHANNEL } from '../rpc'
+import { createWeaveRpcHandler, registerWeaveRpc, WEAVE_RPC_CHANNEL, type ExecutorRunsQuery } from '../rpc'
 import { AuditLog } from '../audit/audit-log'
 import { WeaveMcp } from '../cli-mcp'
 import { DagRepository } from '../dag/repository'
@@ -62,6 +62,8 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 function makeEnv(
   catalog?: Parameters<typeof createWeaveRpcHandler>[1],
   settings: Parameters<typeof createWeaveRpcHandler>[2] = {},
+  executorRuns?: ExecutorRunsQuery,
+  debugPlanTasks?: (args: Record<string, unknown>) => Promise<unknown>,
 ) {
   const persistence = new WeavePersistence({ inMemory: true })
   const teamManager = new TeamManager(lookup, { teamsDir: dir, persistence })
@@ -69,6 +71,8 @@ function makeEnv(
     teamManager,
     executorRegistry: { list: () => [EXECUTOR], get: (id: string) => (id === 'zcode' ? EXECUTOR : undefined) },
     persistence,
+    ...(executorRuns !== undefined ? { executorRuns } : {}),
+    ...(debugPlanTasks !== undefined ? { debugPlanTasks } : {}),
   } as never, catalog, settings)
   return { call, teamManager, persistence }
 }
@@ -130,7 +134,7 @@ describe('Weave Connection RPC：snapshot / import（既有契约）', () => {
 
   it('未知 endpoint 返回闭合错误', async () => {
     const result = await handler()('nope', {})
-    expect(result).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(result).toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_argument' } } })
   })
 
   it('channel 常量使用独立命名空间', () => {
@@ -177,8 +181,8 @@ describe('Weave Connection RPC：团队查询与删除', () => {
     await importTeam(env.call)
     const found = await env.call('team/get', { teamId: 'rpc-team' })
     expect(found).toMatchObject({ ok: true, value: { team_id: 'rpc-team', roles: [{ id: 'member', executor: 'zcode' }] } })
-    await expect(env.call('team/get', {})).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
-    await expect(env.call('team/get', { teamId: 'ghost' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_team' } })
+    await expect(env.call('team/get', {})).resolves.toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_argument' } } })
+    await expect(env.call('team/get', { teamId: 'ghost' })).resolves.toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_team' } } })
   })
 
   it('team/delete 删除 YAML；重复删除 invalid_team；路径穿越拒绝', async () => {
@@ -193,12 +197,12 @@ describe('Weave Connection RPC：团队查询与删除', () => {
     expect(existsSync(file)).toBe(false)
     await expect(env.call('team/delete', { teamId: 'del-team' })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_team' },
+      error: { code: 'bad-request', details: { original_code: 'invalid_team' } },
     })
     for (const evil of ['../evil', '..' + String.fromCharCode(92) + 'evil', '.hidden']) {
       await expect(env.call('team/delete', { teamId: evil })).resolves.toMatchObject({
         ok: false,
-        error: { code: 'invalid_argument' },
+        error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
       })
     }
     expect(existsSync(join(dir, 'evil.yaml'))).toBe(false)
@@ -225,7 +229,7 @@ describe('Weave Connection RPC：会话绑定（core.db.team_bindings）', () =>
     const env = makeEnv()
     await expect(env.call('team/bind', { sessionId: 's1', teamId: 'ghost' })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_team' },
+      error: { code: 'bad-request', details: { original_code: 'invalid_team' } },
     })
     expect(await env.teamManager.getBoundTeam('s1')).toBeNull()
   })
@@ -259,6 +263,74 @@ describe('Weave Connection RPC：会话绑定（core.db.team_bindings）', () =>
   })
 })
 
+describe('Weave Connection RPC：executor/run-events（E 块实时输出契约）', () => {
+  const runSnapshot = () => ({
+    runId: 'acp-sid-1',
+    taskId: 'task-1',
+    executor: 'zcode',
+    state: 'running' as const,
+    startedAt: 1,
+    sessionId: 'sid-1',
+    events: [
+      { type: 'status' as const, text: 'streaming' },
+      { type: 'output' as const, text: 'live output' },
+    ],
+  })
+
+  it('taskId 查询返回顶层 session_id/events，前端可直接渲染（修复前包在 detail 内导致空白）', async () => {
+    const executorRuns: ExecutorRunsQuery = {
+      getExecutorRun: () => undefined,
+      listExecutorRuns: () => [runSnapshot()],
+    }
+    const result = await makeEnv(undefined, {}, executorRuns).call('executor/run-events', { taskId: 'task-1' })
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        session_id: 'sid-1',
+        events: expect.arrayContaining([expect.objectContaining({ type: 'output', text: 'live output' })]),
+        runs: expect.arrayContaining([expect.objectContaining({ taskId: 'task-1' })]),
+      },
+    })
+  })
+
+  it('runId 查询同样返回顶层 session_id/events', async () => {
+    const executorRuns: ExecutorRunsQuery = {
+      getExecutorRun: () => runSnapshot(),
+      listExecutorRuns: () => [],
+    }
+    const result = await makeEnv(undefined, {}, executorRuns).call('executor/run-events', { runId: 'acp-sid-1' })
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        session_id: 'sid-1',
+        events: expect.arrayContaining([expect.objectContaining({ type: 'output', text: 'live output' })]),
+      },
+    })
+  })
+
+  it('未注入 executorRuns 时返回空快照，不报错', async () => {
+    const result = await makeEnv().call('executor/run-events', { taskId: 'task-1' })
+    expect(result).toMatchObject({ ok: true, value: { session_id: undefined, events: [], runs: [] } })
+  })
+})
+
+describe('Weave Connection RPC：debug/plan-tasks（插件进程内规划调度诊断端点）', () => {
+  it('注入 debugPlanTasks 时转发 payload 并返回规划结果', async () => {
+    const received: Array<Record<string, unknown>> = []
+    const call = makeEnv(undefined, {}, undefined, async (args) => {
+      received.push(args)
+      return { ok: 'planned', session_id: args['session_id'] }
+    }).call
+    const result = await call('debug/plan-tasks', { session_id: 's1', cwd: '/tmp' })
+    expect(result).toMatchObject({ ok: true, value: { ok: 'planned', session_id: 's1' } })
+    expect(received).toEqual([{ session_id: 's1', cwd: '/tmp' }])
+  })
+  it('未注入 debugPlanTasks 时返回 configuration_error', async () => {
+    const result = await makeEnv().call('debug/plan-tasks', {})
+    expect(result).toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'configuration_error' } } })
+  })
+})
+
 describe('Weave Connection RPC：settings/describe 与协议约定', () => {
   it('settings/describe 返回版本/目录/ZCode 发现状态', async () => {
     const env = makeEnv(undefined, { version: '9.9.9-test', auditDir: '/audit-custom' })
@@ -285,10 +357,10 @@ describe('Weave Connection RPC：settings/describe 与协议约定', () => {
 
   it('payload 非对象 → invalid_argument（数组/字符串均拒绝）', async () => {
     const call = handler()
-    await expect(call('team/get', ['nope'])).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(call('team/get', ['nope'])).resolves.toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_argument' } } })
     await expect(call('team/get', 'boom' as unknown as Record<string, never>)).resolves.toMatchObject({
       ok: false,
-      error: { code: 'invalid_argument' },
+      error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
     })
   })
 
@@ -394,7 +466,7 @@ describe('Weave Connection RPC：settings/describe 与协议约定', () => {
     listeners['end']?.[0]?.()
     await pending
     expect(res.statusCode).toBe(200)
-    expect(JSON.parse(res.body)).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(JSON.parse(res.body)).toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_argument' } } })
   })
 })
 
@@ -452,8 +524,10 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
   }
 
   const errCodeOf = async (call: QuadEnv['call'], endpoint: string, payload: unknown): Promise<string> => {
-    const result = (await call(endpoint, payload)) as { ok: boolean; error?: { code: string } }
-    return result.ok === false ? result.error!.code : 'unexpected-ok'
+    // failure() 现把 Weave 业务码归一为协议白名单码（bad-request/internal），原始码进 details.original_code。
+    const result = (await call(endpoint, payload)) as { ok: boolean; error?: { code: string; details?: { original_code?: string } } }
+    if (result.ok !== false) return 'unexpected-ok'
+    return result.error?.details?.original_code ?? result.error!.code
   }
 
   it('task/list：信封返回 total 与 updated_at 降序；分页生效', async () => {

@@ -186,6 +186,44 @@ describe('AcpSessionProvider', () => {
     expect(third.id).not.toBe(first.id)
   })
 
+  it('兼容旧调用：仅 weave.sessionKey 也按角色隔离；顶层 sessionKey 优先', async () => {
+    const { provider, connections } = makeFixtures()
+    const request = {
+      parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+      signal: new AbortController().signal,
+      prompt: [{ type: 'text', text: 'hello' }],
+    }
+
+    const legacyDev = await provider.start({ ...request, weave: { sessionKey: 'legacy:developer-1' } })
+    await legacyDev.result
+    const legacyFe = await provider.start({ ...request, weave: { sessionKey: 'legacy:frontend-1' } })
+    await legacyFe.result
+
+    expect(legacyDev.id).not.toBe(legacyFe.id)
+    expect(connections[0]!.newSession).toHaveBeenCalledTimes(2)
+
+    const again = await provider.start({
+      ...request,
+      sessionKey: 'legacy:developer-1',
+      weave: { sessionKey: 'legacy:frontend-1' },
+    })
+    await again.result
+    expect(again.id).toBe(legacyDev.id)
+  })
+
+  it('缺 sessionKey fail fast：不新建会话、不写 undefined 脏键', async () => {
+    const { provider, connections } = makeFixtures()
+    const request = {
+      parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+      signal: new AbortController().signal,
+      prompt: [{ type: 'text', text: 'hello' }],
+    }
+
+    await expect(provider.start({ ...request })).rejects.toThrow(/sessionKey is required/)
+    // fail fast 发生在 acquireConnection 之前：不得创建连接，更不得新建会话。
+    expect(connections).toHaveLength(0)
+  })
+
   /* ---- iso-1：sessionKey→acpSid 持久索引（跨实例隔离与续接） ---- */
 
   describe('sessionKey 持久索引（iso-1）', () => {
@@ -228,6 +266,35 @@ describe('AcpSessionProvider', () => {
       expect(persisted.version).toBe(1)
       expect(persisted.keys['changan:developer-1:session:v0']?.acpSid).toBe('acp-session-1')
       expect(persisted.keys['changan:frontend-1:session:v0']?.acpSid).toBe('acp-session-2')
+    })
+
+    it('治理：历史 "undefined" 脏键在下一次写入时被清除，合法键保留', async () => {
+      const indexFile = join(dir, 'idx-legacy-cleanup.json')
+      writeFileSync(
+        indexFile,
+        JSON.stringify({
+          version: 1,
+          keys: {
+            undefined: { acpSid: 'legacy-shared-session', updatedAt: 1 },
+            'changan:developer-3:session:v0': { acpSid: 'valid-existing-session', updatedAt: 2 },
+          },
+        }),
+        'utf8',
+      )
+      const { provider } = makeFixtures({ sessionIndexFile: indexFile })
+      const run = await provider.start({
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        sessionKey: 'changan:developer-3:session:v0',
+        prompt: [{ type: 'text', text: 'clean legacy undefined key' }],
+      })
+      await run.result
+
+      const persisted = JSON.parse(readFileSync(indexFile, 'utf8')) as {
+        keys: Record<string, { acpSid: string }>
+      }
+      expect(persisted.keys.undefined).toBeUndefined()
+      expect(persisted.keys['changan:developer-3:session:v0']?.acpSid).toBe('valid-existing-session')
     })
 
     it('验收2：跨实例（模拟插件重启）同键经 loadSession 续接原占位符，不新建', async () => {
