@@ -9,6 +9,8 @@ import { CircuitBreaker } from './safety/circuit-breaker.js'
 import { DagRepository } from './dag/repository.js'
 import { ExecutorRegistry } from './executor-registry.js'
 import { FeedbackRouter } from './feedback-router.js'
+import { notifySession, type NoticeSessionLike } from './session-delegation.js'
+import { TaskStatusNotifier } from './task-status-notifier.js'
 import { KnowledgeReviewService } from './knowledge-review.js'
 import { KnowledgeStore } from './knowledge-model.js'
 import { ImportPipeline } from './import-pipeline.js'
@@ -588,10 +590,27 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   const registry = new ExecutorRegistry()
   registry.load(ctx as never) // 真实宿主 ctx.subagents 存在；缺失时 registry 为空（团队校验由 TeamManager 拦截）
   const tracker = new SessionTracker(persistence.feedback)
-  const router = new FeedbackRouter({ tasks: persistence.tasks, feedback: persistence.feedback, sessionTracker: tracker })
+  // 任务状态变更通知单出口 + 共享审计（doc/05 §6.4 P1-D）：六组接线点统一发电。
+  // 会话面经 ctx.agents 按 sessionId 解析后 notifySession 回灌；echoSelfActions
+  // 缺省 false——captain/user 自发动作不回声（部署缺省）。
+  const auditDir = options.auditDir ?? DEFAULT_AUDIT_DIR
+  const audit = new AuditLog({ dir: auditDir })
+  const statusNotifier = new TaskStatusNotifier({
+    notify: (sessionId, text) => {
+      const agent = (ctx as unknown as { agents?: { get?: (id: string) => { session?: unknown } | undefined } }).agents?.get?.(sessionId)
+      const session = (agent as { session?: NoticeSessionLike } | undefined)?.session
+      if (session) notifySession(session, text)
+    },
+  })
+  const router = new FeedbackRouter({
+    tasks: persistence.tasks,
+    feedback: persistence.feedback,
+    sessionTracker: tracker,
+    statusNotifier,
+    audit,
+  })
   const teamsDir = options.teamsDir ?? join(homedir(), '.dsh', 'teams')
   const knowledgeRoot = options.knowledgeDir ?? join(homedir(), '.dsh', 'knowledge')
-  const auditDir = options.auditDir ?? DEFAULT_AUDIT_DIR
   const kstore = new KnowledgeStore({ rootDir: knowledgeRoot, metaDb: persistence.knowledgeMeta })
   const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: auditDir }) })
   const importPipeline = new ImportPipeline({
@@ -604,11 +623,13 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     teamManager: new TeamManager(registry, { teamsDir, persistence }),
     executorRegistry: registry,
     feedbackRouter: router,
-    dagRepository: new DagRepository(persistence),
+    dagRepository: new DagRepository(persistence, { statusNotifier, audit }),
     knowledgeReview: kreview,
     knowledgeStore: kstore,
     importPipeline,
     circuitBreaker: new CircuitBreaker(),
+    statusNotifier,
+    audit,
   }
 }
 

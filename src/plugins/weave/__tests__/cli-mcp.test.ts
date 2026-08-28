@@ -89,7 +89,7 @@ afterAll(() => {
   for (const env of envs) env.close()
 })
 
-async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNotifier): Promise<Env> {
+async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNotifier, audit?: AuditLog): Promise<Env> {
   const rootDir = mkdtempSync(join(tmpdir(), 'weave-cli-'))
   writeFileSync(join(rootDir, 'alpha-squad.yaml'), GOOD_TEAM)
   const p = openPersistence({ inMemory: true })
@@ -111,6 +111,7 @@ async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNo
   const mcp = new WeaveMcp({
     persistence: p,
     statusNotifier,
+    audit,
     teamManager: new (await import('../team-manager')).TeamManager(registry2, { teamsDir: rootDir, persistence: p }),
     executorRegistry: registry2,
     feedbackRouter: router,
@@ -563,13 +564,15 @@ describe('WeaveCli 动态 provider 路由', () => {
 })
 
 describe('WeaveMcp 治理发电（doc/05 §6.4 P1-D 接线点 3）', () => {
-  it('taskSkip/taskRetry 发电：actor=captain，文案含转移与来源', async () => {
+  it('taskSkip/taskRetry 发电：actor=captain，文案含转移与来源；审计同步入账', async () => {
     const notified: Array<{ sessionId: string; text: string }> = []
     // echoSelfActions=true 验证接线本身；缺省部署下 captain 动作不回声（§6.4 噪声控制①）
+    const auditDir = mkdtempSync(join(tmpdir(), 'weave-audit-cli-'))
+    const audit = new AuditLog({ dir: auditDir })
     const { mcp, p } = await newEnv(undefined, new TaskStatusNotifier({
       notify: (sessionId, text) => notified.push({ sessionId, text }),
       echoSelfActions: true,
-    }))
+    }), audit)
     const seeded = await seedTask(p)
     const taskId = seeded.tasks[0]!.id
 
@@ -589,6 +592,15 @@ describe('WeaveMcp 治理发电（doc/05 §6.4 P1-D 接线点 3）', () => {
     await mcp.taskRetry(taskId)
     expect(notified).toHaveLength(2)
     expect(notified[1]!.text).toContain('「实现 CLI」FAILED → WAITING（task_retry）')
+
+    // G1 审计补齐：两次治理动作各入账一条 task.status_changed（by=captain）。
+    // query 默认按时间倒序，断言用集合比对防同毫秒顺序歧义。
+    const records = await audit.query({ types: ['task.status_changed'] })
+    const entries = records
+      .map((r) => `${(r as { from: string }).from}|${(r as { to: string }).to}|${(r as { by: string }).by}`)
+      .sort()
+    expect(entries).toEqual(['FAILED|SKIPPED|captain', 'FAILED|WAITING|captain'])
+    rmSync(auditDir, { recursive: true, force: true })
   })
 
   it('缺省（未开回声）captain 动作不发电', async () => {

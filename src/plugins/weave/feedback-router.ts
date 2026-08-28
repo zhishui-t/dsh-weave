@@ -1,6 +1,7 @@
 import type { WeaveDatabase } from './persistence/weave-database.js'
 import type { SessionTracker } from './session-tracker.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
+import type { AuditLog } from './audit/audit-log.js'
 import { TaskStateMachine } from './state/task-state-machine.js'
 import type { TaskRecord, TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
@@ -62,6 +63,8 @@ export interface FeedbackRouterOptions {
    * 批量发电，actor=user——回声抑制缺省下不通知（反馈由会话对话本身承载）。
    */
   statusNotifier?: TaskStatusNotifier
+  /** 审计（同步补 task.status_changed，by=user）；五动作均为矩阵内合法转移，可正常入账。 */
+  audit?: AuditLog
 }
 
 interface FeedbackRouteRow {
@@ -92,6 +95,7 @@ export class FeedbackRouter {
   readonly #config: FeedbackConfig
   readonly #clock: () => Date
   readonly #statusNotifier?: TaskStatusNotifier
+  readonly #audit?: AuditLog
 
   constructor(options: FeedbackRouterOptions) {
     this.#tasks = options.tasks
@@ -100,13 +104,14 @@ export class FeedbackRouter {
     this.#config = { ...DEFAULT_FEEDBACK_CONFIG, ...options.config }
     this.#clock = options.clock ?? (() => new Date())
     this.#statusNotifier = options.statusNotifier
+    this.#audit = options.audit
   }
 
-  /** 接线点 5（doc/05 §6.4）：状态变更发电，actor=user（缺省回声抑制不通知）。 */
-  #emitStatus(task: TaskRecord, from: TaskStatus, to: TaskStatus, source: string): void {
+  /** 接线点 5（doc/05 §6.4）：状态变更发电 + 审计（by=user，五动作均为矩阵内转移）。 */
+  async #emitStatus(task: TaskRecord, from: TaskStatus, to: TaskStatus, source: string): Promise<void> {
     this.#statusNotifier?.notify({
       taskId: task.id,
-      dagId: String((task as { dag_id?: string }).dag_id ?? ""),
+      dagId: String((task as { dag_id?: string }).dag_id ?? ''),
       sessionId: task.session_id ?? '',
       subject: task.description.split('\n')[0]?.trim() || task.id,
       from,
@@ -114,6 +119,11 @@ export class FeedbackRouter {
       actor: 'user',
       source,
     })
+    try {
+      await this.#audit?.record({ type: 'task.status_changed', task_id: task.id, from, to, by: 'user' })
+    } catch {
+      // 审计失败不影响反馈动作本身（与通知吞错同 philosophy）。
+    }
   }
 
   /**
@@ -162,7 +172,7 @@ export class FeedbackRouter {
     void TaskStateMachine.transition('AWAITING_FEEDBACK', 'CLOSED')
     await this.#sessionTracker.clearRevision(taskId)
     await this.#saveTask(task, { status: 'CLOSED', feedback_expires_at: null, revision_count: task.revision_count })
-    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CLOSED', 'feedback_accept')
+    await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CLOSED', 'feedback_accept')
     await this.#patchRoute(taskId, { status: 'CLOSED', closed_at: this.#iso(this.#clock()) })
     return this.#loadTask(taskId)
   }
@@ -187,7 +197,7 @@ export class FeedbackRouter {
       feedback_expires_at: null,
       revision_count: nextCount,
     })
-    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'REVISION_RUNNING', 'feedback_revise')
+    await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'REVISION_RUNNING', 'feedback_revise')
     await this.#patchRoute(taskId, { status: 'REVISION_RUNNING', revision_count: nextCount })
     return this.#loadTask(taskId)
   }
@@ -198,7 +208,7 @@ export class FeedbackRouter {
     this.#assertStatus(task, 'AWAITING_FEEDBACK')
     void TaskStateMachine.transition('AWAITING_FEEDBACK', 'CANCELLED')
     await this.#saveTask(task, { status: 'CANCELLED', feedback_expires_at: null, revision_count: task.revision_count })
-    this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CANCELLED', 'feedback_cancel')
+    await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CANCELLED', 'feedback_cancel')
     await this.#patchRoute(taskId, { status: 'CANCELLED' })
     return this.#loadTask(taskId)
   }
@@ -229,7 +239,7 @@ export class FeedbackRouter {
     void TaskStateMachine.transition('CLOSED', 'AWAITING_FEEDBACK')
     const expires = this.#addSeconds(now, this.#timeoutOf(task))
     await this.#saveTask(task, { status: 'AWAITING_FEEDBACK', feedback_expires_at: expires, revision_count: task.revision_count })
-    this.#emitStatus(task, 'CLOSED', 'AWAITING_FEEDBACK', 'feedback_reopen')
+    await this.#emitStatus(task, 'CLOSED', 'AWAITING_FEEDBACK', 'feedback_reopen')
     await this.#patchRoute(taskId, {
       status: 'AWAITING_FEEDBACK',
       closed_at: null,
@@ -273,6 +283,14 @@ export class FeedbackRouter {
       closed.push(id)
     }
     if (expiredChanges.length > 0) this.#statusNotifier?.notifyBatch(expiredChanges)
+    // 批量审计：AWAITING_FEEDBACK→CLOSED 为矩阵内合法转移；逐条容错。
+    for (const change of expiredChanges) {
+      try {
+        await this.#audit?.record({ type: 'task.status_changed', task_id: change.taskId, from: change.from, to: change.to, by: change.actor })
+      } catch {
+        // 审计失败不影响反馈动作本身。
+      }
+    }
     return closed
   }
 

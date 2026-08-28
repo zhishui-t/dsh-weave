@@ -11,6 +11,7 @@ import type { TaskRecord, TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
 import type { TeamManager } from './team-manager.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
+import type { AuditLog } from './audit/audit-log.js'
 
 /**
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
@@ -49,6 +50,11 @@ export interface CliMcpDeps {
    * actor=captain——回声抑制（echoSelfActions=false）下缺省不通知（发起者已知结果）。
    */
   statusNotifier?: TaskStatusNotifier
+  /**
+   * 审计（doc/05 §6.4）：治理发电点同步补 task.status_changed（by=captain）；
+   * 与通知同位置、逐条容错（审计失败不影响治理动作）。
+   */
+  audit?: AuditLog
   /**
    * 运行时执行联动（index.ts 在调度器就绪后注入）：
    * cancelTask → 中止运行中的子代理；resumeTask → 重试后重新泵 DAG。
@@ -205,6 +211,7 @@ export class WeaveMcp {
       actor: 'captain',
       source: 'task_retry',
     })
+    await this.#auditStatus(task, task.status, 'WAITING', 'captain')
     try {
       await this.#deps.executionHooks?.resumeTask?.(taskId)
     } catch {
@@ -235,6 +242,7 @@ export class WeaveMcp {
       actor: 'captain',
       source: 'task_skip',
     })
+    await this.#auditStatus(task, task.status, 'SKIPPED', 'captain')
     return this.#loadTask(taskId)
   }
 
@@ -269,6 +277,7 @@ export class WeaveMcp {
       actor: 'captain',
       source: 'task_cancel',
     })
+    await this.#auditStatus(task, task.status, 'CANCELLED', 'captain')
     return this.#loadTask(taskId)
   }
 
@@ -288,6 +297,15 @@ export class WeaveMcp {
     await this.#deps.persistence.tasks.run((db) => {
       db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(patch.status, new Date().toISOString(), taskId)
     })
+  }
+
+  /** 接线点 3 审计（doc/05 §6.4）：与通知同位置补 task.status_changed（by=captain）；失败容错不阻断。 */
+  async #auditStatus(task: TaskRecord, from: TaskStatus, to: TaskStatus, by: string): Promise<void> {
+    try {
+      await this.#deps.audit?.record({ type: 'task.status_changed', task_id: task.id, from, to, by })
+    } catch {
+      // 审计失败不影响治理动作本身（与通知吞错同 philosophy）。
+    }
   }
 
   async #loadTask(taskId: string): Promise<TaskRecord> {

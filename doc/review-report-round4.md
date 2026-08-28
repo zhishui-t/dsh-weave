@@ -87,3 +87,29 @@ Map 的 `'throw'` 联合类型未收窄（TS2339 ×2），补 `step === 'throw' 
 ### 结论：**有条件通过（Go with condition）** — P1-D 通知单出口收口
 
 核心目标（旁路全部发电、单出口、噪声控制）六组接线全部验收通过且四门全绿；G1 审计补齐为规格次要条款缺口（3/6 组缺，其中 1 组既有 recovery 审计），已登记待微任务，不构成回退理由。执行收口提交（不 push）。
+
+---
+
+## G1+T24 遗留验收（终验，2026-08-28 13:40 追加）
+
+### 四门：全部通过
+
+`pnpm test` **38 文件 / 554 测试全绿**；typecheck / lint / build 全部 exit 0。
+
+### G1 缺口关闭确认（对照本报告 §P1-D 验收 的 G1 登记）
+
+| 项 | 状态 |
+| --- | --- |
+| 接线点 3 审计（cli-mcp taskRetry/taskSkip/taskCancel-legacy，by=captain） | ✅ `#auditStatus` 助手三处落账，测试排序集合断言锚定 |
+| 接线点 5 审计（feedback-router 五动作 + closeExpired 批量，by=user） | ✅ `#emitStatus` 内 await 落账；测试按真实构成（4 enter+2 accept+revise+cancel+reopen=9 条）锚定 |
+| 生产装配通电 | ✅ index.ts 共享 AuditLog+TaskStatusNotifier 注入 scheduler 与 registerWeaveHost deps；createDefaultCliDeps（cli 默认装配）同步注入 FeedbackRouter/DagRepository |
+| T26 两处修复抽查 | ✅ host-wiring ctx 二段转换（`as unknown as`，TS2352 消除、无 session 安全降级）；feedback-router 审计 await+容错（动作返回前落账） |
+
+**G1 关闭。P1-D 全链路（六组接线点发电+审计+生产装配）至此完整通电。**
+
+### 遗留（不阻断）
+
+- 派生转移（SKIPPED 相关）不入审计矩阵（AC-TASK-002 设计边界，维持 T20 结论，另轮决策）；
+- echoSelfActions 部署缺省 false：captain/user 自发动作不回声——若运维需要全量回声，经装配处开启即可（无需改代码）。
+
+### 结论：**Go — G1 收尾完成，P1-D 全链路闭环**

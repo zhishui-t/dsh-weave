@@ -12,6 +12,7 @@ import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './pla
 import { WeaveScheduler } from './scheduler.js'
 import { ReflectionService } from './reflection-service.js'
 import { createExecutorEventNotifier } from './session-stream.js'
+import { TaskStatusNotifier } from './task-status-notifier.js'
 import {
   createPreStepDelegationHook,
   notifySession,
@@ -191,15 +192,26 @@ export function apply(ctx: Context): void {
           console.warn('[dsh-weave] notify session failed:', error)
         }
       }
+      const auditLog = new AuditLog({ dir: effectiveAuditDir })
       const reflection = new ReflectionService({
         knowledge: deps.knowledgeStore!,
-        audit: new AuditLog({ dir: effectiveAuditDir }),
+        audit: auditLog,
+      })
+      // 任务状态变更通知单出口（doc/05 §6.4 P1-D）：scheduler 旁路（外部取消/重试）
+      // 发电，会话面经 agentsRegistry 解析；echoSelfActions 缺省 false（不回声）。
+      const statusNotifier = new TaskStatusNotifier({
+        notify: (sessionId, text) => {
+          const agent = agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined
+          notifyWeaveSession(sessionId, text, agent?.session)
+        },
       })
       const scheduler = new WeaveScheduler({
         delegation,
         persistence: deps.persistence,
         loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
         notify: notifyWeaveSession,
+        statusNotifier,
+        audit: auditLog,
         onTaskSettledText: async ({ task, role, text }) => {
           const result = await reflection.depositFromOutput({
             taskId: task.id,
@@ -268,7 +280,8 @@ export function apply(ctx: Context): void {
 
       // 宿主工具与 /weave 命令：队长模型的任务下发路径。
       try {
-        const bundle = registerWeaveHost(runtime, deps, {
+        // P1-D 通电：治理发电与审计共用 scheduler 侧同一组实例（doc/05 §6.4）。
+        const bundle = registerWeaveHost(runtime, { ...deps, statusNotifier, audit: auditLog }, {
           planTasks,
           // weave_team_switch 缺省会话解析：与 planTasks 同一真值链（exec.agent 血统回溯），
           // 模型/用户无需知道会话 id；仅纯 CLI（无 exec.agent）回落 'cli-session'。

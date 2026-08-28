@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   FeedbackRouter,
@@ -8,6 +11,7 @@ import {
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
 import { TaskStatusNotifier } from '../task-status-notifier'
+import { AuditLog } from '../audit/audit-log'
 import type { TaskRecord } from '../state/types'
 
 const BASE = new Date('2026-08-25T08:00:00.000Z')
@@ -367,6 +371,8 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
   let p: WeavePersistence
   let tracker: SessionTracker
   let notified: Array<{ sessionId: string; text: string }>
+  let auditDir: string
+  let audit: AuditLog
   let echoRouter: FeedbackRouter
   let quietRouter: FeedbackRouter
 
@@ -374,6 +380,8 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
     p = openPersistence({ inMemory: true })
     tracker = new SessionTracker(p.feedback)
     notified = []
+    auditDir = mkdtempSync(join(tmpdir(), 'weave-audit-fb-'))
+    audit = new AuditLog({ dir: auditDir })
     echoRouter = new FeedbackRouter({
       tasks: p.tasks,
       feedback: p.feedback,
@@ -382,6 +390,7 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
         notify: (sessionId, text) => notified.push({ sessionId, text }),
         echoSelfActions: true, // 验证接线本身；缺省部署 feedback=user 不回声
       }),
+      audit,
     })
     quietRouter = new FeedbackRouter({
       tasks: p.tasks,
@@ -392,6 +401,7 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
 
   afterAll(() => {
     p.close()
+    rmSync(auditDir, { recursive: true, force: true })
   })
 
   it('五动作依次发电：enter/revise/accept/reopen/cancel 文案含转移与来源', async () => {
@@ -418,6 +428,26 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
     await echoRouter.accept('n-reopen')
     await echoRouter.reopen('n-reopen')
     expect(notified.at(-1)!.text).toContain('CLOSED → AWAITING_FEEDBACK（feedback_reopen）')
+
+    // G1 审计补齐：本测试全部动作入账（by=user，矩阵内合法转移）。
+    // 构成：4 次 enter（每任务）+ accept×2（n-accept、n-reopen）+ revise + cancel + reopen = 9 条。
+    // query 默认倒序，用排序集合比对防同毫秒顺序歧义。
+    const records = await audit.query({ types: ['task.status_changed'] })
+    const entries = records
+      .map((r) => `${(r as { from: string }).from}|${(r as { to: string }).to}|${(r as { by: string }).by}`)
+      .sort()
+    expect(entries).toEqual([
+      'AWAITING_FEEDBACK|CANCELLED|user',       // n-cancel cancel
+      'AWAITING_FEEDBACK|CLOSED|user',          // n-accept accept
+      'AWAITING_FEEDBACK|CLOSED|user',          // n-reopen accept（reopen 前置）
+      'AWAITING_FEEDBACK|REVISION_RUNNING|user', // n-revise revise
+      'CLOSED|AWAITING_FEEDBACK|user',          // n-reopen reopen
+      'COMPLETED|AWAITING_FEEDBACK|user',       // n-accept enter
+      'COMPLETED|AWAITING_FEEDBACK|user',       // n-revise enter
+      'COMPLETED|AWAITING_FEEDBACK|user',       // n-cancel enter
+      'COMPLETED|AWAITING_FEEDBACK|user',       // n-reopen enter
+    ])
+    expect(records.every((r) => (r as { by: string }).by === 'user')).toBe(true)
   })
 
   it('closeExpired 批量合并为一条汇总（噪声控制②）', async () => {
