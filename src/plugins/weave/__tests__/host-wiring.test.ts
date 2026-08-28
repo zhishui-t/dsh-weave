@@ -216,7 +216,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const planCalls: Array<Record<string, unknown>> = []
     const planTasks = async (args: unknown) => {
       planCalls.push(args as Record<string, unknown>)
-      return { dag_id: 'dag-stub-1', session_id: 's1', team_id: 't', team_name: 'n', goal: null, tasks: [] }
+      return { dag_id: 'dag-stub-1', session_id: 's1', team_id: 't', team_name: 'n', goal: null, appended: false, tasks: [] }
     }
     const bundle = registerWeaveHost(env.ctx, env.deps, { planTasks })
     const def = buildWeaveToolDefinitions(bundle.mcp, { planTasks }).find((d) => d.name === 'weave_plan_tasks')!
@@ -228,6 +228,27 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const bare = registerWeaveHost(env.ctx, env.deps)
     const bareDef = buildWeaveToolDefinitions(bare.mcp).find((d) => d.name === 'weave_plan_tasks')!
     await expect(bareDef.execute({}, undefined)).rejects.toMatchObject(/configuration_error/)
+  })
+
+  it('队长执行纪律双通道提示：工具描述与返回汇总均含五条纪律；append_to 参数已暴露（doc/05 §7）', async () => {
+    const defs = buildWeaveToolDefinitions({} as never, {})
+    const def = defs.find((d) => d.name === 'weave_plan_tasks')!
+    // 通道一：工具描述（精简版，五条关键词齐全）
+    for (const keyword of ['不得结束', '通报进度', '长阻塞', '交付物', 'retry/cancel', 'append_to']) {
+      expect(def.description).toContain(keyword)
+    }
+    // 通道二：返回汇总 render 追加完整纪律块（单一来源 CAPTAIN_DISCIPLINE；JSON 主体保持完整）
+    const rendered = def.output.render({}, { dag_id: 'd1', appended: false }) as Array<{ type: string; text: string }>
+    const text = rendered[0]!.text
+    expect(rendered[0]!.type).toBe('text')
+    expect(text).toContain('"dag_id": "d1"')
+    expect(text).toContain('## 队长执行纪律')
+    for (let i = 1; i <= 5; i += 1) {
+      expect(text).toContain(`${i}. `)
+    }
+    expect(text).toContain('append_to 增量追加到当前 DAG')
+    // append_to 参数已进 schema（第⑤条可执行的前提）
+    expect((def.parameters as Record<string, unknown>).append_to).toBeDefined()
   })
 
   it('weave_team_switch 缺省 session_id 经 options.resolveSessionId 从 exec 解析（显式 > exec > cli-session）', async () => {

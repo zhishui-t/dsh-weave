@@ -2565,6 +2565,42 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   const DAG_LEVEL_GAP = 30
   const DAG_ROW_GAP = 8
 
+  /**
+   * 自适应布局（doc/05 §6.3 P1-C）：与宿主 dag-panel.tsx fitDagLayout 同构的单文件
+   * 移植（bundle 禁 import）。floor 56/18/14/4 与宿主约定一致（本侧 base 100/32/30/8）；
+   * natural 尺寸沿用本侧历史公式，未测量/退化输入回落 base 原尺寸——渲染与历史一致。
+   */
+  function fitDagLayout(
+    viewport: { w: number; h: number },
+    maxLevel: number,
+    maxRows: number,
+    base = { cellW: DAG_CELL_W, cellH: DAG_CELL_H, levelGap: DAG_LEVEL_GAP, rowGap: DAG_ROW_GAP },
+    floor = { cellW: 56, cellH: 18, levelGap: 14, rowGap: 4 },
+  ) {
+    const naturalW = (maxLevel + 1) * base.cellW + maxLevel * base.levelGap
+    const naturalH = maxRows * base.cellH + Math.max(0, maxRows - 1) * base.rowGap
+    if (viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0) {
+      return { ...base, overflow: false }
+    }
+    const scale = Math.min(1, viewport.w / naturalW, viewport.h / naturalH)
+    const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
+    const cellW = shrink(base.cellW * scale, floor.cellW)
+    const cellH = shrink(base.cellH * scale, floor.cellH)
+    const levelGap = shrink(base.levelGap * scale, floor.levelGap)
+    const rowGap = shrink(base.rowGap * scale, floor.rowGap)
+    const overflow =
+      base.cellW * scale < floor.cellW ||
+      base.cellH * scale < floor.cellH ||
+      base.levelGap * scale < floor.levelGap ||
+      base.rowGap * scale < floor.rowGap
+    return { cellW, cellH, levelGap, rowGap, overflow }
+  }
+
+  /** 节点字号随 cellH 联动（base 32 → 10px，下限 8px）。 */
+  function dagNodeFontSize(cellH: number): number {
+    return Math.max(8, Math.round((10 * cellH) / 32))
+  }
+
   /** 状态 → 节点左边框颜色（与宿主 dag-panel P0 视图同源）。 */
   const DAG_STATUS_COLORS: Record<string, string> = {
     WAITING: '#8c8c8c',
@@ -2622,6 +2658,27 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function DagGraph({ dag, selectedId, onSelect }: DagGraphProps) {
+    // 自适应视口（doc/05 §6.3 P1-C）：ResizeObserver 浏览器全局可直接用（bundle 禁
+    // import）；不可用环境（jsdom/旧内核）保持未测量 → fit 回落 base 原尺寸，渲染与
+    // 历史一致。hooks 须在早退 return 之前调用。
+    const [viewport, setViewport] = useState({ w: 0, h: 0 })
+    const wrapRef = useRef(null)
+    useEffect(() => {
+      const el = wrapRef.current
+      if (!el || typeof ResizeObserver === 'undefined') return
+      const observer = new ResizeObserver((entries) => {
+        const rect = entries[0]?.contentRect
+        if (rect && rect.width > 0 && rect.height > 0) {
+          setViewport((prev: { w: number; h: number }) =>
+            Math.abs(prev.w - rect.width) < 1 && Math.abs(prev.h - rect.height) < 1
+              ? prev
+              : { w: rect.width, h: rect.height },
+          )
+        }
+      })
+      observer.observe(el)
+      return () => observer.disconnect()
+    }, [])
     if (!dag || !Array.isArray(dag.tasks)) return null
     const tasks = dag.tasks ?? []
     const edges = (dag.edges ?? []).length > 0
@@ -2638,25 +2695,33 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       group.push(task)
       byLevel.set(lv, group)
     }
+    const maxLevel = Math.max(0, ...[...byLevel.keys()])
+    const maxRows = Math.max(1, ...[...byLevel.values()].map((group) => group.length))
+    const fit = fitDagLayout(viewport, maxLevel, maxRows)
+    const fontSize = dagNodeFontSize(fit.cellH)
     const layout: Array<{ task: TaskRow; id: string; x: number; y: number }> = []
     for (const [lv, group] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
       group.forEach((task, index) =>
         layout.push({
           task,
           id: String(task.id ?? ''),
-          x: lv * (DAG_CELL_W + DAG_LEVEL_GAP),
-          y: index * (DAG_CELL_H + DAG_ROW_GAP),
+          x: lv * (fit.cellW + fit.levelGap),
+          y: index * (fit.cellH + fit.rowGap),
         }),
       )
     }
     const pos = new Map(layout.map((node) => [node.id, node]))
-    const maxLevel = Math.max(0, ...[...byLevel.keys()])
-    const maxRows = Math.max(1, ...[...byLevel.values()].map((group) => group.length))
-    const width = (maxLevel + 1) * DAG_CELL_W + maxLevel * DAG_LEVEL_GAP
-    const height = maxRows * DAG_CELL_H + Math.max(0, maxRows - 1) * DAG_ROW_GAP
+    const width = (maxLevel + 1) * fit.cellW + maxLevel * fit.levelGap
+    const height = maxRows * fit.cellH + Math.max(0, maxRows - 1) * fit.rowGap
     return React.createElement(
       'div',
-      { className: 'weave-dag-wrap', 'data-testid': 'dag-panel', style: { height: `${height}px` } },
+      {
+        className: 'weave-dag-wrap',
+        'data-testid': 'dag-panel',
+        ref: wrapRef,
+        // fit 收缩成功（未触底）时内容必然完整可见 → 隐藏滚动；触底或未测量回落 auto。
+        style: { height: `${height}px`, overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden' },
+      },
       React.createElement(
         'svg',
         { width, height, style: { position: 'absolute', inset: 0, pointerEvents: 'none' }, 'data-testid': 'dag-edges' },
@@ -2676,10 +2741,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           return React.createElement('line', {
             key: String(edge.from) + '->' + String(edge.to),
             'data-edge': String(edge.from) + '->' + String(edge.to),
-            x1: from.x + DAG_CELL_W,
-            y1: from.y + DAG_CELL_H / 2,
+            x1: from.x + fit.cellW,
+            y1: from.y + fit.cellH / 2,
             x2: to.x,
-            y2: to.y + DAG_CELL_H / 2,
+            y2: to.y + fit.cellH / 2,
             stroke: '#999',
             strokeWidth: 1.5,
             markerEnd: 'url(#weave-dag-arrow)',
@@ -2699,9 +2764,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             style: {
               left: node.x,
               top: node.y,
-              width: DAG_CELL_W,
-              minHeight: DAG_CELL_H,
+              width: fit.cellW,
+              minHeight: fit.cellH,
               borderLeft: '4px solid ' + (DAG_STATUS_COLORS[String(node.task.status ?? '')] ?? '#8c8c8c'),
+              fontSize,
             },
           },
           React.createElement('b', null, shortTaskId(node.id)),

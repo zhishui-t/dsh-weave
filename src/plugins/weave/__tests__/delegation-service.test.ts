@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  DEFAULT_EXECUTION_IDLE_TIMEOUT_MS,
+  loadExecutionIdleTimeoutMs,
+} from '../settings-store'
+
+import {
   DelegationService,
   detectPermissionDenied,
   formatKnowledgeSection,
@@ -445,6 +450,46 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(listeners.size).toBe(0)
   })
 
+  it('context.sessionId 优先：事件路由到宿主会话而非子代理会话（doc/05 §6.2 P1-B）', async () => {
+    const listeners = new Set<(session: unknown, event: unknown) => void>()
+    const localAgent = {
+      id: 'child-session-1',
+      ctx: {
+        on: (event: string, listener: (session: unknown, data: unknown) => void) => {
+          if (event !== 'session/event') return () => undefined
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      },
+    }
+    const delegationCtx = {
+      sessionId: 'sess-host',
+      subagents: {
+        start: async () => ({
+          id: 'run-live',
+          localAgent,
+          result: Promise.resolve({ output: [{ type: 'text', text: 'done' }], stopReason: 'completed' }),
+          dispose: async () => undefined,
+        }),
+      },
+    }
+    const registry = new ExecutorRegistry()
+    registry.load({ subagents: { list: () => ['spawn'] } } as never)
+    const events: any[] = []
+    const service = new DelegationService(delegationCtx as never, {
+      executorRegistry: registry,
+      sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
+      processLimiter: new ProcessLimiter(),
+      knowledgeEngine: makeKnowledge([]),
+      onExecutorEvent: (event) => events.push(event),
+    })
+    await service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+
+    // 全部事件（含 started/streaming/output/终态）都归属宿主会话，agent.id 被覆盖
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.every((event) => event.sessionId === 'sess-host')).toBe(true)
+  })
+
   it('远端执行器无 localAgent：发出 stream_unavailable 状态且不影响结果', async () => {
     const delegationCtx = {
       subagents: {
@@ -475,5 +520,15 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     )
     expect(output.stopReason).toBe('completed')
     expect(events.some((event) => event.type === 'status' && event.text === 'stream_unavailable')).toBe(true)
+  })
+})
+
+describe('执行空闲超时缺省（idle_timeout 误杀修复）', () => {
+  it('新缺省 1_200_000ms：zcode 长工具执行/长思考段实测可超 10 分钟，600s 已 4 次误杀', () => {
+    expect(DEFAULT_EXECUTION_IDLE_TIMEOUT_MS).toBe(1_200_000)
+  })
+
+  it('loadExecutionIdleTimeoutMs：缺失文件回落缺省；非正数/非法类型忽略', () => {
+    expect(loadExecutionIdleTimeoutMs('no-such-settings-file.json')).toBe(1_200_000)
   })
 })

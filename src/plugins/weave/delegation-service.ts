@@ -87,6 +87,12 @@ export interface ExecutorAgentOptions {
 }
 
 export interface DelegationContext {
+  /**
+   * 宿主会话 id（doc/05 §6.2 P1-B）：调度器从 DagRunContext 传入。
+   * 执行器事件的 sessionId 路由优先取它——agent.id 是子代理自身会话，
+   * 拿它做通知回灌会把进度发错会话。
+   */
+  sessionId?: string
   subagents: {
     start(
       name: string,
@@ -391,6 +397,15 @@ export class DelegationService {
     }
   }
 
+  /**
+   * 事件 sessionId 归属（doc/05 §6.2 P1-B）：宿主会话（context.sessionId，调度器
+   * 从 DagRunContext 传入）优先——agent.id/run.sessionId 是子代理自身会话，
+   * 拿它做通知回灌会把进度发错会话；两者皆缺时保持 undefined（历史行为）。
+   */
+  #eventSessionId(fallback: string | undefined): string | undefined {
+    return this.#ctx.sessionId ?? fallback
+  }
+
   #finishExecutorRun(
     runId: string,
     state: ExecutorRunSnapshot['state'],
@@ -468,13 +483,13 @@ export class DelegationService {
           executor,
           runId: run.id,
           type,
-          ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+          sessionId: this.#eventSessionId(event.sessionId),
           ...(event.text !== undefined ? { text: event.text } : {}),
           ...(event.name !== undefined ? { name: event.name } : {}),
           ...(event.data !== undefined ? { data: event.data } : {}),
         })
       })
-      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, sessionId: this.#eventSessionId(undefined), type: 'status', text: 'streaming' })
       return { unsubscribe: unsubscribe ?? (() => undefined), hasEventSource: true }
     }
 
@@ -493,7 +508,7 @@ export class DelegationService {
               executor,
               runId: run.id,
               type,
-              ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+              sessionId: this.#eventSessionId(event.sessionId),
               ...(event.text !== undefined ? { text: event.text } : {}),
               ...(event.name !== undefined ? { name: event.name } : {}),
               ...(event.data !== undefined ? { data: event.data } : {}),
@@ -503,7 +518,7 @@ export class DelegationService {
           // 快照失败不阻断委托。
         }
       }, 250)
-      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, sessionId: this.#eventSessionId(undefined), type: 'status', text: 'streaming' })
       return { unsubscribe: () => clearInterval(timer), hasEventSource: true }
     }
 
@@ -519,21 +534,22 @@ export class DelegationService {
         taskId,
         executor,
         runId: run.id,
+        sessionId: this.#eventSessionId(undefined),
         type: 'status',
         text: 'stream_unavailable',
       })
       return { unsubscribe: () => undefined, hasEventSource: false }
     }
 
-    try {
-      const unsubscribe = agent.ctx.on('session/event', (session, rawEvent) => {
-        const event = rawEvent as { type?: string; data?: any }
-        const base = {
-          taskId,
-          executor,
-          runId: run.id,
-          sessionId: agent.id ?? (session as { id?: string } | undefined)?.id,
-        }
+      try {
+        const unsubscribe = agent.ctx.on('session/event', (session, rawEvent) => {
+          const event = rawEvent as { type?: string; data?: any }
+          const base = {
+            taskId,
+            executor,
+            runId: run.id,
+            sessionId: this.#eventSessionId(agent.id ?? (session as { id?: string } | undefined)?.id),
+          }
         if (event.type === 'assistant/chunk') {
           const chunk = event.data?.chunk
           if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
@@ -569,13 +585,14 @@ export class DelegationService {
           })
         }
       })
-      this.#emitExecutorEvent({ taskId, executor, runId: run.id, type: 'status', text: 'streaming' })
+      this.#emitExecutorEvent({ taskId, executor, runId: run.id, sessionId: this.#eventSessionId(undefined), type: 'status', text: 'streaming' })
       return { unsubscribe: unsubscribe ?? (() => undefined), hasEventSource: true }
     } catch (error) {
       this.#emitExecutorEvent({
         taskId,
         executor,
         runId: run.id,
+        sessionId: this.#eventSessionId(undefined),
         type: 'status',
         text: 'stream_unavailable',
         data: String(error),
@@ -665,7 +682,9 @@ export class DelegationService {
         })
       }
 
-      const runSessionId = (run as DelegationRunLike).sessionId ?? ((run as { localAgent?: { id?: string } | undefined }).localAgent?.id)
+      const runSessionId = this.#eventSessionId(
+        (run as DelegationRunLike).sessionId ?? ((run as { localAgent?: { id?: string } | undefined }).localAgent?.id),
+      )
       this.#emitExecutorEvent({
         taskId: task.id,
         executor,

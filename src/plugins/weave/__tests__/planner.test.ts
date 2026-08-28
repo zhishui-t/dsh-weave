@@ -177,6 +177,119 @@ describe('TeamPlanner.plan', () => {
   })
 })
 
+describe('TeamPlanner.plan 追加模式（doc/05 §6.1 P1-A）', () => {
+  it('正常追加：编号 DAG 域递增 T3/T4、appended=true、tasks 仅含新增、落库合并为 4 任务', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({
+      session_id: 'sess-1',
+      tasks: [
+        { description: '第一批一', assignee: 'coder' },
+        { description: '第一批二', assignee: 'reviewer', depends_on: ['T1'] },
+      ],
+    })
+    expect(first.appended).toBe(false)
+    const second = await planner.plan({
+      session_id: 'sess-1',
+      append_to: first.dag_id,
+      tasks: [
+        { description: '第二批一', assignee: 'coder' },
+        { description: '第二批二', assignee: 'designer', depends_on: ['T3', 'T1'] },
+      ],
+    })
+    expect(second.appended).toBe(true)
+    expect(second.dag_id).toBe(first.dag_id)
+    expect(second.tasks.map((t) => [t.id.split('-').pop(), t.status])).toEqual([
+      ['T3', 'WAITING'],
+      ['T4', 'BLOCKED'], // 依赖新任务 T3 与既有任务 T1
+    ])
+    expect(second.tasks[1]!.depends_on).toEqual(['T3', 'T1'])
+
+    const dag = await new (await import('../dag/repository')).DagRepository(persistence).loadDag(first.dag_id)
+    expect(dag.tasks).toHaveLength(4)
+    const t4 = dag.tasks.find((t) => t.id.endsWith('-T4'))!
+    expect(t4.dependencies).toContain(`${first.dag_id}-T1`)
+    expect(dag.edges.some((e) => e.from === `${first.dag_id}-T1` && e.to === `${first.dag_id}-T4`)).toBe(true)
+  })
+
+  it('显式 id 与 DAG 域既有任务撞名 → invalid_argument', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      append_to: first.dag_id,
+      tasks: [{ id: 'T1', description: '撞名', assignee: 'coder' }],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('冲突') })
+  })
+
+  it('append_to 不存在 → invalid_argument；跨团队 DAG → invalid_argument', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      append_to: 'dag-nope',
+      tasks: [{ description: 'x', assignee: 'coder' }],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('不存在') })
+
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
+    await manager.bindTeam('sess-beta', 'beta')
+    await expect(planner.plan({
+      session_id: 'sess-beta',
+      append_to: first.dag_id,
+      tasks: [{ description: 'y', assignee: 'coder' }],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('不一致') })
+  })
+
+  it('依赖引用计划外任务在扩展域下仍拒绝', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      append_to: first.dag_id,
+      tasks: [{ description: 'x', assignee: 'coder', depends_on: ['ghost'] }],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('ghost') })
+  })
+
+  it('追加批次内成环 → invalid_argument（批内∪既有联合判环）', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    await expect(planner.plan({
+      session_id: 'sess-1',
+      append_to: first.dag_id,
+      tasks: [
+        { id: 'p', description: 'x', assignee: 'coder', depends_on: ['q'] },
+        { id: 'q', description: 'y', assignee: 'coder', depends_on: ['p'] },
+      ],
+    })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('成环') })
+  })
+
+  it('终态 DAG 追加 → 复活：dags.status 置回 created', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    await persistence.tasks.run((db) =>
+      db.prepare('UPDATE dags SET status = ? WHERE dag_id = ?').run('completed', first.dag_id),
+    )
+    const second = await planner.plan({
+      session_id: 'sess-1',
+      append_to: first.dag_id,
+      tasks: [{ description: '二', assignee: 'coder' }],
+    })
+    expect(second.appended).toBe(true)
+    const status = await persistence.tasks.run((db) =>
+      (db.prepare('SELECT status FROM dags WHERE dag_id = ?').get(first.dag_id) as { status: string }).status,
+    )
+    expect(status).toBe('created')
+  })
+
+  it('缺省新建回归：不传 append_to 行为不变（新 dag、编号从 T1 重开、appended=false）', async () => {
+    await manager.bindTeam('sess-1', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
+    const second = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '二', assignee: 'coder' }] })
+    expect(second.appended).toBe(false)
+    expect(second.dag_id).not.toBe(first.dag_id)
+    expect(second.tasks[0]!.id.endsWith('-T1')).toBe(true)
+  })
+})
+
 describe('assertAcyclic', () => {
   it('非环通过，环拒绝并列出参与节点', () => {
     expect(() => assertAcyclic([
@@ -228,5 +341,22 @@ describe('createPlanTasksHandler', () => {
     })
     await expect(handler({ tasks: [{ description: 'x', assignee: 'coder' }] }, { agent: { id: 'sess-x' } }))
       .resolves.toMatchObject({ team_name: '阿尔法小队' })
+  })
+
+  it('append_to 经 payload 透传：追加目标 DAG 并对其触发 schedulerStart', async () => {
+    await manager.bindTeam('sess-h', 'alpha')
+    const first = await planner.plan({ session_id: 'sess-h', tasks: [{ description: 'a', assignee: 'coder' }] })
+    const started: Array<{ dagId: string; sessionId: string }> = []
+    const handler = createPlanTasksHandler({
+      planner,
+      schedulerStart: async (input) => { started.push(input) },
+    })
+    const output = await handler(
+      { append_to: first.dag_id, tasks: [{ description: 'b', assignee: 'coder' }] },
+      { agent: { id: 'sess-h' }, signal: new AbortController().signal },
+    )
+    expect(output.appended).toBe(true)
+    expect(output.dag_id).toBe(first.dag_id)
+    expect(started).toEqual([{ dagId: first.dag_id, sessionId: 'sess-h', parentAgent: { id: 'sess-h' } }])
   })
 })

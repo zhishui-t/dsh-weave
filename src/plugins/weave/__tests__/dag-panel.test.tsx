@@ -6,7 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // vitest 未开启 globals，RTL 不会自动清理；显式清理避免跨用例 DOM 污染
 afterEach(cleanup)
 
-import { DagPanel, computeLevels, isCancelable } from '../dag/dag-panel'
+import {
+  DAG_BASE,
+  DAG_FLOOR,
+  DagPanel,
+  computeLevels,
+  dagFontSize,
+  fitDagLayout,
+  isCancelable,
+} from '../dag/dag-panel'
 import { DagRepository } from '../dag/repository'
 import { WeavePersistence } from '../persistence/persistence'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types'
@@ -129,6 +137,51 @@ describe('DagPanel 纯函数', () => {
   })
 })
 
+describe('fitDagLayout（doc/05 §6.3 自适应布局）', () => {
+  it('大视口：scale 封顶 1，返回 base 原尺寸且 overflow=false（只缩不放）', () => {
+    expect(fitDagLayout({ w: 1000, h: 800 }, 1, 1)).toEqual({
+      cellW: 200, cellH: 64, levelGap: 48, rowGap: 24, overflow: false,
+    })
+  })
+
+  it('小视口：按 scale=min(vw/W, vh/H) 等比收缩，不触 floor 时 overflow=false', () => {
+    // natural = 248×88；viewport 248×44 → scale=0.5
+    expect(fitDagLayout({ w: 248, h: 44 }, 1, 1)).toEqual({
+      cellW: 100, cellH: 32, levelGap: 24, rowGap: 12, overflow: false,
+    })
+  })
+
+  it('极端小视口：低于 floor 钳制并置 overflow=true（回落滚动）', () => {
+    // natural = 3×248=744 × 5×88=440；scale≈0.045 → 全部触底
+    expect(fitDagLayout({ w: 50, h: 20 }, 3, 5)).toEqual({
+      cellW: DAG_FLOOR.cellW, cellH: DAG_FLOOR.cellH,
+      levelGap: DAG_FLOOR.levelGap, rowGap: DAG_FLOOR.rowGap, overflow: true,
+    })
+  })
+
+  it('未测量/退化输入回落 base（与历史渲染一致）：视口 0 或行数为 0', () => {
+    const base = { cellW: 200, cellH: 64, levelGap: 48, rowGap: 24, overflow: false }
+    expect(fitDagLayout({ w: 0, h: 0 }, 3, 5)).toEqual(base)
+    expect(fitDagLayout({ w: 100, h: 100 }, 1, 0)).toEqual(base)
+    expect(DAG_BASE).toEqual({ cellW: 200, cellH: 64, levelGap: 48, rowGap: 24 })
+  })
+
+  it('自定义 base/floor 参与同一数学（client 同构对齐用）', () => {
+    const base = { cellW: 100, cellH: 40, levelGap: 20, rowGap: 10 }
+    const floor = { cellW: 40, cellH: 16, levelGap: 8, rowGap: 2 }
+    // natural = 120×50；viewport 60×100 → scale=0.5，均高于 floor
+    expect(fitDagLayout({ w: 60, h: 100 }, 1, 1, base, floor)).toEqual({
+      cellW: 50, cellH: 20, levelGap: 10, rowGap: 5, overflow: false,
+    })
+  })
+
+  it('dagFontSize 随 cellH 联动：base 64→10px，收缩触 8px 下限', () => {
+    expect(dagFontSize(64)).toBe(10)
+    expect(dagFontSize(32)).toBe(8) // round(10×32/64)=5 → 触下限
+    expect(dagFontSize(18)).toBe(8)
+  })
+})
+
 /* ------------------------------- 组件 ------------------------------- */
 
 describe('DagPanel 轻量视图（P0-DAG-017）', () => {
@@ -176,5 +229,18 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
     render(<DagPanel dagId="missing-dag" repository={repo} />)
     await screen.findByTestId('dag-panel-error')
     expect(screen.getByTestId('dag-panel-error').textContent).toContain('DAG 不存在')
+  })
+
+  it('未测量视口（无 ResizeObserver）回落 base 布局：body 744×88、字号 10px、不滚动', async () => {
+    const repo = await seedRepository()
+    render(<DagPanel dagId={DAG_ID} repository={repo} />)
+    await screen.findByText('任务 t-implement')
+    const viewport = screen.getByTestId('dag-viewport')
+    expect(viewport.style.overflow).toBe('hidden') // fit 未触底 → hidden
+    const body = viewport.querySelector('.weave-dag-panel__body') as HTMLElement
+    // 3 层 × (200+48) = 744；1 行 × (64+24) = 88 —— 与历史常量渲染逐字节一致
+    expect(body.style.width).toBe('744px')
+    expect(body.style.height).toBe('88px')
+    expect((screen.getByTestId('dag-task-t-design') as HTMLElement).style.fontSize).toBe('10px')
   })
 })

@@ -1,15 +1,72 @@
 /// <reference lib="dom" />
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import type { DagRepository } from './repository.js'
 
-/** 布局常量（轻量 SVG 视图）。 */
+/** 布局基准常量（轻量 SVG 视图）。作为 fitDagLayout 的缺省 base，保留导出供 client 侧同构对齐。 */
 export const CELL_W = 200
 export const CELL_H = 64
 export const LEVEL_GAP = 48
 export const ROW_GAP = 24
+
+/** 自适应布局的 base 基准与 floor 下限（doc/05 §6.3）。client 侧 floor 须与此对齐。 */
+export const DAG_BASE = { cellW: CELL_W, cellH: CELL_H, levelGap: LEVEL_GAP, rowGap: ROW_GAP }
+export const DAG_FLOOR = { cellW: 56, cellH: 18, levelGap: 14, rowGap: 4 }
+
+export interface DagViewportSize {
+  w: number
+  h: number
+}
+
+export interface DagLayoutBase {
+  cellW: number
+  cellH: number
+  levelGap: number
+  rowGap: number
+}
+
+export interface DagFitLayout extends DagLayoutBase {
+  /** true = 收缩触底（任一值被钳到 floor），容器应回落滚动行为。 */
+  overflow: boolean
+}
+
+/**
+ * 自适应布局（doc/05 §6.3）：按视口等比收缩 base 布局，scale=min(1, vw/W, vh/H)
+ * ——只缩不放；任一值低于 floor 钳到 floor 并置 overflow（容器回落滚动）。
+ * 视口未测量（w/h ≤ 0）或退化输入时返回 base 原尺寸（与历史渲染逐字节一致）。
+ */
+export function fitDagLayout(
+  viewport: DagViewportSize,
+  maxLevel: number,
+  maxRows: number,
+  base: DagLayoutBase = DAG_BASE,
+  floor: DagLayoutBase = DAG_FLOOR,
+): DagFitLayout {
+  const naturalW = maxLevel * (base.cellW + base.levelGap)
+  const naturalH = maxRows * (base.cellH + base.rowGap)
+  if (viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0) {
+    return { ...base, overflow: false }
+  }
+  const scale = Math.min(1, viewport.w / naturalW, viewport.h / naturalH)
+  const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
+  const cellW = shrink(base.cellW * scale, floor.cellW)
+  const cellH = shrink(base.cellH * scale, floor.cellH)
+  const levelGap = shrink(base.levelGap * scale, floor.levelGap)
+  const rowGap = shrink(base.rowGap * scale, floor.rowGap)
+  const overflow =
+    base.cellW * scale < floor.cellW ||
+    base.cellH * scale < floor.cellH ||
+    base.levelGap * scale < floor.levelGap ||
+    base.rowGap * scale < floor.rowGap
+  return { cellW, cellH, levelGap, rowGap, overflow }
+}
+
+/** 节点字号随 cellH 联动（base 64 → 10px，下限 8px）。 */
+export function dagFontSize(cellH: number): number {
+  return Math.max(8, Math.round((10 * cellH) / 64))
+}
 
 /** 状态 → 展示颜色（P0 面板用）。 */
 export const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -88,6 +145,8 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
   const [dag, setDag] = useState<TaskDag | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [viewport, setViewport] = useState<DagViewportSize>({ w: 0, h: 0 })
+  const viewportRef = useRef<HTMLDivElement | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +160,26 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
   useEffect(() => {
     void load()
   }, [load])
+
+  // 容器测量：ResizeObserver 浏览器全局能力；不可用（jsdom/旧环境）时保持未测量
+  // 状态 → fitDagLayout 回落 base 原尺寸，渲染与历史行为一致。
+  const hasDag = dag !== null
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!hasDag || !el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect
+      if (rect && rect.width > 0 && rect.height > 0) {
+        setViewport((prev) =>
+          Math.abs(prev.w - rect.width) < 1 && Math.abs(prev.h - rect.height) < 1
+            ? prev
+            : { w: rect.width, h: rect.height },
+        )
+      }
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasDag])
 
   const cancel = useCallback(
     async (taskId: string) => {
@@ -117,8 +196,10 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
     [dagId, repository],
   )
 
-  const nodes: DagNodeLayout[] = useMemo(() => {
-    if (!dag) return []
+  const { nodes, fit } = useMemo(() => {
+    if (!dag) {
+      return { nodes: [] as DagNodeLayout[], fit: { ...DAG_BASE, overflow: false } as DagFitLayout }
+    }
     const levels = computeLevels(dag)
     const byLevel = new Map<number, TaskRecord[]>()
     for (const task of dag.tasks) {
@@ -127,6 +208,9 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
       arr.push(task)
       byLevel.set(lv, arr)
     }
+    const maxLevel = Math.max(1, ...[...byLevel.keys()].map((lv) => lv + 1))
+    const maxRows = Math.max(1, ...[...byLevel.values()].map((arr) => arr.length))
+    const fitted = fitDagLayout(viewport, maxLevel, maxRows)
     const layout: DagNodeLayout[] = []
     for (const [level, tasks] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
       tasks.forEach((task, index) => {
@@ -134,13 +218,13 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
           task,
           level,
           index,
-          x: level * (CELL_W + LEVEL_GAP),
-          y: index * (CELL_H + ROW_GAP),
+          x: level * (fitted.cellW + fitted.levelGap),
+          y: index * (fitted.cellH + fitted.rowGap),
         })
       })
     }
-    return layout
-  }, [dag])
+    return { nodes: layout, fit: fitted }
+  }, [dag, viewport])
 
   if (error && !dag) {
     return (
@@ -159,11 +243,12 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
   }
 
   const maxLevels = Math.max(1, ...nodes.map((n) => n.level + 1))
-  const width = maxLevels * (CELL_W + LEVEL_GAP)
+  const width = maxLevels * (fit.cellW + fit.levelGap)
   const rowsPerLevel = new Map<number, number>()
   for (const n of nodes) rowsPerLevel.set(n.level, (rowsPerLevel.get(n.level) ?? 0) + 1)
   const maxRows = Math.max(1, ...[...rowsPerLevel.values()])
-  const height = maxRows * (CELL_H + ROW_GAP)
+  const height = maxRows * (fit.cellH + fit.rowGap)
+  const fontSize = dagFontSize(fit.cellH)
   const pos = new Map(nodes.map((n) => [n.task.id, n]))
 
   return (
@@ -172,71 +257,77 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
         <strong>{title}</strong>
         <span data-testid="dag-status">状态：{dag.status}</span>
       </header>
-      <div className="weave-dag-panel__body" style={{ position: 'relative', width, height }}>
-        <svg
-          width={width}
-          height={height}
-          style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
-          data-testid="dag-edges"
-        >
-          <defs>
-            <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
-              <path d="M0,0 L8,4 L0,8 z" fill="#999" />
-            </marker>
-          </defs>
-          {dag.edges.map((edge) => {
-            const from = pos.get(edge.from)
-            const to = pos.get(edge.to)
-            if (!from || !to) return null
+      <div
+        ref={viewportRef}
+        data-testid="dag-viewport"
+        style={{ position: 'relative', minHeight: 120, overflow: fit.overflow ? 'auto' : 'hidden' }}
+      >
+        <div className="weave-dag-panel__body" style={{ position: 'relative', width, height }}>
+          <svg
+            width={width}
+            height={height}
+            style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+            data-testid="dag-edges"
+          >
+            <defs>
+              <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 z" fill="#999" />
+              </marker>
+            </defs>
+            {dag.edges.map((edge) => {
+              const from = pos.get(edge.from)
+              const to = pos.get(edge.to)
+              if (!from || !to) return null
+              return (
+                <line
+                  key={`${edge.from}->${edge.to}`}
+                  x1={from.x + fit.cellW}
+                  y1={from.y + fit.cellH / 2}
+                  x2={to.x}
+                  y2={to.y + fit.cellH / 2}
+                  stroke="#999"
+                  strokeWidth={1.5}
+                  markerEnd="url(#dag-arrow)"
+                />
+              )
+            })}
+          </svg>
+          {nodes.map((node) => {
+            const { task } = node
+            const cancelable = isCancelable(task.status) && cancellingId !== task.id
             return (
-              <line
-                key={`${edge.from}->${edge.to}`}
-                x1={from.x + CELL_W}
-                y1={from.y + CELL_H / 2}
-                x2={to.x}
-                y2={to.y + CELL_H / 2}
-                stroke="#999"
-                strokeWidth={1.5}
-                markerEnd="url(#dag-arrow)"
-              />
+              <div
+                key={task.id}
+                data-testid={`dag-task-${task.id}`}
+                title={task.description}
+                style={{
+                  position: 'absolute',
+                  left: node.x,
+                  top: node.y,
+                  width: fit.cellW,
+                  minHeight: fit.cellH,
+                  borderLeft: `4px solid ${STATUS_COLORS[task.status]}`,
+                  padding: 6,
+                  boxSizing: 'border-box',
+                  fontSize,
+                }}
+              >
+                <div>{task.id}</div>
+                <div data-testid={`dag-task-status-${task.id}`}>{task.status}</div>
+                <div>{task.description.slice(0, 24)}</div>
+                {cancelable && (
+                  <button
+                    onClick={() => void cancel(task.id)}
+                    aria-label={`取消任务 ${task.id}`}
+                    disabled={cancellingId === task.id}
+                  >
+                    取消
+                  </button>
+                )}
+              </div>
             )
           })}
-        </svg>
-        {nodes.map((node) => {
-          const { task } = node
-          const cancelable = isCancelable(task.status) && cancellingId !== task.id
-          return (
-            <div
-              key={task.id}
-              data-testid={`dag-task-${task.id}`}
-              title={task.description}
-              style={{
-                position: 'absolute',
-                left: node.x,
-                top: node.y,
-                width: CELL_W,
-                minHeight: CELL_H,
-                borderLeft: `4px solid ${STATUS_COLORS[task.status]}`,
-                padding: 6,
-                boxSizing: 'border-box',
-                fontSize: 12,
-              }}
-            >
-              <div>{task.id}</div>
-              <div data-testid={`dag-task-status-${task.id}`}>{task.status}</div>
-              <div>{task.description.slice(0, 24)}</div>
-              {cancelable && (
-                <button
-                  onClick={() => void cancel(task.id)}
-                  aria-label={`取消任务 ${task.id}`}
-                  disabled={cancellingId === task.id}
-                >
-                  取消
-                </button>
-              )}
-            </div>
-          )
-        })}
+        </div>
       </div>
       <footer className="weave-dag-panel__footer">
         <button onClick={() => void load()}>刷新</button>

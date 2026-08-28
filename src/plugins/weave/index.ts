@@ -11,6 +11,7 @@ import { SessionTracker } from './session-tracker.js'
 import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
 import { WeaveScheduler } from './scheduler.js'
 import { ReflectionService } from './reflection-service.js'
+import { createExecutorEventNotifier } from './session-stream.js'
 import {
   createPreStepDelegationHook,
   notifySession,
@@ -20,7 +21,7 @@ import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
-import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
+import { DEFAULT_WEAVE_SETTINGS_FILE, loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides } from './settings-store.js'
 import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './rpc.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
@@ -78,6 +79,7 @@ export function apply(ctx: Context): void {
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
     const weaveSettingsFile = DEFAULT_WEAVE_SETTINGS_FILE
     const settingsOverrides = loadWeaveSettingsOverrides(weaveSettingsFile)
+    const executionStream = loadExecutionStreamSettings(weaveSettingsFile)
     const effectiveProvidersFile = settingsOverrides.providers_file ?? DEFAULT_PROVIDERS_FILE
     const effectiveStateDir = settingsOverrides.state_dir ?? DEFAULT_STATE_DIR
     const effectiveAuditDir = settingsOverrides.audit_dir ?? DEFAULT_AUDIT_DIR
@@ -159,11 +161,23 @@ export function apply(ctx: Context): void {
           sessionTracker: new SessionTracker(deps.persistence.feedback),
           processLimiter: new ProcessLimiter(),
           knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
-          // 活动感知空闲超时：zcode 冷启动+重活（设计/全栈/E2E）的思考间隙远小于
-          // 10min 空闲阈值，真正挂死才会触发；绝对墙钟 60min 兜底防慢滴流永不终止，
-          // 长任务仍可被队长人工取消。
-          idleTimeoutMs: 600_000,
+          // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
+          // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至
+          // 20 分钟（settings.execution_idle_timeout_ms 可覆盖）；绝对墙钟 60min 仍是
+          // 挂死兜底，长任务仍可被队长人工取消。
+          idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
           delegationMaxWallClockMs: 3_600_000,
+          // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
+          // notifyWeaveSession/agentsRegistry 在下方定义，事件只在其任务执行期异步
+          // 到达，闭包引用安全。会话面对象经 agentsRegistry 按 sessionId 解析
+          // （context.sessionId 已由 scheduler 下传，保证路由到宿主会话而非子代理）。
+          onExecutorEvent: createExecutorEventNotifier({
+            ...executionStream,
+            notify: (sessionId, text) => {
+              const agent = agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined
+              notifyWeaveSession(sessionId, text, agent?.session)
+            },
+          }),
         },
       )
       const notifyWeaveSession = (sessionId: string, text: string, session?: NoticeSessionLike): void => {

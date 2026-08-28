@@ -26,6 +26,8 @@ export interface SchedulerDelegationLike {
     team: TeamConfig,
     context: {
       parentAgent?: unknown
+      /** 宿主会话 id（doc/05 §6.2 P1-B）：执行器事件回灌按它路由，避免发进子代理会话。 */
+      sessionId?: string
       upstreamOutputs?: Array<{ label: string; output: string }>
       outputRequirements?: string
     },
@@ -378,7 +380,7 @@ export class WeaveScheduler {
           task,
           role,
           run.team,
-          { parentAgent: run.parentAgent, upstreamOutputs, outputRequirements: requirement },
+          { parentAgent: run.parentAgent, sessionId: run.sessionId, upstreamOutputs, outputRequirements: requirement },
           controller.signal,
         )
       } catch (error) {
@@ -392,6 +394,7 @@ export class WeaveScheduler {
           run.team,
           {
             parentAgent: run.parentAgent,
+            sessionId: run.sessionId,
             upstreamOutputs,
             outputRequirements: `${requirement}（备用模型重试）`,
           },

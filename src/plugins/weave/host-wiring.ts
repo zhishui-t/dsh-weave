@@ -147,6 +147,18 @@ export function toJsonPropertySpec(spec: Record<string, unknown>): Record<string
   }
 }
 
+/** 队长执行纪律（用户定案；插件下发时随工具描述与返回文本双通道提示队长模型）。 */
+export const CAPTAIN_DISCIPLINE: readonly string[] = [
+  '有在途任务时不得结束会话回合：短周期轮询任务状态（weave_get_status），并定时向用户通报进度，避免用户以为卡死。',
+  '等待期间短周期消化会话消息与插件通知（进度/完成/失败/沉淀提醒），禁止长阻塞空等。',
+  '任务完成后主动读取交付物并推进下一步（下游任务或汇总答复），不等用户触发。',
+  '任务失败走治理动作（retry/cancel），不重开计划；任务派发后保持稳定，没有明确触发不变更任务组。',
+  '新需求用 append_to 增量追加到当前 DAG（任务组），不另起炉灶；编号在 DAG 域内自动递增。',
+]
+
+const CAPTAIN_DISCIPLINE_TEXT = `## 队长执行纪律
+${CAPTAIN_DISCIPLINE.map((line, i) => `${i + 1}. ${line}`).join('\n')}`
+
 /** 将 WeaveMcp 的业务命令映射为 dsh-tools ToolDefinition 列表（队长模式下发走 weave_plan_tasks）。 */
 export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptions = {}): HostToolDefinition[] {
   const prefix = options.toolPrefix ?? 'weave_'
@@ -159,11 +171,15 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
         'assignee 必须是团队角色的 id；depends_on 引用本计划内其他任务的 id。' +
         '重要：文档/方案/架构设计稿里的编号、章节号、序号都不是任务编号；只有通过本工具创建的任务 T1/T2/T3... ' +
         '才是真正派发给团队成员的唯一任务编号。' +
-        '团队无需显式启用：已配置默认团队或仅有一个团队时自动生效；仅当存在多个未指定团队时报错，届时先 team_list 询问用户选择。',
+        '团队无需显式启用：已配置默认团队或仅有一个团队时自动生效；仅当存在多个未指定团队时报错，届时先 team_list 询问用户选择。' +
+        '队长执行纪律：有在途任务不得结束回合（短周期轮询+定时通报进度）；等待期短周期消化消息/通知禁止长阻塞；' +
+        '任务完成主动读交付物推进下一步；失败走 retry/cancel 治理不重开计划，派发后无明确触发不变更任务组；' +
+        '新需求用 append_to 增量追加到当前 DAG。',
       parameters: {
         goal: { type: 'string', description: '本次规划的整体目标（可选，用于摘要展示）' },
         project_id: { type: 'string', description: '项目标识（缺省 session）' },
         version: { type: 'string', description: '版本标识（缺省 adhoc）' },
+        append_to: { type: 'string', description: '追加模式：目标 DAG 的 dag_id——把本批任务增量追加进该任务组（编号在其域内自动递增，依赖可引用其既有任务）；缺省新建 DAG' },
         tasks: {
           type: 'array',
           items: {
@@ -183,7 +199,13 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
           },
         },
       },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      output: {
+        schema: OUTPUT_SCHEMA,
+        // 返回汇总附带队长执行纪律：派发即提示，约束本轮后续行为（值守/推进/治理/追加）。
+        render: (args, value) => [
+          { type: 'text' as const, text: `${jsonText(value)[0]?.text ?? ''}\n\n${CAPTAIN_DISCIPLINE_TEXT}` },
+        ],
+      },
       execute: (args, exec) =>
         options.planTasks
           ? options.planTasks(args as Record<string, unknown>, exec as ToolExecLike)

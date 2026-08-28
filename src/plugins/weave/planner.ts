@@ -33,6 +33,11 @@ export interface PlanTasksInput {
   session_id: string
   project_id?: string
   version?: string
+  /**
+   * 追加模式（doc/05 §6.1 P1-A）：目标 dag_id——把 tasks 追加进该在途/终态 DAG，
+   * 编号在该 DAG 域内跨批次递增；缺省（不传）保持新建 DAG 的历史行为。
+   */
+  append_to?: string
   tasks: PlannedTaskSpec[]
 }
 
@@ -52,6 +57,8 @@ export interface PlanTasksOutput {
   team_id: string
   team_name: string
   goal: string | null
+  /** true = 本次为向既有 DAG 追加（tasks 仅含新增任务）；false = 新建 DAG。 */
+  appended: boolean
   tasks: PlannedTaskSummary[]
 }
 
@@ -156,15 +163,62 @@ export class TeamPlanner {
 
     const team = await this.resolveSessionTeam(sessionId)
 
-    // 引用别名归一：显式 id 或 tN；同一计划内必须唯一。
+    // 追加模式解析（doc/05 §6.1 P1-A）：目标 DAG 必须存在且属于当前会话团队；
+    // 语义域（project/version）继承目标 DAG——追加语义是"往这个计划里加任务"。
+    const appendTo = typeof input.append_to === 'string' && input.append_to.trim() !== ''
+      ? input.append_to.trim()
+      : null
+    let target: { dagId: string; status: string; projectId: string; version: string } | null = null
+    const existingRefIds: string[] = []
+    const existingEdges: Array<{ from: string; to: string }> = []
+    if (appendTo !== null) {
+      const row = await this.#persistence.tasks.run((db) =>
+        db.prepare('SELECT dag_id, team_id, project_id, version, status FROM dags WHERE dag_id = ?')
+          .get(appendTo) as { dag_id: string; team_id: string; project_id: string; version: string; status: string } | undefined,
+      )
+      if (!row) {
+        throw new WeaveError('invalid_argument', `append_to 指向的 DAG 不存在: ${appendTo}`, { append_to: appendTo })
+      }
+      if (row.team_id !== team.team_id) {
+        throw new WeaveError(
+          'invalid_argument',
+          `DAG ${appendTo} 属于团队 ${row.team_id}，与当前会话团队 ${team.team_id} 不一致，拒绝追加`,
+          { append_to: appendTo, dag_team: row.team_id, session_team: team.team_id },
+        )
+      }
+      target = { dagId: row.dag_id, status: row.status, projectId: row.project_id, version: row.version }
+      const scraped = await this.#persistence.tasks.run((db) => ({
+        taskIds: (db.prepare('SELECT id FROM tasks WHERE dag_id = ?').all(appendTo) as Array<{ id: string }>).map((r) => r.id),
+        edges: db.prepare('SELECT from_task_id, to_task_id FROM edges WHERE dag_id = ?').all(appendTo) as Array<{ from_task_id: string; to_task_id: string }>,
+      }))
+      for (const id of scraped.taskIds) {
+        existingRefIds.push(id.startsWith(`${target.dagId}-`) ? id.slice(target.dagId.length + 1) : id)
+      }
+      for (const edge of scraped.edges) existingEdges.push({ from: edge.from_task_id, to: edge.to_task_id })
+    }
+    const existingSet = new Set(existingRefIds)
+
+    // 引用别名归一：显式 id 或 T{既有任务数+i}——追加模式下编号在 DAG 域内跨批次
+    // 递增（任务池 taskSeq 语义），新建模式仍是每批 T1..TN；同一计划内必须唯一。
     const specs = input.tasks.map((spec, index) => ({ spec, index }))
     const refIds = specs.map(({ spec, index }) => {
-      const explicit = typeof spec.id === 'string' && spec.id.trim() !== '' ? spec.id.trim() : `T${index + 1}`
+      const explicit = typeof spec.id === 'string' && spec.id.trim() !== '' ? spec.id.trim() : `T${existingRefIds.length + index + 1}`
       return explicit
     })
     const duplicates = refIds.filter((id, i) => refIds.indexOf(id) !== i)
     if (duplicates.length > 0) {
       throw new WeaveError('invalid_argument', `任务 id 重复: ${[...new Set(duplicates)].join(', ')}`, { duplicates })
+    }
+    if (target !== null) {
+      // 显式 id 与 DAG 域既有任务撞名 → 拒绝（缺省编号因取"既有数+序"也可能撞显式历史 id，一并拦）。
+      const collisions = [...new Set(refIds.filter((id) => existingSet.has(id)))]
+      if (collisions.length > 0) {
+        throw new WeaveError(
+          'invalid_argument',
+          `任务 id 与 DAG ${target.dagId} 既有任务冲突: ${collisions.join(', ')}`,
+          { task_id: collisions },
+        )
+      }
     }
 
     const rolesByRef = new Map<number, { id: string; name: string; executor: string }>()
@@ -192,21 +246,56 @@ export class TeamPlanner {
         ? spec.depends_on.map((dep) => String(dep).trim()).filter((dep) => dep !== '')
         : [],
     }))
+    // 依赖解析域：批内新 id ∪ 目标 DAG 既有任务 refId（追加模式允许新任务依赖既有任务）。
+    const refDomain = new Set<string>([...refIds, ...existingRefIds])
     for (const node of nodes) {
       for (const dep of node.dependsOn) {
-        if (!refIds.includes(dep)) {
-          throw new WeaveError('invalid_argument', `依赖引用不存在: ${dep}（必须在本次计划的 tasks[].id 中）`, {
-            task_ref: node.refId,
-            dependency: dep,
-          })
+        if (!refDomain.has(dep)) {
+          throw new WeaveError(
+            'invalid_argument',
+            `依赖引用不存在: ${dep}（必须在本次计划的 tasks[].id${target !== null ? ' 或目标 DAG 既有任务' : ''} 中）`,
+            {
+              task_ref: node.refId,
+              dependency: dep,
+            },
+          )
         }
       }
     }
-    assertAcyclic(nodes)
+    // 判环：追加模式下批内节点与目标 DAG 既有节点/边联合校验（统一到持久化 taskId
+    // 命名空间）。既有任务不可被追加依赖，跨批环结构上不可能；联合校验按规格兜底。
+    if (target !== null) {
+      const existingDeps = new Map<string, string[]>()
+      for (const edge of existingEdges) {
+        existingDeps.set(edge.to, [...(existingDeps.get(edge.to) ?? []), edge.from])
+      }
+      assertAcyclic([
+        ...nodes.map((node) => ({
+          refId: `${target.dagId}-${node.refId}`,
+          dependsOn: node.dependsOn.map((dep) => `${target.dagId}-${dep}`),
+        })),
+        ...existingRefIds.map((refId) => ({
+          refId: `${target.dagId}-${refId}`,
+          dependsOn: existingDeps.get(`${target.dagId}-${refId}`) ?? [],
+        })),
+      ])
+    } else {
+      assertAcyclic(nodes)
+    }
 
     // 全局序号沿用 task_sequences 分配器；dag 命名与既有行兼容。
-    const seq = await this.#nextSequence(projectId, version)
-    const dagId = `dag-${projectId}-${version}-${seq}`
+    // 追加模式复用目标 dagId，不消耗新序号；语义域继承目标 DAG。
+    let dagId: string
+    let effectiveProjectId = projectId
+    let effectiveVersion = version
+    if (target !== null) {
+      dagId = target.dagId
+      effectiveProjectId = target.projectId
+      effectiveVersion = target.version
+    } else {
+      const seq = await this.#nextSequence(projectId, version)
+      dagId = `dag-${projectId}-${version}-${seq}`
+    }
 
     const normalized: NormalizedSpec[] = specs.map(({ spec }, index) => ({
       refId: refIds[index] as string,
@@ -219,10 +308,17 @@ export class TeamPlanner {
 
     const now = new Date().toISOString()
     await this.#persistence.tasks.run((db) => {
-      db.prepare(
-        `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'captain', 'created', ?, ?)`,
-      ).run(dagId, team.team_id, projectId, version, now, now)
+      if (target !== null) {
+        // 终态 DAG 追加 → 复活：状态回 created，调度器 start 重建运行上下文后重泵。
+        if (target.status !== 'created' && target.status !== 'running') {
+          db.prepare('UPDATE dags SET status = ?, updated_at = ? WHERE dag_id = ?').run('created', now, target.dagId)
+        }
+      } else {
+        db.prepare(
+          `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'captain', 'created', ?, ?)`,
+        ).run(dagId, team.team_id, projectId, version, now, now)
+      }
 
       const insertTask = db.prepare(
         `INSERT INTO tasks (id, dag_id, session_id, team_id, project_id, version, description, stage,
@@ -242,8 +338,8 @@ export class TeamPlanner {
           dagId,
           sessionId,
           team.team_id,
-          projectId,
-          version,
+          effectiveProjectId,
+          effectiveVersion,
           item.description,
           JSON.stringify(item.dependsOn.map((ref) => `${dagId}-${ref}`)),
           role.id,
@@ -279,6 +375,7 @@ export class TeamPlanner {
       team_id: team.team_id,
       team_name: team.name,
       goal,
+      appended: target !== null,
       tasks,
     }
   }
