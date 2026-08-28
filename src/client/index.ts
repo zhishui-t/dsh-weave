@@ -2670,17 +2670,22 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     useEffect(() => {
       const el = wrapRef.current
       if (!el || typeof ResizeObserver === 'undefined') return
-      const observer = new ResizeObserver((entries) => {
-        const rect = entries[0]?.contentRect
-        if (rect && rect.width > 0 && rect.height > 0) {
+      // G 实测修复：观察稳定大盒子（页签体，minHeight 预算所在）而非 wrap——
+      // wrap 高度由 fit 结果回写，量自身会形成自参考反馈环；中间 auto 容器同理。
+      // viewport 取 clientWidth/Height（队长实测口径），1px 抖动抑制。
+      const box = (el.closest('.weave-panel-tab-body') as HTMLElement | null) ?? el
+      const observer = new ResizeObserver(() => {
+        const w = box.clientWidth
+        const h = box.clientHeight
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
           setViewport((prev: { w: number; h: number }) =>
-            Math.abs(prev.w - rect.width) < 1 && Math.abs(prev.h - rect.height) < 1
+            Math.abs(prev.w - w) < 1 && Math.abs(prev.h - h) < 1
               ? prev
-              : { w: rect.width, h: rect.height },
+              : { w, h },
           )
         }
       })
-      observer.observe(el)
+      observer.observe(box)
       return () => observer.disconnect()
     }, [])
     if (!dag || !Array.isArray(dag.tasks)) return null
@@ -2723,10 +2728,14 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         className: 'weave-dag-wrap',
         'data-testid': 'dag-panel',
         ref: wrapRef,
-        // 高度铺满页签体（T-fix）：消除"wrap 高度=fit 结果、fit 又量 wrap"的
-        // 自参考反馈环；fit 尺度改由 RO 实测的大盒子（页签体预算高度）驱动，
-        // 内容超限时经 overflow 滚动查看。
-        style: { height: '100%', overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden' },
+        // G 实测修复：高度用 fit 显式像素（'100%' 在父链高度 auto 下解析为 0，
+        // Playwright 实测 wrap 高 0 图不可见）；minHeight 420 兜底防塌缩。
+        // fit 尺度由 RO 实测的稳定大盒子（页签体）驱动，wrap 不参与测量无反馈环。
+        style: {
+          height: `${height}px`,
+          minHeight: '420px',
+          overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden',
+        },
       },
       React.createElement(
         'svg',

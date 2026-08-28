@@ -300,3 +300,25 @@ describe('AcpSessionProvider', () => {
     })
   })
 })
+
+describe('P1-H：session/update 协议形态（顶层 {sessionId, update}）与实时事件链', () => {
+  it('mergeSessionUpdateNotification：顶层 sessionId 合并进 update（修复前 update.sessionId 恒 undefined 致事件全静默）', async () => {
+    const { mergeSessionUpdateNotification } = await import('../acp/acp-session-provider')
+    // 协议真实形态：sessionId 在通知顶层，update 对象内没有
+    const merged = mergeSessionUpdateNotification({
+      sessionId: 'sess-real-1',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } },
+    })
+    expect(merged.sessionId).toBe('sess-real-1')
+    expect(merged.sessionUpdate).toBe('agent_message_chunk')
+    // update 自带 sessionId 时优先保留
+    const selfId = mergeSessionUpdateNotification({
+      sessionId: 'sess-top',
+      update: { sessionId: 'sess-inner', sessionUpdate: 'plan' } as never,
+    })
+    expect(selfId.sessionId).toBe('sess-inner')
+    // 两者皆无 → undefined（历史行为）
+    expect(mergeSessionUpdateNotification({ update: { sessionUpdate: 'plan' } as never }).sessionId).toBeUndefined()
+  })
+
+})

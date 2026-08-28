@@ -104,3 +104,28 @@
 | README/doc 无需改 | ✅ 行为级 CSS/inline 修复，§6.3 表述仍适用（fitDagLayout 数学未变，仅容器预算）；§6.3"只缩不放"表述不一致项维持 T35 遗留登记 |
 
 ### 结论：**Go — P1-C 高度预算收口**（用户实测链路：放大语义 + 高度预算两层修复全部落地）
+
+---
+
+## §wrap 塌缩验收（T39，2026-08-28 15:20 追加）
+
+**背景**：T37 的 wrap `height:'100%'` 在父链高度 auto 下解析为 0（Playwright 实测 wrap 高 0、SVG 360×232 被整体裁剪不可见）。T38 修复：RO 改观察页签体大盒子（clientWidth/Height）、wrap 高度回 fit 显式像素 + minHeight 420 兜底。
+
+### 四门：全部通过
+
+`pnpm test` **38 文件 / 562 测试全绿**；typecheck / lint / build 全部 exit 0。
+
+### 抽检（node 直调 dist + client 同构数学）
+
+视口 1010×560、3 层 5 行：client 同构数学 scale=min(3, 1010/490, 560/192)=2.061 → **wrap 高度 = 394px（fit 显式像素）≥300** ✅；宿主 dist fit（base 200/64）图高 529 同样无溢出。wrap 高 0 → 394px，塌缩修复闭环。
+
+### 核对明细
+
+| 项 | 状态 |
+| --- | --- |
+| RO 观察对象改为页签体（`.weave-panel-tab-body` closest，clientWidth/Height 口径） | ✅ 代码在案（自参考环：测量源=页签体恒定预算，wrap 高度不回写测量源） |
+| wrap 高度 = fit 显式像素 + minHeight 420 兜底 | ✅ client-bundle 用例锚定（height:'32px' 回落 + minHeight:'420px'） |
+| client-bundle 回落渲染保持 | ✅ 21/21（jsdom 无 RO → base 常量渲染 + 3 节点可见） |
+| 真机验证 | 建议随下轮 e2e（round5 遗留 #5 已含） |
+
+### 结论：**Go — P1-C wrap 塌缩收口**（放大语义 + 高度预算 + wrap 显式像素三层修复全落地）

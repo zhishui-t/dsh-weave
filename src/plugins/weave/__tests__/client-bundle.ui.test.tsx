@@ -684,10 +684,12 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     const body = screen.getByTestId('weave-session-tab-body') as HTMLElement
     expect(body.style.minHeight).toContain('100vh')
     expect(body.style.minHeight).toContain('420px')
-    // 图容器铺满页签体（高度 100%，不再回写 fit px 造成自参考反馈环）
+    // 图容器：jsdom 无 RO → 未测量回落 base，高度为 fit 显式像素（3 节点链=32px），
+    // minHeight 420 兜底防塌缩；RO 观察的是页签体大盒子（非 wrap 自身，无自参考环）
     const wrap = screen.getByTestId('dag-panel') as HTMLElement
-    expect(wrap.style.height).toBe('100%')
-    // dag 未测量（jsdom 无 RO）回落 base：节点仍在、宽度为基础常量
+    expect(wrap.style.height).toBe('32px')
+    expect(wrap.style.minHeight).toBe('420px')
+    // dag 未测量回落 base：节点仍在、宽度为基础常量
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
     const node = screen.getByTestId('dag-node-T-A') as HTMLElement
     expect(node.style.width).toBe('100px')

@@ -636,8 +636,8 @@ export class AcpSessionProvider {
           ? { outcome: { outcome: 'selected', optionId: option.optionId } }
           : { outcome: { outcome: 'cancelled' } }
       },
-      sessionUpdate(params: { update: AcpSessionUpdate }) {
-        connection.handleSessionUpdate?.(params.update)
+      sessionUpdate(params: { sessionId?: string; update: AcpSessionUpdate }) {
+        connection.handleSessionUpdate?.(mergeSessionUpdateNotification(params))
       },
     }
 
@@ -678,6 +678,19 @@ export class AcpSessionProvider {
       }
     }
   }
+}
+
+/**
+ * ACP `session/update` 通知的协议形态是顶层平铺 `{ sessionId, update }`——sessionId
+ * 不在 update 对象内（P1-H 根因：曾按 update.sessionId 查 controller，恒 miss 致
+ * 全部实时事件静默丢弃、委托侧只剩空闲超时误杀）。本函数把通知合并为内核映射
+ * 所需的 AcpSessionUpdate（sessionId 内嵌）；update 自带 sessionId 时优先保留。
+ */
+export function mergeSessionUpdateNotification(params: {
+  sessionId?: string
+  update: AcpSessionUpdate
+}): AcpSessionUpdate {
+  return { ...params.update, sessionId: params.update.sessionId ?? params.sessionId }
 }
 
 export interface AcpSpawn {
