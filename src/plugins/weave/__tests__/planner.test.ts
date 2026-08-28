@@ -6,7 +6,7 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
-import { TeamPlanner, assertAcyclic, createPlanTasksHandler } from '../planner'
+import { TeamPlanner, assertAcyclic, createPlanTasksHandler, type PlanTasksInput } from '../planner'
 
 const lookup: ExecutorLookup = {
   get(id) {
@@ -358,5 +358,39 @@ describe('createPlanTasksHandler', () => {
     expect(output.appended).toBe(true)
     expect(output.dag_id).toBe(first.dag_id)
     expect(started).toEqual([{ dagId: first.dag_id, sessionId: 'sess-h', parentAgent: { id: 'sess-h' } }])
+  })
+})
+
+describe('createPlanTasksHandler append_to 透传契约（增量下发最后一厘米）', () => {
+  it('工具入参 append_to 原样到达 planner.plan（装配层不过滤入参）', async () => {
+    await manager.bindTeam('sess-t', 'alpha')
+    const received: PlanTasksInput[] = []
+    const stubPlanner = {
+      plan: async (input: PlanTasksInput) => {
+        received.push(input)
+        return {
+          dag_id: 'dag-session-adhoc-7',
+          session_id: input.session_id,
+          team_id: 'alpha',
+          team_name: '阿尔法小队',
+          goal: null,
+          appended: true,
+          tasks: [],
+        }
+      },
+    } as unknown as TeamPlanner
+    const handler = createPlanTasksHandler({ planner: stubPlanner, schedulerStart: async () => {} })
+    const output = await handler(
+      {
+        append_to: 'dag-session-adhoc-7',
+        goal: '增量追加',
+        tasks: [{ description: 'x', assignee: 'coder' }],
+      },
+      { agent: { id: 'sess-t' }, signal: new AbortController().signal },
+    )
+    expect(received).toHaveLength(1)
+    expect(received[0]!.append_to).toBe('dag-session-adhoc-7')
+    expect(output.appended).toBe(true)
+    expect(output.dag_id).toBe('dag-session-adhoc-7')
   })
 })

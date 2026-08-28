@@ -132,6 +132,13 @@ async function taskStatusOf(taskId: string): Promise<string> {
   return row?.status ?? 'missing'
 }
 
+async function dagStatusOf(dagId: string): Promise<string> {
+  const row = await persistence.tasks.run((db) =>
+    db.prepare('SELECT status FROM dags WHERE dag_id = ?').get(dagId) as { status: string } | undefined,
+  )
+  return row?.status ?? 'missing'
+}
+
 async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -524,5 +531,87 @@ describe('WeaveScheduler 旁路发电（doc/05 §6.4 P1-D 接线点 1/2）', () 
     delegation.release(ids[0]!)
     await waitUntil(() => taskStatusOf(ids[2]!).then((s) => s === 'COMPLETED'))
     rmSync(auditDir, { recursive: true, force: true })
+  })
+})
+
+describe('WeaveScheduler 跨任务组拾取（doc/05 §6.5 P1-G G-①）', () => {
+  it('两 DAG 抢同角色：A 组任务完成后 B 组 WAITING 任务被全局重泵拾取执行', async () => {
+    await manager.bindTeam('sess-cross', 'alpha')
+    const delegation = new FakeDelegation()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+    })
+
+    // DAG A：coder 任务挂起在执行中（占住角色互斥额度）
+    const planA = await planner.plan({
+      session_id: 'sess-cross',
+      tasks: [{ id: 'a1', description: 'A 组长任务', assignee: 'coder' }],
+    })
+    const a1 = planA.tasks[0]!.id
+    delegation.gate(a1)
+    await scheduler.start({ dagId: planA.dag_id, sessionId: 'sess-cross' })
+    await waitUntil(() => taskStatusOf(a1).then((s) => s === 'RUNNING'))
+
+    // DAG B：同角色新任务 → 角色被 A 占用，保持 WAITING（跨 DAG 共占额度）
+    const planB = await planner.plan({
+      session_id: 'sess-cross',
+      tasks: [{ id: 'b1', description: 'B 组任务', assignee: 'coder' }],
+    })
+    const b1 = planB.tasks[0]!.id
+    await scheduler.start({ dagId: planB.dag_id, sessionId: 'sess-cross' })
+    await flush(4)
+    expect(await taskStatusOf(b1)).toBe('WAITING')
+
+    // 释放 A1：角色释放事件必须唤醒 B 组（修复前只重泵 A 组，B1 永久饿死）
+    delegation.release(a1)
+    await waitUntil(() => taskStatusOf(a1).then((s) => s === 'COMPLETED'))
+    await waitUntil(() => taskStatusOf(b1).then((s) => s === 'COMPLETED'))
+    expect(await dagStatusOf(planB.dag_id)).toBe('completed')
+  })
+})
+describe('WeaveScheduler run 冷启动重建（doc/05 §6.5 P1-G G-②）', () => {
+  it('已收敛 DAG 任务置回 WAITING 后 onExternalRetry：重建 run → 执行 → 二次收敛', async () => {
+    await manager.bindTeam('sess-ensure', 'alpha')
+    const delegation = new FakeDelegation()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+    })
+
+    const plan = await planner.plan({
+      session_id: 'sess-ensure',
+      tasks: [{ id: 'r1', description: '重启任务', assignee: 'coder' }],
+    })
+    const dagId = plan.dag_id
+    const taskId = plan.tasks[0]!.id
+    await scheduler.start({ dagId, sessionId: 'sess-ensure' })
+    await waitUntil(() => dagStatusOf(dagId).then((s) => s === 'completed'))
+    expect(await taskStatusOf(taskId)).toBe('COMPLETED')
+
+    // 模拟 retry 前置：任务置回 WAITING（run 已随首次收敛销毁——修复前此入口静默早退）
+    await persistence.tasks.run((db) =>
+      db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('WAITING', taskId),
+    )
+    await scheduler.onExternalRetry(taskId)
+
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'COMPLETED'))
+    expect(await dagStatusOf(dagId)).toBe('completed')
+  })
+
+  it('onExternalRetry 对不存在的任务不抛错（防御不变）', async () => {
+    await manager.bindTeam('sess-guard', 'alpha')
+    const delegation = new FakeDelegation()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+    })
+    await expect(scheduler.onExternalRetry('no-such-task')).resolves.toBeUndefined()
   })
 })

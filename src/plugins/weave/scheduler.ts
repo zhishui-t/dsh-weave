@@ -132,29 +132,43 @@ export class WeaveScheduler {
    * 返回后调度在后台进行；进度经 notify 回灌会话。
    */
   async start(input: DagStartInput): Promise<void> {
-    if (!this.#runs.has(input.dagId)) {
-      const existing = await this.#persistence.tasks.run((db) => {
-        return db.prepare('SELECT team_id FROM dags WHERE dag_id = ?').get(input.dagId) as
-          | { team_id: string }
-          | undefined
-      })
-      if (!existing) {
-        throw new WeaveError('task_not_found', `DAG 不存在: ${input.dagId}`, { dagId: input.dagId })
-      }
-      const team = this.#opts.loadTeam(existing.team_id)
-      this.#runs.set(input.dagId, {
-        dagId: input.dagId,
-        sessionId: input.sessionId,
-        team,
-        parentAgent: input.parentAgent,
-        settledNotified: false,
-      })
-    } else {
-      // 重入：刷新通知面（同一会话续聊时拿到最新 session 对象）。
-      const run = this.#runs.get(input.dagId)!
-      if (input.parentAgent !== undefined) run.parentAgent = input.parentAgent
-    }
+    await this.#ensureRun(input.dagId)
+    // 重入：刷新通知面（同一会话续聊时拿到最新 session 对象）。
+    const run = this.#runs.get(input.dagId)!
+    if (input.parentAgent !== undefined) run.parentAgent = input.parentAgent
     await this.#enqueue(input.dagId)
+  }
+
+  /**
+   * run 上下文冷启动重建（doc/05 §6.5 P1-G G-②）：run 随 DAG 收敛销毁后，治理
+   * 入口（取消/重试）按需重建——查 dags.team_id → loadTeam → 建上下文。
+   * sessionId 取该组任务行（同组一致，治理入口无显式入参）；parentAgent 未知置
+   * undefined（委派父代理可能已销毁），通知经 agentsRegistry 兜底（T31）。
+   * DAG 不存在时抛 task_not_found（与 start 语义一致）。
+   */
+  async #ensureRun(dagId: string): Promise<void> {
+    if (this.#runs.has(dagId)) return
+    const existing = await this.#persistence.tasks.run((db) => {
+      return db.prepare('SELECT team_id FROM dags WHERE dag_id = ?').get(dagId) as
+        | { team_id: string }
+        | undefined
+    })
+    if (!existing) {
+      throw new WeaveError('task_not_found', `DAG 不存在: ${dagId}`, { dagId })
+    }
+    const team = this.#opts.loadTeam(existing.team_id)
+    const sessionRow = await this.#persistence.tasks.run((db) => {
+      return db.prepare('SELECT session_id FROM tasks WHERE dag_id = ? LIMIT 1').get(dagId) as
+        | { session_id: string }
+        | undefined
+    })
+    this.#runs.set(dagId, {
+      dagId,
+      sessionId: sessionRow?.session_id ?? '',
+      team,
+      parentAgent: undefined,
+      settledNotified: false,
+    })
   }
 
   /** UI/MCP 取消联动：中止运行中的子代理并重泵该 DAG 以收敛状态。 */
@@ -162,6 +176,8 @@ export class WeaveScheduler {
     this.#controllers.get(taskId)?.abort()
     const dagId = await this.#dagIdOf(taskId)
     if (dagId) {
+      // G-②（doc/05 §6.5）：已收敛组 run 已销毁 → 冷启动重建，重泵不再空转。
+      await this.#ensureRun(dagId)
       // 接线点 1（doc/05 §6.4）：用户发起取消 → 发电 + 审计（from 取库内当前状态；
       // 已是 CANCELLED 的重复调用不重复发电）。运行中任务的"已取消"收敛通知由
       // 主链路既有路径负责，此处为旁路单出口。
@@ -197,10 +213,13 @@ export class WeaveScheduler {
   /**
    * UI/MCP 重试联动（task_retry 已把状态改为 WAITING）：
    * 恢复该任务下游被 SKIPPED 的成员任务并重新泵 DAG。
+   * G-②（doc/05 §6.5）：run 随收敛销毁后此入口曾静默早退（已结束组治理失效）——
+   * 现冷启动重建 run 再联动，已结束组任务重试可恢复执行。
    */
   async onExternalRetry(taskId: string): Promise<void> {
     const dagId = await this.#dagIdOf(taskId)
-    if (!dagId || !this.#runs.has(dagId)) return
+    if (!dagId) return
+    await this.#ensureRun(dagId)
     try {
       const dag = await this.loadDag(dagId)
       const reactivated = TaskStateMachine.reactivateSkipped(dag, taskId)
@@ -421,9 +440,20 @@ export class WeaveScheduler {
         started_at: new Date().toISOString(),
       })
       // 执行完无论成败都释放占用并重泵；异常在 #executeTaskSafely 内收敛为终态。
+      // 角色释放是会话全局事件（doc/05 §6.5 P1-G G-①）：互斥额度跨 DAG 共占，
+      // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
+      // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
+      // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
+      // 执行完无论成败都释放占用并重泵；异常在 #executeTaskSafely 内收敛为终态。
+      // 角色释放是会话全局事件（doc/05 §6.5 P1-G G-①）：互斥额度跨 DAG 共占，
+      // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
+      // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
+      // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
       void this.#executeReady(run, task, role).finally(() => {
         this.#activeByRole.delete(key)
-        this.#enqueue(dagId)
+        for (const activeDagId of this.#runs.keys()) {
+          this.#enqueue(activeDagId)
+        }
       })
     }
   }

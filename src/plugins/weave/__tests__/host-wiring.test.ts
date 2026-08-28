@@ -246,7 +246,8 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     for (let i = 1; i <= 5; i += 1) {
       expect(text).toContain(`${i}. `)
     }
-    expect(text).toContain('append_to 增量追加到当前 DAG')
+    expect(text).toContain('append_to 增量追加到当前任务组')
+    expect(text).toContain('非用户明确要求，禁止新建任务组')
     // append_to 参数已进 schema（第⑤条可执行的前提）
     expect((def.parameters as Record<string, unknown>).append_to).toBeDefined()
   })

@@ -169,14 +169,12 @@ export function apply(ctx: Context): void {
           idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
           delegationMaxWallClockMs: 3_600_000,
           // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
-          // notifyWeaveSession/agentsRegistry 在下方定义，事件只在其任务执行期异步
-          // 到达，闭包引用安全。会话面对象经 agentsRegistry 按 sessionId 解析
-          // （context.sessionId 已由 scheduler 下传，保证路由到宿主会话而非子代理）。
+          // notifyWeaveSession/resolveNoticeSession 在下方定义，事件只在其任务执行期
+          // 异步到达，闭包引用安全。
           onExecutorEvent: createExecutorEventNotifier({
             ...executionStream,
             notify: (sessionId, text) => {
-              const agent = agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined
-              notifyWeaveSession(sessionId, text, agent?.session)
+              notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
             },
           }),
         },
@@ -192,24 +190,32 @@ export function apply(ctx: Context): void {
           console.warn('[dsh-weave] notify session failed:', error)
         }
       }
+      /**
+       * 会话面解析（T31/doc/05 §6.5 配套）：通知方未携带 session 面时（如冷启动
+       * 重建 run 的 parentAgent=undefined），经 agentsRegistry 按 sessionId 兜底
+       * 解析——与 P1-D statusNotifier 同一模式，重建组的进度/汇总通知不再丢弃。
+       */
+      const resolveNoticeSession = (sessionId: string): NoticeSessionLike | undefined =>
+        (agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined)?.session
       const auditLog = new AuditLog({ dir: effectiveAuditDir })
       const reflection = new ReflectionService({
         knowledge: deps.knowledgeStore!,
         audit: auditLog,
       })
       // 任务状态变更通知单出口（doc/05 §6.4 P1-D）：scheduler 旁路（外部取消/重试）
-      // 发电，会话面经 agentsRegistry 解析；echoSelfActions 缺省 false（不回声）。
+      // 发电，会话面经 resolveNoticeSession 解析；echoSelfActions 缺省 false（不回声）。
       const statusNotifier = new TaskStatusNotifier({
         notify: (sessionId, text) => {
-          const agent = agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined
-          notifyWeaveSession(sessionId, text, agent?.session)
+          notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
         },
       })
       const scheduler = new WeaveScheduler({
         delegation,
         persistence: deps.persistence,
         loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
-        notify: notifyWeaveSession,
+        // T31（doc/05 §6.5 配套）：session 面缺省（冷启动重建 run 无 parentAgent）
+        // 时经 agentsRegistry 兜底解析，进度/汇总通知不再丢弃。
+        notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
         statusNotifier,
         audit: auditLog,
         onTaskSettledText: async ({ task, role, text }) => {

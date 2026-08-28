@@ -155,7 +155,7 @@ export const CAPTAIN_DISCIPLINE: readonly string[] = [
   '等待期间短周期消化会话消息与插件通知（进度/完成/失败/沉淀提醒），禁止长阻塞空等。',
   '任务完成后主动读取交付物并推进下一步（下游任务或汇总答复），不等用户触发。',
   '任务失败走治理动作（retry/cancel），不重开计划；任务派发后保持稳定，没有明确触发不变更任务组。',
-  '新需求用 append_to 增量追加到当前 DAG（任务组），不另起炉灶；编号在 DAG 域内自动递增。',
+  '新需求一律用 append_to 增量追加到当前任务组，编号域内自动递增；非用户明确要求，禁止新建任务组。',
 ]
 
 const CAPTAIN_DISCIPLINE_TEXT = `## 队长执行纪律
@@ -176,7 +176,7 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
         '团队无需显式启用：已配置默认团队或仅有一个团队时自动生效；仅当存在多个未指定团队时报错，届时先 team_list 询问用户选择。' +
         '队长执行纪律：有在途任务不得结束回合（短周期轮询+定时通报进度）；等待期短周期消化消息/通知禁止长阻塞；' +
         '任务完成主动读交付物推进下一步；失败走 retry/cancel 治理不重开计划，派发后无明确触发不变更任务组；' +
-        '新需求用 append_to 增量追加到当前 DAG。',
+        '新需求一律用 append_to 增量追加到当前任务组；非用户明确要求，禁止新建任务组。',
       parameters: {
         goal: { type: 'string', description: '本次规划的整体目标（可选，用于摘要展示）' },
         project_id: { type: 'string', description: '项目标识（缺省 session）' },
