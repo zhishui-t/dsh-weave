@@ -692,7 +692,7 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     // dag 未测量回落 base：节点仍在、宽度为基础常量
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
     const node = screen.getByTestId('dag-node-T-A') as HTMLElement
-    expect(node.style.width).toBe('100px')
+    expect(node.style.width).toBe('50px')
   })
 
   it('节点治理动作：选中 RUNNING 节点出现取消按钮并调用 task/action', async () => {

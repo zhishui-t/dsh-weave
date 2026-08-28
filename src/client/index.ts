@@ -2708,6 +2708,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const maxLevel = Math.max(0, ...[...byLevel.keys()])
     const maxRows = Math.max(1, ...[...byLevel.values()].map((group) => group.length))
     const fit = fitDagLayout(viewport, maxLevel, maxRows)
+    // 节点盒为格子的 50% 并格内居中（与宿主 dag-panel 同构；用户反馈节点过大）：
+    // 格子/间距/铺满不变，仅渲染视觉减半；边端点跟随节点盒边缘。
+    const nodeW = fit.cellW * 0.5
+    const nodeH = fit.cellH * 0.5
+    const nodeOffsetX = (fit.cellW - nodeW) / 2
+    const nodeOffsetY = (fit.cellH - nodeH) / 2
     const fontSize = dagNodeFontSize(fit.cellH)
     const layout: Array<{ task: TaskRow; id: string; x: number; y: number }> = []
     for (const [lv, group] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
@@ -2757,10 +2763,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           return React.createElement('line', {
             key: String(edge.from) + '->' + String(edge.to),
             'data-edge': String(edge.from) + '->' + String(edge.to),
-            x1: from.x + fit.cellW,
-            y1: from.y + fit.cellH / 2,
-            x2: to.x,
-            y2: to.y + fit.cellH / 2,
+            x1: from.x + nodeOffsetX + nodeW,
+            y1: from.y + nodeOffsetY + nodeH / 2,
+            x2: to.x + nodeOffsetX,
+            y2: to.y + nodeOffsetY + nodeH / 2,
             stroke: '#999',
             strokeWidth: 1.5,
             markerEnd: 'url(#weave-dag-arrow)',
@@ -2778,10 +2784,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             onClick: () => onSelect(node.id),
             title: String(node.task.description ?? ''),
             style: {
-              left: node.x,
-              top: node.y,
-              width: fit.cellW,
-              minHeight: fit.cellH,
+              left: node.x + nodeOffsetX,
+              top: node.y + nodeOffsetY,
+              width: nodeW,
+              minHeight: nodeH,
               borderLeft: '4px solid ' + (DAG_STATUS_COLORS[String(node.task.status ?? '')] ?? '#8c8c8c'),
               fontSize,
             },

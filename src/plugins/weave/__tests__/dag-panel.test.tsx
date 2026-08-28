@@ -312,3 +312,24 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
     rmSync(auditDir, { recursive: true, force: true })
   })
 })
+
+describe('DagPanel 节点渲染尺寸（用户反馈节点过大 → 格子 50% 居中）', () => {
+  it('节点盒为格子 50% 并格内居中；SVG 边连接节点盒边缘', async () => {
+    const repo = await seedRepository()
+    render(<DagPanel dagId={DAG_ID} repository={repo} />)
+    await screen.findByText('任务 t-implement')
+
+    // 未测量回落 base：cellW=200/cellH=64 → 节点盒 100×32
+    const node = screen.getByTestId('dag-task-t-implement') as HTMLElement
+    expect(node.style.width).toBe('100px')
+    expect(node.style.minHeight).toBe('32px')
+    // lv1 格子 x = 248 → 居中偏移 +50
+    expect(node.style.left).toBe('298px')
+    expect(node.style.top).toBe('16px')
+
+    // 边从节点盒边缘出发：首条边 T-A(lv0,x=0)→T-B(lv1,x=248)；from 右缘=0+50+100=150，to 左缘=248+50=298
+    const line = screen.getByTestId('dag-edges').querySelector('line')!
+    expect(Number(line.getAttribute('x1'))).toBe(150)
+    expect(Number(line.getAttribute('x2'))).toBe(298)
+  })
+})

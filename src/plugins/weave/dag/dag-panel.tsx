@@ -255,6 +255,12 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
   const maxRows = Math.max(1, ...[...rowsPerLevel.values()])
   const height = maxRows * (fit.cellH + fit.rowGap)
   const fontSize = dagFontSize(fit.cellH)
+  // 节点盒为格子的 50% 并格内居中（用户反馈节点过大）：格子/间距/铺满逻辑不变，
+  // 仅渲染视觉减半——边端点跟随节点盒边缘（连接点仍是格子垂直中心）。
+  const nodeW = fit.cellW * 0.5
+  const nodeH = fit.cellH * 0.5
+  const nodeOffsetX = (fit.cellW - nodeW) / 2
+  const nodeOffsetY = (fit.cellH - nodeH) / 2
   const pos = new Map(nodes.map((n) => [n.task.id, n]))
 
   return (
@@ -287,10 +293,10 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
               return (
                 <line
                   key={`${edge.from}->${edge.to}`}
-                  x1={from.x + fit.cellW}
-                  y1={from.y + fit.cellH / 2}
-                  x2={to.x}
-                  y2={to.y + fit.cellH / 2}
+                  x1={from.x + nodeOffsetX + nodeW}
+                  y1={from.y + nodeOffsetY + nodeH / 2}
+                  x2={to.x + nodeOffsetX}
+                  y2={to.y + nodeOffsetY + nodeH / 2}
                   stroke="#999"
                   strokeWidth={1.5}
                   markerEnd="url(#dag-arrow)"
@@ -308,10 +314,10 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
                 title={task.description}
                 style={{
                   position: 'absolute',
-                  left: node.x,
-                  top: node.y,
-                  width: fit.cellW,
-                  minHeight: fit.cellH,
+                  left: node.x + nodeOffsetX,
+                  top: node.y + nodeOffsetY,
+                  width: nodeW,
+                  minHeight: nodeH,
                   borderLeft: `4px solid ${STATUS_COLORS[task.status]}`,
                   padding: 6,
                   boxSizing: 'border-box',
