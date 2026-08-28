@@ -129,3 +129,30 @@
 | 真机验证 | 建议随下轮 e2e（round5 遗留 #5 已含） |
 
 ### 结论：**Go — P1-C wrap 塌缩收口**（放大语义 + 高度预算 + wrap 显式像素三层修复全落地）
+
+---
+
+## §P1-H 验收（T41，2026-08-28 15:40 追加）
+
+**交付形态说明（与任务预期差异）**：任务预期"补偿路径（readOutput 轮询兜底）"；实际交付为**根因修复**——三层探针实证（doc/05 §6.7）后确认桥全量转发、缺陷在自仓库 provider 的协议形态误解（sessionId 在通知顶层而非 update 内，`#runs.get('acp-undefined')` 恒 miss 静默丢弃全部实时事件）。修复 `mergeSessionUpdateNotification` 合并协议入口后事件全量到达，补偿路径无存在必要（§6.7 选型 c 不采用的理由已记载）——根因修复优于补偿。
+
+### 四门：全部通过
+
+`pnpm test` **38 文件 / 563 测试全绿**；typecheck / lint / build 全部 exit 0。
+
+### 核对明细
+
+| 项 | 状态 |
+| --- | --- |
+| 根因修复：`mergeSessionUpdateNotification`（顶层 sessionId 合并、update 自带优先、双无 undefined）三态锚定 | ✅ acp-session-provider.test:304-320（含修复语义注释：修复前恒 undefined 致事件全静默） |
+| 生产链实测证据（修复前 0 事件 → 修复后 output "OK" + 聚合正确） | ✅ 探针可复跑（.artifacts/acp-provider-probe.mjs，§6.7 记载） |
+| node_modules 零改动 | ✅ git status 无命中（探针均为外挂脚本） |
+| 插桩零残留 | ✅ grep PROBE 0 命中 |
+| idle 误杀链闭环 | ✅ 事件静默源头消除，空闲计时恢复由真实事件驱动（阈值 1200s 治理维持） |
+| 「桥只回 status」补偿场景 | N/A——根因修复后不存在该失效形态；既有 fake 桥（update 内嵌 sessionId）路径用例保持绿 |
+
+**附带披露**：本提交包含 T40（fitDagLayout scale 帽 3→12 + 竖屏铺满用例，38/38 验证过）的工作树产物，随本批一并入库。
+
+**遗留**：acp-session-index.json `"undefined"` 键治理（生产某路径 sessionKey 未传，§6.7 登记，另轮）。
+
+### 结论：**Go — P1-H 收口**（实时事件链修复：执行器写文件与队长可见进度之间 8 次误杀的静默断链闭环）

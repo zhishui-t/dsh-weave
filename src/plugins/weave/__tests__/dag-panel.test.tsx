@@ -152,11 +152,21 @@ describe('fitDagLayout（doc/05 §6.3 自适应布局，用户实测大界面图
     expect(fit.overflow).toBe(false)
   })
 
-  it('超大视口：scale 封顶 3，防节点过大', () => {
-    // natural = 248×88；viewport 极大 → scale=min(3, 403, 1136)=3
+  it('超大视口：scale 封顶 12（sanity 上限），防无界放大', () => {
+    // natural = 248×88；viewport 极大 → scale=min(12, 403, 1136)=12
     expect(fitDagLayout({ w: 99999, h: 99999 }, 1, 1)).toEqual({
-      cellW: 600, cellH: 192, levelGap: 144, rowGap: 72, overflow: false,
+      cellW: 2400, cellH: 768, levelGap: 576, rowGap: 288, overflow: false,
     })
+  })
+
+  it('竖屏大视口小图：3 倍帽放开后缩放比突破 3，宽度铺满视口（留白修复）', () => {
+    // levels=2/rows=2：natural = 496×176；viewport 1600×900 → scale=min(12, 3.23, 5.11)=3.23>3
+    const fit = fitDagLayout({ w: 1600, h: 900 }, 2, 2)
+    expect(fit.cellW).toBe(645) // round(200×3.2258)，> base×3 证明帽已放开
+    expect(fit.overflow).toBe(false)
+    // 宽度铺满：(levels+1)×cellW + levels×levelGap = 2×645 + 2×155 = 1600 = 视口宽
+    const totalW = 2 * fit.cellW + 2 * fit.levelGap
+    expect(totalW).toBe(1600)
   })
 
   it('非法视口（NaN/Infinity）回落 base，不产生 NaN 尺寸', () => {

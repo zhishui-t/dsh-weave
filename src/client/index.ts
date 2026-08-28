@@ -2585,8 +2585,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     ) {
       return { ...base, overflow: false }
     }
-    // 上限 3：内容小于视口时允许放大铺满（用户实测大界面图小），防节点过大。
-    const scale = Math.min(3, viewport.w / naturalW, viewport.h / naturalH)
+    // 上限 12 仅作 sanity 防呆（正常由视口/内容比触顶）：竖屏下 3 倍帽会先于高度比
+    // 触顶导致下方留白（用户实测），放开后高度比直接决定缩放。与宿主同构。
+    const scale = Math.min(12, viewport.w / naturalW, viewport.h / naturalH)
     const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
     const cellW = shrink(base.cellW * scale, floor.cellW)
     const cellH = shrink(base.cellH * scale, floor.cellH)
