@@ -194,4 +194,86 @@ describe('ReflectionService.depositFromOutput', () => {
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0]).toMatchObject({ index: 0, message: expect.any(String) })
   })
+
+  it('兑底合成：输出无任何标记时自动沉淀 1 条 pattern 候选（title=任务主题，tags 带 executor/role/source:weave-reflection-auto）', async () => {
+    const env = await newEnv()
+    const service = new ReflectionService({ knowledge: env.store })
+    const result = await service.depositFromOutput({
+      ...BASE_INPUT,
+      taskSubject: '反思链路源头打通',
+      outputText: '任务完成：修复了 buildPrompt 的沉淀要求并补齐单测，产出在 src/plugins/weave/delegation-service.ts。',
+    })
+
+    expect(result.deposited).toHaveLength(1)
+    expect(result.deposited[0]).toMatchObject({ title: '反思链路源头打通', layer: 'project' })
+    expect(result.invalid).toBe(0)
+    expect(result.errors).toEqual([])
+
+    const metas = await env.store.listMeta({ layer: 'project', status: 'candidate' })
+    expect(metas).toHaveLength(1)
+    const file = env.store.getKnowledgeFile(metas[0]!.id)
+    expect(file?.frontmatter.type).toBe('pattern')
+    expect(file?.frontmatter.status).toBe('candidate')
+    expect(file?.frontmatter.tags).toEqual(
+      expect.arrayContaining(['executor:codex', 'role:coder', 'source:weave-reflection-auto']),
+    )
+    expect(file?.frontmatter.tags).not.toContain('source:weave-reflection')
+    expect(file?.body.trim()).toBe(
+      '任务完成：修复了 buildPrompt 的沉淀要求并补齐单测，产出在 src/plugins/weave/delegation-service.ts。',
+    )
+  })
+
+  it('兑底合成审计：自动候选同样写入 knowledge.deposited 审计事件', async () => {
+    const env = await newEnv()
+    const service = new ReflectionService({ knowledge: env.store, audit: env.audit })
+    const result = await service.depositFromOutput({
+      ...BASE_INPUT,
+      taskSubject: '兑底审计',
+      outputText: '无标记的结果文本',
+    })
+
+    const events = await env.audit.query({ types: ['knowledge.deposited'] })
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'knowledge.deposited',
+      knowledge_id: result.deposited[0]!.id,
+      task_id: 'task-1',
+      executor: 'codex',
+      layer: 'project',
+    })
+  })
+
+  it('兑底合成截断：正文超 200 字时截取前 200 字', async () => {
+    const env = await newEnv()
+    const service = new ReflectionService({ knowledge: env.store })
+    await service.depositFromOutput({
+      ...BASE_INPUT,
+      outputText: '甲'.repeat(500),
+    })
+
+    const metas = await env.store.listMeta({ layer: 'project', status: 'candidate' })
+    const file = env.store.getKnowledgeFile(metas[0]!.id)
+    expect(file?.body.trim()).toBe('甲'.repeat(200))
+  })
+
+  it('兑底合成标题退回：taskSubject 缺省时用 taskId 作标题', async () => {
+    const env = await newEnv()
+    const service = new ReflectionService({ knowledge: env.store })
+    const result = await service.depositFromOutput({ ...BASE_INPUT, outputText: '普通结果' })
+    expect(result.deposited[0]!.title).toBe('task-1')
+  })
+
+  it('兑底不误触发：有有效块时只沉淀真实块；空白输出不合成候选', async () => {
+    const env = await newEnv()
+    const service = new ReflectionService({ knowledge: env.store })
+    const withBlocks = await service.depositFromOutput({
+      ...BASE_INPUT,
+      outputText: withBlock(JSON.stringify({ type: 'pitfall', title: '真实块', content: '显式经验', tags: [] })),
+    })
+    expect(withBlocks.deposited).toHaveLength(1)
+    expect(withBlocks.deposited[0]!.title).toBe('真实块')
+
+    const blank = await service.depositFromOutput({ ...BASE_INPUT, taskId: 'task-blank', outputText: '   \n  ' })
+    expect(blank.deposited).toHaveLength(0)
+  })
 })

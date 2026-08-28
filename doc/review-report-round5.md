@@ -184,3 +184,62 @@
 **附带披露**：本提交含 T42（节点缩小）已验证产物。
 
 ### 结论：**Go — P1-C 去封顶收口**（铺满→节点缩半，用户两轮实测反馈闭环）
+
+---
+
+## §DAG 对齐验收（T52，2026-08-28 23:15 补记）
+
+**背景**：对齐 dsh-agent-teams ActivityPanel 紧凑 DAG 观感（节点 92×30、列距 26/行距 8、短柄贝塞尔边、聚焦链高亮/无关暗化、画布=内容精确尺寸），替换 fitDagLayout 缩放方案。两侧同构：插件 `dag-panel.tsx` 与 `client/index.ts`（bundle 禁 import 手工移植，compactDagLayout/relatedTaskIds 逐行核对一致）。
+
+验收证据：`.artifacts/weave-ui/dag-agents-style.png`（真实会话 28 节点/17 条贝塞尔边，画布 1010×524 内容精确尺寸，紧凑节点+状态点+短 ID+状态·执行者两行，全节点正常亮度无整体暗化）与 `dag-agents-style-focus.png`（聚焦 T32 链：链路节点保持亮度、无关节点暗化、active 边主题色）经视觉分析对照通过。`focusPinned` 语义（默认派生选中只驱动详情区不触发暗化）经截图发现初始视图整体暗化问题后修正——初始视图与参照物一致为无聚焦干净图。
+
+**验收中发现并代为修复**：`dag-panel.tsx` 渲染重写遗留死代码 `pos`（构建 id→node Map 未使用，lint error）已删除。e2e/harness 旧版（当时未提交）的 3 个 unused-var error 由测试工程师自清。
+
+结论：**通过**（详见下节门禁数字——DAG 用例含于 593/54 中）。
+
+---
+
+## §UI 测试套件与反思链路验收（T54/T55，2026-08-28 23:15 追加）
+
+### 验收环境特别说明（并行工作树污染与隔离验证）
+
+本轮终验期间，主工作树同时存在**至少两批未交付的并行在途改动**（执行器假并行修复：phase/onAcquired/slot 治理，涉及 scheduler.ts/delegation-service.ts/index.ts/process-limiter.ts/client/index.ts；知识图谱项目筛选：knowledge-graph.ts/query-service.ts/client/index.ts），且在验证过程中持续演进（knowledge-graph.ts 从 unused var 变为 TS2322、scheduler.ts 从 3 行膨胀至 85 行、client/index.ts 22:55 再次被改）。主树门禁无法归因：build 红源于在途文件的编译错误而非交付物。
+
+**处置**：git worktree 隔离验证——基于 HEAD 建隔离树，对 7 个物理混批文件做 hunk 级拆分（client/index.ts 保留 5/11、client-bundle.ui.test.tsx 保留 4/6、插件 index.ts 保留 2/3、delegation-service.ts 保留 1/4、delegation-service.test.ts 保留 2/3、scheduler.ts 保留 1/7，拆分 patch 见 .artifacts 旁路脚本产物），纯净文件直拷，在隔离树跑全部门禁。junction node_modules 下 pnpm 会尝试删除主树 node_modules（被 UNSAFE_MODULES 保护挡住）——隔离树内须直调 node_modules/.bin。
+
+### 四门 + e2e:harness（隔离树 = HEAD + 三路交付，不含任何并行在途改动）
+
+| 门禁 | 结果 |
+| --- | --- |
+| typecheck | ✅ exit 0 |
+| build（tsc -p tsconfig.build.json） | ✅ exit 0 |
+| lint | ✅ **0 error** / 43 warning（主树 1 error 为在途 knowledge-graph.ts 所有，非交付物） |
+| vitest 全量 | ✅ **38 文件 593 用例全绿**（主树 599 − 并行改动 6 用例；T55 新增 8 用例全含） |
+| e2e:harness | ✅ **54/54 全绿**（被测 dist 为隔离树拆分版 client 的新构建） |
+
+主树参考读数：vitest 599 全绿（含并行改动）、e2e:harness 54/54（测试工程师对 22:40 dist 的回归）。live 层（WEAVE_E2E_LIVE=1）10/10 为测试工程师交付读数，本轮未重跑（无服务器状态变化）。
+
+### T55 锚定核实（prompt 强制 + 兑底双保险）
+
+**① prompt 强制**：`buildPrompt` 知识沉淀段新增「结束时必须输出至少一个 WEAVE_KNOWLEDGE 块（type ∈ pitfall/pattern/skill/doc；无新经验则写一条 type=doc 的任务小结）」+ 缺省输出要求去「可留空」。锚定：delegation-service.test.ts 既有模板断言 +2 行、新用例「知识沉淀强制化」对自定义/缺省两路径断言 `not.toContain('可留空')` 且含全部强制语句——**调度器覆盖 outputRequirements 场景已覆盖**（强制段独立于输出要求下发）。
+
+**② 兑底路径**：`depositFromOutput` 在有效块为 0 且输出非空白时合成候选（type=pattern、title=taskSubject 退化 taskId、content=前 200 字），`source:weave-reflection-auto` 标签与显式块区分，**复用同一 createCandidate(candidate 状态)+knowledge.deposited 审计路由不旁路**。锚定：reflection-service.test.ts 5 用例（合成/审计/截断/标题退化/有块与空白不误触发）+ scheduler-reflection.test.ts 端到端 2 用例（真实 ReflectionService+KnowledgeStore+生产同构钩子含 `taskSubject: subjectLabel(task)`：无标记输出自动沉淀 1 条候选并通知；有标记只沉淀显式块）。
+
+**③ 接线**：index.ts `onTaskSettledText` 补传 `taskSubject`；scheduler.ts 导出 `subjectLabel`（生产通知与兑底标题同源）。
+
+### T54 检视意见
+
+- 结构合理：harness 层（stub RPC 确定性、CI 常驻、被测 dist 真实产物）与 live 层（env 门控）分层清晰；删除 10 个零散探针收编进套件，清理得当。
+- 场景信封对齐真实 rpc.ts serializeTeam 形态（team_id/roles 对象数组），避免连锁假失败——已沉淀知识。
+- DAG 用例对齐紧凑新实现：92×30 几何、贝塞尔端点 ≤1px 锚定、聚焦暗化 opacity 轮询（规避 140ms CSS 过渡竞态）。
+- [低] 测试性缺口已登记：session-revise-dialog 按钮与 audit 查询按钮无独立 testid（用结构定位兜底），建议下轮补。
+
+### Commit 口径（防混批）
+
+两笔提交，均只含各自交付（拆分 patch 经 git apply --cached 精确暂存，排除一切并行在途改动）：
+1. `feat: DAG 对齐 dsh-agent-teams 参照——固定节点+贝塞尔边+聚焦高亮 + 门禁全绿`（T52 四文件，dag-panel/client 两侧）
+2. `feat: UI 完整自动化测试套件 + 反思链路源头打通 + 门禁全绿`（T54 e2e 全套 + T55 四源码三测试）
+
+**未入库（并行在途，如实登记）**：process-limiter.ts 默认限额放宽（2/10→20/1000）、index.ts 执行器限制接线与 delegationMaxWallClockMs=0、scheduler/delegation 的 phase/onAcquired 假并行修复、knowledge-graph.ts/query-service.ts/client 知识图谱项目筛选——归属各自任务终验，含 6 个 vitest 用例与 lint/build 污染源，待其交付时自行验收。
+
+### 结论：**通过 — T54/T55 收口**（三路交付在隔离环境四门+e2e 全绿；并行混批已拆分隔离，无交叉污染入库）

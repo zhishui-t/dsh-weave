@@ -239,6 +239,8 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       '[pitfall] WAL（k1）：WAL 开启',
       '## 可用命令（执行中可调用）',
       '## 知识沉淀要求',
+      '结束时必须输出至少一个 WEAVE_KNOWLEDGE 块（type ∈ pitfall/pattern/skill/doc；无新经验则写一条 type=doc 的任务小结）。',
+      '{"type": "pitfall", "title": "...", "content": "...", "tags": ["..."]}',
       '### WEAVE_KNOWLEDGE_START',
       '### WEAVE_KNOWLEDGE_END',
       '## 输出要求',
@@ -246,6 +248,35 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     ]) {
       expect(text).toContain(snippet)
     }
+  })
+
+  it('知识沉淀强制化：不再出现「可留空」，自定义/缺省输出要求均保留强制沉淀要求', () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    const withCustom = service.buildPrompt(
+      BASE_TASK,
+      BASE_ROLE,
+      BASE_CONTEXT,
+      [],
+      null,
+      BASE_TEAM.knowledge_injection,
+    )
+    const withDefault = service.buildPrompt(
+      BASE_TASK,
+      BASE_ROLE,
+      { ...BASE_CONTEXT, outputRequirements: undefined },
+      [],
+      null,
+      BASE_TEAM.knowledge_injection,
+    )
+    for (const text of [withCustom, withDefault]) {
+      expect(text).not.toContain('可留空')
+      expect(text).toContain('结束时必须输出至少一个 WEAVE_KNOWLEDGE 块')
+      expect(text).toContain('type ∈ pitfall/pattern/skill/doc')
+      expect(text).toContain('无新经验则写一条 type=doc 的任务小结')
+      expect(text).toContain('可复制示例')
+    }
+    expect(withDefault).toContain('并按「知识沉淀要求」输出至少一个 WEAVE_KNOWLEDGE 块。')
   })
 
   it('修订注入：prompt 含上一版输出与反馈历史（SessionTracker.getRevisionContext）', async () => {

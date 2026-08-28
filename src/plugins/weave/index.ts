@@ -9,7 +9,7 @@ import { ProcessLimiter } from './safety/process-limiter.js'
 import { DelegationService } from './delegation-service.js'
 import { SessionTracker } from './session-tracker.js'
 import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
-import { WeaveScheduler } from './scheduler.js'
+import { WeaveScheduler, subjectLabel } from './scheduler.js'
 import { ReflectionService } from './reflection-service.js'
 import { createExecutorEventNotifier } from './session-stream.js'
 import { TaskStatusNotifier } from './task-status-notifier.js'
@@ -229,6 +229,8 @@ export function apply(ctx: Context): void {
             projectId: task.project_id,
             version: task.version,
             outputText: text,
+            // 兑底候选标题来源：输出无 WEAVE_KNOWLEDGE 标记时自动合成（ReflectionService 内）。
+            taskSubject: subjectLabel(task),
           })
           return result.deposited.length
         },

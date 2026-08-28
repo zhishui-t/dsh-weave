@@ -9,6 +9,7 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
+  forbidOnly: true,
   reporter: [['list']],
   use: {
     launchOptions: { executablePath: EXECUTABLE, headless: true },

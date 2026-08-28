@@ -8,12 +8,27 @@ export const BASE_URL = process.env.WEAVE_E2E_BASE_URL ?? 'http://127.0.0.1:3080
 export const EXECUTABLE =
   process.env.PW_CHROME ??
   'C:/Users/10042/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe'
-/** 截图与 trace 汇总目录（gitignore）。 */
-export const ART = resolve(process.cwd(), '.artifacts/weave-ui')
+/** 截图与 trace 汇总目录（gitignore）。两层用例统一落在 weave-ui/e2e/ 下。 */
+export const ART = resolve(process.cwd(), '.artifacts/weave-ui/e2e')
 /** Dashboard 七个路由 key（任务中心/会话管理已移除，运行时信息在会话面板）。 */
 export const ROUTES = ['overview', 'teams', 'knowledge', 'executors', 'audit', 'settings', 'manual'] as const
+/** live 层 env 门控：仅 WEAVE_E2E_LIVE=1 时运行（harness 层不受影响，CI 常驻）。 */
+export const LIVE_ENABLED = process.env.WEAVE_E2E_LIVE === '1'
 
 mkdirSync(ART, { recursive: true })
+
+/** 探测真实 DSH Web 是否可达（结果进程内缓存；异常一律视为不可达）。 */
+let serverReachable: boolean | null = null
+export async function probeServer(): Promise<boolean> {
+  if (serverReachable !== null) return serverReachable
+  try {
+    const resp = await fetch(BASE_URL, { signal: AbortSignal.timeout(5000) })
+    serverReachable = resp.status < 500
+  } catch {
+    serverReachable = false
+  }
+  return serverReachable
+}
 
 export type NetIssue = { status: number; url: string }
 export type RpcIssue = { endpoint: string; message: string }
@@ -124,6 +139,6 @@ export function recordStep(records: StepRecord[], name: string): (info?: string)
   }
 }
 
-export function writeReport(payload: unknown): void {
-  writeFileSync(resolve(ART, 'live-report.json'), JSON.stringify(payload, null, 2))
+export function writeReport(payload: unknown, name = 'live-report.json'): void {
+  writeFileSync(resolve(ART, name), JSON.stringify(payload, null, 2))
 }

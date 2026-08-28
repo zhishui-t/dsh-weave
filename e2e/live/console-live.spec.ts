@@ -1,14 +1,19 @@
-// Weave 控制台真实 DSH Web 端到端验收（t5 live 层）。
-// 运行：pnpm test:e2e:live —— 访问真实 http://127.0.0.1:3080，走真实 Connection RPC，无任何 mock。
-// 通过标准：七页可达；团队配置创建成功；任务由当前 DSH 会话发起，Web 仅验收列表/治理；知识/审计/会话/设置真实数据或明确空态；
+// Weave 控制台真实 DSH Web 端到端验收（live 层）。
+// 门控：默认跳过；设 WEAVE_E2E_LIVE=1 才运行（harness 层不受影响，CI 常驻）。
+//   bash:   WEAVE_E2E_LIVE=1 pnpm test:e2e:live
+//   cmd:    set WEAVE_E2E_LIVE=1 && pnpm test:e2e:live
+// 运行：访问真实 http://127.0.0.1:3080，走真实 Connection RPC，无任何 mock。
+// 通过标准：七页可达；团队创建→详情→删除自平衡；会话面板/任务图探测；知识库只读验收；
 // 无 405、无 invalid client-request message、无未捕获页面异常、/dsh-weave 信封全部 ok=true。
 import { expect, test, type Page } from '@playwright/test'
 
 import {
   BASE_URL,
+  LIVE_ENABLED,
   mergeObserved,
   observe,
   expectNoPageError,
+  probeServer,
   recordStep,
   ROUTES,
   shot,
@@ -19,8 +24,11 @@ import {
 
 const records: StepRecord[] = []
 const observedStates: Observed[] = []
+let serverUp = false
 
-test.describe.serial('Weave 控制台真实 Web 验收', () => {
+test.describe.serial('live: Weave 控制台真实 Web 验收', () => {
+  test.skip(!LIVE_ENABLED, 'live 层 env 门控：需 WEAVE_E2E_LIVE=1 才运行（真实 DSH Web 127.0.0.1:3080）')
+
   let page: Page
   let createdTeamId = ''
 
@@ -28,13 +36,15 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     page = await browser.newPage()
   })
 
-  test.beforeEach(() => {
+  test.beforeEach(async () => {
+    if (!serverUp) serverUp = await probeServer()
+    test.skip(!serverUp, `真实 DSH Web ${BASE_URL} 不可达——live 层跳过（请先启动 DSH Web）`)
     observedStates.push(observe(page))
   })
 
   test.afterAll(async () => {
     const merged = mergeObserved(observedStates)
-    writeReport({ baseUrl: BASE_URL, steps: records, ...merged })
+    writeReport({ baseUrl: BASE_URL, serverUp, steps: records, ...merged })
     await page?.close()
   })
 
@@ -44,11 +54,11 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     try {
       await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
       await page.getByTestId('weave-open').waitFor({ state: 'visible', timeout: 30_000 })
-      await shot(page, '00-home')
+      await shot(page, 'live-00-home')
       await page.getByTestId('weave-open').click()
       await page.getByTestId('weave-dashboard').waitFor({ state: 'visible', timeout: 15_000 })
       await expect(page.locator('.weave-title')).toContainText('Weave 控制台')
-      await shot(page, '01-dashboard')
+      await shot(page, 'live-01-dashboard')
       step('入口打开 Dashboard')()
     } catch (err) {
       step('入口打开 Dashboard')(String(err))
@@ -64,7 +74,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         await page.getByTestId(`page-${key}`).waitFor({ state: 'visible', timeout: 20_000 })
         await page.waitForTimeout(700)
         await expectNoPageError(page, key)
-        await shot(page, `${String(i + 2).padStart(2, '0')}-page-${key}`)
+        await shot(page, `live-02-page-${key}`)
         console.log(`  页面可达: ${key}`)
       }
       step('七页全部可达且无错误态')()
@@ -108,7 +118,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
       await submit.click()
       await page.getByTestId(`team-delete-${teamId}`).waitFor({ state: 'visible', timeout: 20_000 })
       createdTeamId = teamId
-      await shot(page, '10-team-created')
+      await shot(page, 'live-10-team-created')
       console.log(`  团队已创建并出现在列表: ${teamId}`)
       step(`团队创建+列表可见 (${teamId})`)()
     } catch (err) {
@@ -117,13 +127,32 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('tasks: 任务中心/会话管理已移除，会话面板为运行时唯一出口', async () => {
+  test('teams: 新建团队详情抽屉展示队员卡（创建→绑定查看闭环）', async () => {
+    if (createdTeamId === '') return
     try {
-      // Dashboard 内不再有这两个导航项
+      await page.getByTestId(`team-detail-${createdTeamId}`).click()
+      await page.getByTestId(`team-drawer-${createdTeamId}`).waitFor({ state: 'visible', timeout: 10_000 })
+      const memberCards = page.getByTestId('team-member-cards')
+      await expect(memberCards).toBeVisible()
+      const members = await page.locator('[data-testid^="team-member-card-"]').count()
+      expect(members).toBe(2)
+      await shot(page, 'live-11-team-detail')
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId(`team-drawer-${createdTeamId}`)).toBeHidden()
+      step(`团队详情抽屉 + 队员卡 (${createdTeamId})`)()
+    } catch (err) {
+      step(`团队详情抽屉 + 队员卡 (${createdTeamId})`)(String(err))
+      throw err
+    }
+  })
+
+  test('session-panel: 会话视图 Weave 团队页签——成员卡/DAG 探测', async () => {
+    try {
+      // 任务中心/会话管理导航不复存在
       await expect(page.getByTestId('nav-tasks')).toHaveCount(0)
       await expect(page.getByTestId('nav-sessions')).toHaveCount(0)
 
-      // 关闭控制台回会话视图：寻找「Weave 团队」页签（conversation.view 槽位）
+      // 关闭控制台回会话视图：寻找「Weave 团队」页签（宿主渲染的 conversation.view 槽位）
       await page.getByTestId('weave-close').click()
       await page.getByTestId('weave-dashboard').waitFor({ state: 'detached', timeout: 10_000 })
       const teamTab = page.getByText('Weave 团队', { exact: false }).first()
@@ -132,23 +161,28 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         await page.getByTestId('weave-session-panel').waitFor({ state: 'visible', timeout: 15_000 })
         const members = await page.locator('[data-testid^="member-card-"]').count()
         console.log(`  会话面板可见，成员卡片 ${members} 张`)
-        await shot(page, '11-session-panel')
-        await page.getByTestId('weave-open').click() // 恢复 Dashboard 状态供后续步骤复用
+        // DAG 页签体与面板骨架（任务图内容取决于当前会话是否有任务，条件探测）
+        const dagTabVisible = await page.getByTestId('session-tab-dag').isVisible().catch(() => false)
+        const dagPanelVisible = await page.getByTestId('dag-panel').isVisible().catch(() => false)
+        console.log(`  DAG 页签: ${dagTabVisible}; DAG 图渲染: ${dagPanelVisible}`)
+        await shot(page, 'live-12-session-panel')
+        if (dagPanelVisible) await shot(page, 'live-13-session-dag')
+        await page.getByTestId('weave-open').click() // 恢复 Dashboard 供后续步骤
         await page.getByTestId('weave-dashboard').waitFor({ state: 'visible' })
       } else {
         console.log('  当前视图未渲染 conversation.view 页签（新会话或宿主未注入），跳过面板断言')
-        await shot(page, '11-no-panel-tab')
+        await shot(page, 'live-12-no-panel-tab')
         await page.getByTestId('weave-open').click()
         await page.getByTestId('weave-dashboard').waitFor({ state: 'visible' })
       }
-      step('任务中心已移除 + 会话面板可探测')()
+      step('任务中心已移除 + 会话面板/DAG 探测')()
     } catch (err) {
-      step('任务中心已移除 + 会话面板可探测')(String(err))
+      step('任务中心已移除 + 会话面板/DAG 探测')(String(err))
       throw err
     }
   })
 
-  test('knowledge: 列表查询 + candidate 审核或明确空态', async () => {
+  test('knowledge: 列表查询与审核入口只读验收（不改动真实知识状态）', async () => {
     try {
       await page.getByTestId('nav-knowledge').click()
       await page.getByTestId('knowledge-status-filter').waitFor({ state: 'visible', timeout: 10_000 })
@@ -161,33 +195,24 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
         console.log('  知识库为空（空态明确呈现）')
       } else {
         const id = (await items.first().getAttribute('data-testid'))!.replace('knowledge-item-', '')
-        const approve = page.getByTestId(`knowledge-approve-${id}`)
-        if (await approve.isVisible().catch(() => false)) {
-          await approve.click()
-          await page.waitForTimeout(1000)
-          await expectNoPageError(page, 'knowledge approve 后')
-          console.log(`  已审核 candidate ${id}: approve`)
-        } else {
-          console.log(`  首条 ${id} 非 candidate（无 approve 按钮），仅验证列表`)
-        }
+        const hasApprove = await page.getByTestId(`knowledge-approve-${id}`).isVisible().catch(() => false)
+        console.log(`  首条 ${id} 可见；approve 入口: ${hasApprove}（live 层只读，不执行审核）`)
       }
-      await shot(page, '12-knowledge')
-      step('知识库查询+审核或空态')()
+      await shot(page, 'live-14-knowledge')
+      step('知识库只读验收')()
     } catch (err) {
-      step('知识库查询+审核或空态')(String(err))
+      step('知识库只读验收')(String(err))
       throw err
     }
   })
 
   test('executors/audit/settings/manual: 真实数据或明确空态', async () => {
     try {
-      // 执行器：列表来自 snapshot 注册项（zcode 目录仅存在时展示）
       await page.getByTestId('nav-executors').click()
       await page.getByTestId('page-executors').waitFor({ state: 'visible' })
       await page.waitForTimeout(600)
       await expectNoPageError(page, 'executors')
 
-      // 审计日志：事件或空态
       await page.getByTestId('nav-audit').click()
       await page.getByTestId('audit-type-filter').waitFor({ state: 'visible', timeout: 10_000 })
       await page.waitForTimeout(800)
@@ -195,16 +220,19 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
       const auditRows = await page.locator('[data-testid^="audit-event-"]').count()
       if (auditRows === 0) await expect(page.getByTestId('page-empty').first()).toBeVisible()
 
-      // 设置：真实路径与版本文本
       await page.getByTestId('nav-settings').click()
       await page.getByTestId('settings-list').waitFor({ state: 'visible', timeout: 10_000 })
       const settings = await page.getByTestId('settings-list').innerText()
       expect(settings.length).toBeGreaterThan(10)
 
-      await shot(page, '13-misc-pages')
-      step('执行器/审计/设置 真实数据或空态')()
+      await page.getByTestId('nav-manual').click()
+      await expect(page.getByTestId('page-manual')).toBeVisible()
+      expect(await page.locator('[data-testid^="command-row-"]').count()).toBeGreaterThan(0)
+
+      await shot(page, 'live-15-misc-pages')
+      step('执行器/审计/设置/手册 真实数据或空态')()
     } catch (err) {
-      step('执行器/审计/设置 真实数据或空态')(String(err))
+      step('执行器/审计/设置/手册 真实数据或空态')(String(err))
       throw err
     }
   })
@@ -218,7 +246,7 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
     await del.click()
     await page.getByTestId('confirm-delete-team-danger').click()
     await page.getByTestId(`team-delete-${tid}`).waitFor({ state: 'detached', timeout: 20_000 })
-    await shot(page, '14-team-cleaned')
+    await shot(page, 'live-16-team-cleaned')
     createdTeamId = ''
     step(`清理自建团队 (${tid})`)()
   })
@@ -237,6 +265,8 @@ test.describe.serial('Weave 控制台真实 Web 验收', () => {
   })
 
   test('shell: 关闭 Dashboard', async () => {
+    const closeVisible = await page.getByTestId('weave-close').isVisible().catch(() => false)
+    if (!closeVisible) return
     await page.getByTestId('weave-close').click()
     await page.getByTestId('weave-dashboard').waitFor({ state: 'detached', timeout: 10_000 })
   })

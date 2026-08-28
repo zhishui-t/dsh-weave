@@ -880,12 +880,13 @@ export class DelegationService {
     lines.push('- （P0 阶段无知识检索 CLI；`/weave knowledge search` 属 P1，不在执行器可用命令中）')
     lines.push('')
     lines.push('## 知识沉淀要求')
+    lines.push('结束时必须输出至少一个 WEAVE_KNOWLEDGE 块（type ∈ pitfall/pattern/skill/doc；无新经验则写一条 type=doc 的任务小结）。可复制示例：')
     lines.push('### WEAVE_KNOWLEDGE_START')
     lines.push('{"type": "pitfall", "title": "...", "content": "...", "tags": ["..."]}')
     lines.push('### WEAVE_KNOWLEDGE_END')
     lines.push('')
     lines.push('## 输出要求')
-    lines.push(context.outputRequirements ?? '输出最终结果；同时按上述知识沉淀格式记录可复用经验（可留空）。')
+    lines.push(context.outputRequirements ?? '输出最终结果；并按「知识沉淀要求」输出至少一个 WEAVE_KNOWLEDGE 块。')
     return lines.join('\n')
   }
 

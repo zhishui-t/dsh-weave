@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
+import { openPersistence } from '../persistence/index'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
 import { TeamPlanner } from '../planner'
-import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduler'
+import { WeaveScheduler, subjectLabel, type SchedulerDelegationLike, type WeaveSchedulerOptions } from '../scheduler'
+import { ReflectionService } from '../reflection-service'
+import { KnowledgeStore } from '../knowledge-model'
 import type { SubagentTaskOutput } from '../delegation-service'
 
 const lookup: ExecutorLookup = {
@@ -196,5 +199,102 @@ describe('WeaveScheduler.onTaskSettledText', () => {
     )
     expect(rows[0]?.status).toBe('COMPLETED')
     expect(notices.some((notice) => notice.text.includes('反思沉淀'))).toBe(false)
+  })
+})
+
+describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionService）', () => {
+  function newKnowledgeEnv(): { store: KnowledgeStore; cleanup: () => void } {
+    const rootDir = mkdtempSync(join(tmpdir(), 'weave-sched-kb-'))
+    const db = openPersistence({ inMemory: true })
+    const store = new KnowledgeStore({ rootDir, metaDb: db.knowledgeMeta })
+    return {
+      store,
+      cleanup: () => {
+        db.close()
+        rmSync(rootDir, { recursive: true, force: true })
+      },
+    }
+  }
+
+  /** 生产同构钩子（index.ts onTaskSettledText）：真实 ReflectionService + taskSubject 溯源。 */
+  function makeHook(store: KnowledgeStore): NonNullable<WeaveSchedulerOptions['onTaskSettledText']> {
+    const reflection = new ReflectionService({ knowledge: store })
+    return async ({ task, role, text }) => {
+      const result = await reflection.depositFromOutput({
+        taskId: task.id,
+        executor: role.executor,
+        roleId: role.id,
+        projectId: task.project_id,
+        version: task.version,
+        outputText: text,
+        taskSubject: subjectLabel(task),
+      })
+      return result.deposited.length
+    }
+  }
+
+  it('输出无 WEAVE_KNOWLEDGE 标记 → 自动合成 1 条候选（source:weave-reflection-auto）并通知', async () => {
+    const delegation = new FakeDelegation() // FakeDelegation 输出 'coder-done'，无标记
+    const { store, cleanup } = newKnowledgeEnv()
+    const notices: Array<{ text: string }> = []
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: (_sessionId, text) => { notices.push({ text }) },
+      onTaskSettledText: makeHook(store),
+    })
+
+    try {
+      const { dagId } = await planOneTask('task-auto-fallback')
+      await scheduler.start({ dagId, sessionId: 'sess-r' })
+      await flush()
+
+      expect(notices.some((notice) => notice.text.includes('反思沉淀 1 条候选知识（待审核）'))).toBe(true)
+      const metas = await store.listMeta({ status: 'candidate' })
+      expect(metas).toHaveLength(1)
+      const file = store.getKnowledgeFile(metas[0]!.id)
+      expect(file?.frontmatter.type).toBe('pattern')
+      expect(file?.frontmatter.title).toBe('单一任务')
+      expect(file?.frontmatter.tags).toEqual(
+        expect.arrayContaining(['executor:codex', 'role:coder', 'source:weave-reflection-auto']),
+      )
+      expect(file?.body.trim()).toBe('coder-done')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('输出带标记 → 只沉淀真实块，不追加自动合成候选', async () => {
+    const delegation = new FakeDelegation()
+    const { store, cleanup } = newKnowledgeEnv()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => undefined,
+      onTaskSettledText: makeHook(store),
+    })
+
+    try {
+      const { dagId, taskId } = await planOneTask('task-explicit-block')
+      delegation.script.set(taskId, {
+        output: [{
+          type: 'text' as const,
+          text: '结论正文\n### WEAVE_KNOWLEDGE_START\n{"type": "pitfall", "title": "显式经验", "content": "执行器自己写的", "tags": ["x"]}\n### WEAVE_KNOWLEDGE_END\n',
+        }],
+      })
+      await scheduler.start({ dagId, sessionId: 'sess-r' })
+      await flush()
+
+      const metas = await store.listMeta({ status: 'candidate' })
+      expect(metas).toHaveLength(1)
+      const file = store.getKnowledgeFile(metas[0]!.id)
+      expect(file?.frontmatter.title).toBe('显式经验')
+      expect(file?.frontmatter.tags).toEqual(expect.arrayContaining(['source:weave-reflection']))
+      expect(file?.frontmatter.tags).not.toContain('source:weave-reflection-auto')
+    } finally {
+      cleanup()
+    }
   })
 })

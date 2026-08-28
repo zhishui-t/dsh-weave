@@ -692,7 +692,8 @@ function safeParseDeps(raw: string): string[] {
   }
 }
 
-function subjectLabel(task: TaskRecord): string {
+/** 任务主题：描述首行截 60 字（空描述退回任务 id）；反思兑底候选标题同源。 */
+export function subjectLabel(task: TaskRecord): string {
   const firstLine = task.description.split('\n')[0]?.trim() ?? ''
   return firstLine === '' ? task.id : firstLine.slice(0, 60)
 }
