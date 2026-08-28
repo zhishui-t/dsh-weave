@@ -32,7 +32,8 @@ export interface StreamMessage {
   text: string
 }
 
-const DEFAULT_EVENTS: ExecutorRunEventType[] = ['output', 'status']
+/** 默认放行工具与思考事件：zcode 长任务几乎全为 tool_call（output/status 稀疏），收窄过滤会导致整场静默（本轮实证）。节流+合并+截断兜底噪声。 */
+const DEFAULT_EVENTS: ExecutorRunEventType[] = ['output', 'status', 'tool_call', 'reasoning']
 
 /** 非终态 status 白名单：此外的 status 文本一律视为任务终态并触发尾包 flush。 */
 const NON_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['streaming', 'started', 'stream_unavailable'])

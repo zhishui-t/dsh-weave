@@ -55,13 +55,14 @@ describe('SessionStreamThrottle（doc/05 §6.2 P1-B 噪声控制）', () => {
     expect(messages[0]!.text).toBe('aaaaaaaaaa…')
   })
 
-  it('类型过滤：默认 reasoning/tool_call/tool_result 不处理；自定义 events 生效', () => {
+  it('类型过滤：默认 reasoning/tool_call 放行（zcode 长任务事件主体），tool_result 不处理；自定义 events 生效', () => {
     const throttle = new SessionStreamThrottle()
-    expect(throttle.handle(evt({ type: 'reasoning', text: 'think' }))).toEqual([])
-    expect(throttle.handle(evt({ type: 'tool_call', name: 'bash' }))).toEqual([])
-    expect(throttle.pendingCount()).toBe(0)
-    const wide = new SessionStreamThrottle({ events: ['tool_call'] })
-    expect(wide.handle(evt({ type: 'tool_call', name: 'bash' }))).toHaveLength(1)
+    expect(throttle.handle(evt({ type: 'reasoning', text: 'think' }))).toHaveLength(1)
+    expect(throttle.handle(evt({ type: 'tool_call', name: 'bash' }))).toEqual([]) // 窗口内 → pending
+    expect(throttle.pendingCount()).toBe(1)
+    expect(throttle.handle(evt({ type: 'tool_result', name: 'bash' }))).toEqual([])
+    const narrow = new SessionStreamThrottle({ events: ['output'] })
+    expect(narrow.handle(evt({ type: 'tool_call', name: 'bash' }))).toEqual([])
   })
 
   it('终态 flush：窗口内 pending 被 status=completed 立即补发；非终态 status 不触发', () => {
