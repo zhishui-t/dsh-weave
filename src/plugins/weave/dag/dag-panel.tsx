@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
@@ -36,6 +36,9 @@ export interface DagFitLayout extends DagLayoutBase {
  * 自适应布局（doc/05 §6.3）：按视口等比收缩 base 布局，scale=min(1, vw/W, vh/H)
  * ——只缩不放；任一值低于 floor 钳到 floor 并置 overflow（容器回落滚动）。
  * 视口未测量（w/h ≤ 0）或退化输入时返回 base 原尺寸（与历史渲染逐字节一致）。
+ *
+ * @deprecated 主渲染已改为紧凑固定几何（compactDagLayout）；本函数仅为兼容保留导出，
+ * 内部不再使用。doc/05 §6.3 的视口适配语义由滚动容器承接。
  */
 export function fitDagLayout(
   viewport: DagViewportSize,
@@ -92,14 +95,6 @@ export const STATUS_COLORS: Record<TaskStatus, string> = {
   COOLDOWN: '#6b6b6b',
 }
 
-export interface DagNodeLayout {
-  task: TaskRecord
-  level: number
-  index: number
-  x: number
-  y: number
-}
-
 /**
  * 层级布局：level = 最长依赖路径深度（dag.edges 与 task.dependencies 取并集）。
  * 纯函数，便于单测。
@@ -135,6 +130,150 @@ export function isCancelable(status: TaskStatus): boolean {
   return TaskStateMachine.canTransition(status, 'CANCELLED')
 }
 
+/* -------------------- 紧凑 DAG 布局（对齐参照物 ActivityPanel） -------------------- */
+
+/** 参照物几何：节点固定 92×30，列间距 26、行间距 8；画布=内容精确尺寸，不缩放不铺满。 */
+export const COMPACT_DAG_NODE_WIDTH = 92
+export const COMPACT_DAG_NODE_HEIGHT = 30
+export const COMPACT_DAG_COLUMN_GAP = 26
+export const COMPACT_DAG_ROW_GAP = 8
+
+/** 紧凑布局中的一个已定位节点。 */
+export interface CompactDagNodeLayout {
+  task: TaskRecord
+  id: string
+  x: number
+  y: number
+}
+
+/** 一条短柄三次贝塞尔边：水平出入节点中线（M x1 y1 C x1+14 y1, x2-14 y2, x2 y2）。 */
+export interface CompactDagEdgeLayout {
+  from: string
+  to: string
+  path: string
+}
+
+/** 完整紧凑投影：width/height 即画布精确尺寸（放入滚动容器，不做视口适配）。 */
+export interface CompactDagLayout {
+  width: number
+  height: number
+  nodes: CompactDagNodeLayout[]
+  edges: CompactDagEdgeLayout[]
+}
+
+/** 有效关系边：dag.edges 优先；缺失时回退由 task.dependencies 推导（并去重）。 */
+export function effectiveDagEdges(dag: TaskDag): Array<{ from: string; to: string }> {
+  const direct = dag.edges.filter((edge) => edge.from !== '' && edge.to !== '')
+  if (direct.length > 0) return direct
+  const seen = new Set<string>()
+  const derived: Array<{ from: string; to: string }> = []
+  for (const task of dag.tasks) {
+    for (const dep of task.dependencies) {
+      const key = `${dep}->${task.id}`
+      if (dep === '' || task.id === '' || seen.has(key)) continue
+      seen.add(key)
+      derived.push({ from: dep, to: task.id })
+    }
+  }
+  return derived
+}
+
+/**
+ * 紧凑左→右 DAG：列 = 依赖深度 stage（computeLevels，edges 与 dependencies 取并集），
+ * 行 = stage 内任务 id 稳定排序。边为水平出入节点中线的短柄三次贝塞尔。
+ * 纯函数，与 client 侧 DagGraph 单文件同构实现保持同一数学。
+ */
+export function compactDagLayout(dag: TaskDag): CompactDagLayout {
+  const levels = computeLevels(dag)
+  const byLevel = new Map<number, TaskRecord[]>()
+  for (const task of dag.tasks) {
+    const lv = levels.get(task.id) ?? 0
+    const group = byLevel.get(lv) ?? []
+    group.push(task)
+    byLevel.set(lv, group)
+  }
+  const stages = [...byLevel.entries()].sort((a, b) => a[0] - b[0])
+  const positions = new Map<string, { x: number; y: number }>()
+  const nodes: CompactDagNodeLayout[] = []
+  for (const [column, [, group]] of stages.entries()) {
+    const ordered = group.slice().sort((left, right) => left.id.localeCompare(right.id, 'en', { numeric: true }))
+    for (const [row, task] of ordered.entries()) {
+      const x = column * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP)
+      const y = row * (COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
+      positions.set(task.id, { x, y })
+      nodes.push({ task, id: task.id, x, y })
+    }
+  }
+  const rows = Math.max(1, ...stages.map(([, group]) => group.length))
+  const width = stages.length === 0
+    ? 0
+    : stages.length * COMPACT_DAG_NODE_WIDTH + (stages.length - 1) * COMPACT_DAG_COLUMN_GAP
+  const height = stages.length === 0
+    ? 0
+    : rows * COMPACT_DAG_NODE_HEIGHT + (rows - 1) * COMPACT_DAG_ROW_GAP
+  const edges: CompactDagEdgeLayout[] = []
+  for (const edge of effectiveDagEdges(dag)) {
+    const source = positions.get(edge.from)
+    const target = positions.get(edge.to)
+    if (!source || !target) continue
+    const x1 = source.x + COMPACT_DAG_NODE_WIDTH
+    const y1 = source.y + COMPACT_DAG_NODE_HEIGHT / 2
+    const x2 = target.x
+    const y2 = target.y + COMPACT_DAG_NODE_HEIGHT / 2
+    edges.push({
+      from: edge.from,
+      to: edge.to,
+      path: `M${x1} ${y1}C${x1 + 14} ${y1},${x2 - 14} ${y2},${x2} ${y2}`,
+    })
+  }
+  return { width, height, nodes, edges }
+}
+
+/**
+ * 聚焦任务的完整上下游链（dependencyFocus）。
+ * 沿依赖两个方向遍历且环安全：即使持久化数据含环也能终止。
+ */
+export function relatedTaskIds(taskId: string, dag: TaskDag): ReadonlySet<string> {
+  const byId = new Map(dag.tasks.map((task) => [task.id, task]))
+  if (!byId.has(taskId)) return new Set()
+  const upstream = new Map<string, string[]>()
+  const addUpstream = (from: string, to: string) => {
+    const arr = upstream.get(to) ?? []
+    arr.push(from)
+    upstream.set(to, arr)
+  }
+  for (const task of dag.tasks) {
+    for (const dep of task.dependencies) addUpstream(dep, task.id)
+  }
+  for (const edge of dag.edges) addUpstream(edge.from, edge.to)
+  const dependents = new Map<string, string[]>()
+  for (const [to, sources] of upstream) {
+    for (const from of sources) {
+      const arr = dependents.get(from) ?? []
+      arr.push(to)
+      dependents.set(from, arr)
+    }
+  }
+  const related = new Set<string>()
+  const seenUp = new Set<string>()
+  const seenDown = new Set<string>()
+  const visitUpstream = (id: string): void => {
+    if (seenUp.has(id)) return
+    seenUp.add(id)
+    related.add(id)
+    for (const dep of upstream.get(id) ?? []) visitUpstream(dep)
+  }
+  const visitDownstream = (id: string): void => {
+    if (seenDown.has(id)) return
+    seenDown.add(id)
+    related.add(id)
+    for (const dependent of dependents.get(id) ?? []) visitDownstream(dependent)
+  }
+  visitUpstream(taskId)
+  visitDownstream(taskId)
+  return related
+}
+
 export interface DagPanelProps {
   dagId: string
   repository: DagRepository
@@ -145,14 +284,15 @@ export interface DagPanelProps {
 
 /**
  * 会话右侧面板轻量 DAG 视图（P0-DAG-017）：
- * 从持久化 DAG 数据（dag-repository）加载；支持快速取消与打开完整视图。
+ * 从持久化 DAG 数据（dag-repository）加载；支持快速取消、点击节点聚焦上下游链
+ * （Esc 取消聚焦）与打开完整视图。布局为紧凑固定几何（compactDagLayout），
+ * 画布=内容精确尺寸，横向溢出走滚动；fitDagLayout 缩放方案已退役（保留导出兼容）。
  */
 export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }: DagPanelProps) {
   const [dag, setDag] = useState<TaskDag | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
-  const [viewport, setViewport] = useState<DagViewportSize>({ w: 0, h: 0 })
-  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const [pinnedId, setPinnedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -164,28 +304,18 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
   }, [dagId, repository])
 
   useEffect(() => {
+    setPinnedId(null)
     void load()
   }, [load])
 
-  // 容器测量：ResizeObserver 浏览器全局能力；不可用（jsdom/旧环境）时保持未测量
-  // 状态 → fitDagLayout 回落 base 原尺寸，渲染与历史行为一致。
-  const hasDag = dag !== null
+  // 聚焦链（dependencyFocus）：点节点固定其上下游链，Esc 解除。
   useEffect(() => {
-    const el = viewportRef.current
-    if (!hasDag || !el || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect
-      if (rect && rect.width > 0 && rect.height > 0) {
-        setViewport((prev) =>
-          Math.abs(prev.w - rect.width) < 1 && Math.abs(prev.h - rect.height) < 1
-            ? prev
-            : { w: rect.width, h: rect.height },
-        )
-      }
-    })
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [hasDag])
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setPinnedId(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const cancel = useCallback(
     async (taskId: string) => {
@@ -202,35 +332,11 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
     [dagId, repository],
   )
 
-  const { nodes, fit } = useMemo(() => {
-    if (!dag) {
-      return { nodes: [] as DagNodeLayout[], fit: { ...DAG_BASE, overflow: false } as DagFitLayout }
-    }
-    const levels = computeLevels(dag)
-    const byLevel = new Map<number, TaskRecord[]>()
-    for (const task of dag.tasks) {
-      const lv = levels.get(task.id) ?? 0
-      const arr = byLevel.get(lv) ?? []
-      arr.push(task)
-      byLevel.set(lv, arr)
-    }
-    const maxLevel = Math.max(1, ...[...byLevel.keys()].map((lv) => lv + 1))
-    const maxRows = Math.max(1, ...[...byLevel.values()].map((arr) => arr.length))
-    const fitted = fitDagLayout(viewport, maxLevel, maxRows)
-    const layout: DagNodeLayout[] = []
-    for (const [level, tasks] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
-      tasks.forEach((task, index) => {
-        layout.push({
-          task,
-          level,
-          index,
-          x: level * (fitted.cellW + fitted.levelGap),
-          y: index * (fitted.cellH + fitted.rowGap),
-        })
-      })
-    }
-    return { nodes: layout, fit: fitted }
-  }, [dag, viewport])
+  const layout = useMemo(() => (dag ? compactDagLayout(dag) : null), [dag])
+  const related = useMemo(
+    () => (dag === null || pinnedId === null ? null : relatedTaskIds(pinnedId, dag)),
+    [dag, pinnedId],
+  )
 
   if (error && !dag) {
     return (
@@ -240,7 +346,7 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
       </div>
     )
   }
-  if (!dag) {
+  if (!dag || !layout) {
     return (
       <div className="weave-dag-panel" data-testid="dag-panel-loading">
         加载中…
@@ -248,90 +354,135 @@ export function DagPanel({ dagId, repository, onOpenFull, title = '任务 DAG' }
     )
   }
 
-  const maxLevels = Math.max(1, ...nodes.map((n) => n.level + 1))
-  const width = maxLevels * (fit.cellW + fit.levelGap)
-  const rowsPerLevel = new Map<number, number>()
-  for (const n of nodes) rowsPerLevel.set(n.level, (rowsPerLevel.get(n.level) ?? 0) + 1)
-  const maxRows = Math.max(1, ...[...rowsPerLevel.values()])
-  const height = maxRows * (fit.cellH + fit.rowGap)
-  const fontSize = dagFontSize(fit.cellH)
-  // 节点盒为格子的 50% 并格内居中（用户反馈节点过大）：格子/间距/铺满逻辑不变，
-  // 仅渲染视觉减半——边端点跟随节点盒边缘（连接点仍是格子垂直中心）。
-  const nodeW = fit.cellW * 0.5
-  const nodeH = fit.cellH * 0.5
-  const nodeOffsetX = (fit.cellW - nodeW) / 2
-  const nodeOffsetY = (fit.cellH - nodeH) / 2
-  const pos = new Map(nodes.map((n) => [n.task.id, n]))
-
   return (
     <div className="weave-dag-panel" data-testid="dag-panel">
       <header className="weave-dag-panel__header">
         <strong>{title}</strong>
         <span data-testid="dag-status">状态：{dag.status}</span>
       </header>
-      <div
-        ref={viewportRef}
-        data-testid="dag-viewport"
-        style={{ position: 'relative', minHeight: 120, overflow: fit.overflow ? 'auto' : 'hidden' }}
-      >
-        <div className="weave-dag-panel__body" style={{ position: 'relative', width, height }}>
+      <div className="weave-dag-panel__viewport" data-testid="dag-viewport" style={{ overflowX: 'auto' }}>
+        <div
+          className="weave-dag-panel__body"
+          style={{ position: 'relative', width: layout.width, height: layout.height, minWidth: '100%' }}
+        >
           <svg
-            width={width}
-            height={height}
-            style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+            width={layout.width}
+            height={layout.height}
+            style={{ position: 'absolute', inset: 0, overflow: 'visible', pointerEvents: 'none' }}
             data-testid="dag-edges"
           >
-            <defs>
-              <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
-                <path d="M0,0 L8,4 L0,8 z" fill="#999" />
-              </marker>
-            </defs>
-            {dag.edges.map((edge) => {
-              const from = pos.get(edge.from)
-              const to = pos.get(edge.to)
-              if (!from || !to) return null
+            {layout.edges.map((edge) => {
+              const active = related !== null && related.has(edge.from) && related.has(edge.to)
+              const dimmed = related !== null && !active
               return (
-                <line
+                <path
                   key={`${edge.from}->${edge.to}`}
-                  x1={from.x + nodeOffsetX + nodeW}
-                  y1={from.y + nodeOffsetY + nodeH / 2}
-                  x2={to.x + nodeOffsetX}
-                  y2={to.y + nodeOffsetY + nodeH / 2}
-                  stroke="#999"
-                  strokeWidth={1.5}
-                  markerEnd="url(#dag-arrow)"
+                  d={edge.path}
+                  fill="none"
+                  stroke={active ? '#1677ff' : '#999999'}
+                  strokeWidth={active ? 1.6 : 1}
+                  opacity={dimmed ? 0.24 : 1}
+                  data-active={active}
+                  data-dimmed={dimmed}
                 />
               )
             })}
           </svg>
-          {nodes.map((node) => {
+          {layout.nodes.map((node) => {
             const { task } = node
+            const focused = related?.has(node.id) === true
+            const dimmed = related !== null && !focused
             const cancelable = isCancelable(task.status) && cancellingId !== task.id
             return (
               <div
                 key={task.id}
                 data-testid={`dag-task-${task.id}`}
                 title={task.description}
+                onClick={() => setPinnedId((current) => (current === task.id ? null : task.id))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    setPinnedId((current) => (current === task.id ? null : task.id))
+                  }
+                }}
                 style={{
                   position: 'absolute',
-                  left: node.x + nodeOffsetX,
-                  top: node.y + nodeOffsetY,
-                  width: nodeW,
-                  minHeight: nodeH,
-                  borderLeft: `4px solid ${STATUS_COLORS[task.status]}`,
-                  padding: 6,
+                  left: node.x,
+                  top: node.y,
+                  width: COMPACT_DAG_NODE_WIDTH,
+                  height: COMPACT_DAG_NODE_HEIGHT,
                   boxSizing: 'border-box',
-                  fontSize,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  gap: 1,
+                  padding: cancelable ? '0 20px 0 6px' : '0 6px',
+                  border: '1px solid #d9d9d9',
+                  borderLeft: `3px solid ${STATUS_COLORS[task.status]}`,
+                  borderRadius: 6,
+                  background: focused ? 'rgba(22,119,255,0.06)' : '#ffffff',
+                  color: '#262626',
+                  cursor: 'pointer',
+                  opacity: dimmed ? 0.3 : 1,
+                  overflow: 'hidden',
+                  userSelect: 'none',
                 }}
               >
-                <div>{task.id}</div>
-                <div data-testid={`dag-task-status-${task.id}`}>{task.status}</div>
-                <div>{task.description.slice(0, 24)}</div>
+                <span
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 9.5,
+                    fontWeight: 700,
+                    lineHeight: '12px',
+                  }}
+                >
+                  <i
+                    style={{
+                      flex: 'none',
+                      width: 5,
+                      height: 5,
+                      borderRadius: 1.5,
+                      background: STATUS_COLORS[task.status],
+                    }}
+                  />
+                  {task.id}
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, fontSize: 8.5, lineHeight: '11px' }}>
+                  <span
+                    data-testid={`dag-task-status-${task.id}`}
+                    style={{ flex: 'none', color: STATUS_COLORS[task.status], fontWeight: 600 }}
+                  >
+                    {task.status}
+                  </span>
+                  <span style={{ minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: '#8c8c8c' }}>
+                    {task.description.slice(0, 24)}
+                  </span>
+                </span>
                 {cancelable && (
                   <button
-                    onClick={() => void cancel(task.id)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void cancel(task.id)
+                    }}
                     aria-label={`取消任务 ${task.id}`}
                     disabled={cancellingId === task.id}
+                    style={{
+                      position: 'absolute',
+                      top: 3,
+                      right: 3,
+                      height: 13,
+                      padding: '0 4px',
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 4,
+                      background: '#ffffff',
+                      color: '#595959',
+                      fontSize: 8,
+                      lineHeight: '11px',
+                      cursor: 'pointer',
+                    }}
                   >
                     取消
                   </button>

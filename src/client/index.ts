@@ -417,12 +417,22 @@ function ensureStyle(): void {
 .weave-subh{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:550;line-height:20px}
 .weave-chiprow{display:flex;gap:6px;flex-wrap:wrap}
 .weave-chip{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 10px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.weave-dag-wrap{position:relative;overflow:auto;margin:8px 0;width:100%}
-.weave-dag-node{position:absolute;box-sizing:border-box;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:3px 5px;display:flex;flex-direction:column;gap:1px;cursor:pointer}
-.weave-dag-node:hover{border-color:var(--dsw-alias-label-tertiary)}
-.weave-dag-node[data-selected="true"]{outline:2px solid var(--dsw-alias-label-primary);outline-offset:1px}
-.weave-dag-node b{font-size:10px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:12px}
-.weave-dag-node .weave-muted{font-size:9px;line-height:11px}
+/* 紧凑 DAG（参照物 ActivityPanel 观感）：画布=内容精确尺寸，wrap 只横向滚动；
+   节点固定 92×30；边为短柄贝塞尔，聚焦链 data-active 高亮、无关 data-dimmed 暗化 */
+.weave-dag-wrap{position:relative;overflow-x:auto;overflow-y:hidden;margin:8px 0;width:100%}
+.weave-dag-canvas{position:relative;min-width:100%}
+.weave-dag-edges{position:absolute;inset:0;overflow:visible;pointer-events:none}
+.weave-dag-edges path{fill:none;stroke:var(--dsw-alias-border-l2);stroke-width:1;transition:opacity 140ms ease,stroke 140ms ease,stroke-width 140ms ease}
+.weave-dag-edges path[data-active="true"]{stroke:var(--dsw-alias-brand-primary,#1677ff);stroke-width:1.6}
+.weave-dag-edges path[data-dimmed="true"]{opacity:.24}
+.weave-dag-node{position:absolute;box-sizing:border-box;width:92px;height:30px;padding:0 6px;display:flex;flex-direction:column;justify-content:center;gap:1px;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;cursor:pointer;text-align:left;overflow:hidden;user-select:none;transition:opacity 140ms ease,border-color 140ms ease,background-color 140ms ease}
+.weave-dag-node:hover{border-color:var(--dsw-alias-brand-primary,#1677ff)}
+.weave-dag-node[data-selected="true"],.weave-dag-node[data-focused="true"]{border-color:var(--dsw-alias-brand-primary,#1677ff)}
+.weave-dag-node[data-focused="true"]{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#1677ff) 6%,var(--dsw-specific-menu))}
+.weave-dag-node[data-dimmed="true"]{opacity:.3}
+.weave-dag-node b{display:flex;align-items:center;gap:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px;font-weight:700;color:var(--dsw-alias-label-primary);line-height:12px;white-space:nowrap}
+.weave-dag-node-dot{flex:none;width:5px;height:5px;border-radius:1.5px}
+.weave-dag-node .weave-muted{display:block;font-size:8.5px;line-height:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .weave-spanel{display:grid;gap:14px;align-content:start;padding:14px;border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);min-height:calc(100vh - 80px)}
 .weave-spanel-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .weave-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:6px;align-items:start;align-content:start}
@@ -2577,50 +2587,119 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   /* ------------------------------ 任务依赖图（t9） ------------------------------ */
 
-  const DAG_CELL_W = 100
-  const DAG_CELL_H = 32
-  const DAG_LEVEL_GAP = 30
+  // 紧凑 DAG 几何（对齐参照物 ActivityPanel / 宿主 dag-panel compactDagLayout）：
+  // 节点固定 92×30，列间距 26、行间距 8；画布=内容精确尺寸（不缩放不铺满），横向溢出走滚动。
+  const DAG_NODE_W = 92
+  const DAG_NODE_H = 30
+  const DAG_COLUMN_GAP = 26
   const DAG_ROW_GAP = 8
 
   /**
-   * 自适应布局（doc/05 §6.3 P1-C）：与宿主 dag-panel.tsx fitDagLayout 同构的单文件
-   * 移植（bundle 禁 import）。floor 56/18/14/4 与宿主约定一致（本侧 base 100/32/30/8）；
-   * natural 尺寸沿用本侧历史公式，未测量/退化输入回落 base 原尺寸——渲染与历史一致。
+   * 紧凑左→右 DAG 布局：列 = 依赖深度 stage（computeDagLevels，edges 与 dependencies
+   * 取并集），行 = stage 内任务 id 稳定排序；边为水平出入节点中线的短柄三次贝塞尔
+   * （M x1 y1 C x1+14 y1, x2-14 y2, x2 y2）。与宿主 dag-panel.tsx compactDagLayout 同构
+   * 的单文件移植（bundle 禁 import）。
    */
-  function fitDagLayout(
-    viewport: { w: number; h: number },
-    maxLevel: number,
-    maxRows: number,
-    base = { cellW: DAG_CELL_W, cellH: DAG_CELL_H, levelGap: DAG_LEVEL_GAP, rowGap: DAG_ROW_GAP },
-    floor = { cellW: 56, cellH: 18, levelGap: 14, rowGap: 4 },
-  ) {
-    const naturalW = (maxLevel + 1) * base.cellW + maxLevel * base.levelGap
-    const naturalH = maxRows * base.cellH + Math.max(0, maxRows - 1) * base.rowGap
-    if (
-      !Number.isFinite(viewport.w) || !Number.isFinite(viewport.h) ||
-      viewport.w <= 0 || viewport.h <= 0 || naturalW <= 0 || naturalH <= 0
-    ) {
-      return { ...base, overflow: false }
+  function compactDagLayout(tasks: TaskRow[], edges: Array<{ from: string; to: string }>): {
+    width: number
+    height: number
+    nodes: Array<{ task: TaskRow; id: string; x: number; y: number }>
+    paths: Array<{ from: string; to: string; path: string }>
+  } {
+    const levels = computeDagLevels(tasks, edges)
+    const byLevel = new Map<number, TaskRow[]>()
+    for (const task of tasks) {
+      const id = String(task.id ?? '')
+      if (id === '') continue
+      const lv = levels.get(id) ?? 0
+      const group = byLevel.get(lv) ?? []
+      group.push(task)
+      byLevel.set(lv, group)
     }
-    // 上限 12 仅作 sanity 防呆（正常由视口/内容比触顶）：竖屏下 3 倍帽会先于高度比
-    // 触顶导致下方留白（用户实测），放开后高度比直接决定缩放。与宿主同构。
-    const scale = Math.min(12, viewport.w / naturalW, viewport.h / naturalH)
-    const shrink = (value: number, floorValue: number): number => Math.max(floorValue, Math.round(value))
-    const cellW = shrink(base.cellW * scale, floor.cellW)
-    const cellH = shrink(base.cellH * scale, floor.cellH)
-    const levelGap = shrink(base.levelGap * scale, floor.levelGap)
-    const rowGap = shrink(base.rowGap * scale, floor.rowGap)
-    const overflow =
-      base.cellW * scale < floor.cellW ||
-      base.cellH * scale < floor.cellH ||
-      base.levelGap * scale < floor.levelGap ||
-      base.rowGap * scale < floor.rowGap
-    return { cellW, cellH, levelGap, rowGap, overflow }
+    const stages = [...byLevel.entries()].sort((a, b) => a[0] - b[0])
+    const positions = new Map<string, { x: number; y: number }>()
+    const nodes: Array<{ task: TaskRow; id: string; x: number; y: number }> = []
+    for (const [column, [, group]] of stages.entries()) {
+      const ordered = group.slice().sort((left: TaskRow, right: TaskRow) =>
+        String(left.id ?? '').localeCompare(String(right.id ?? ''), 'en', { numeric: true }))
+      for (const [row, task] of ordered.entries()) {
+        const id = String(task.id ?? '')
+        const x = column * (DAG_NODE_W + DAG_COLUMN_GAP)
+        const y = row * (DAG_NODE_H + DAG_ROW_GAP)
+        positions.set(id, { x, y })
+        nodes.push({ task, id, x, y })
+      }
+    }
+    const rows = Math.max(1, ...stages.map(([, group]) => group.length))
+    const width = stages.length === 0
+      ? 0
+      : stages.length * DAG_NODE_W + (stages.length - 1) * DAG_COLUMN_GAP
+    const height = stages.length === 0
+      ? 0
+      : rows * DAG_NODE_H + (rows - 1) * DAG_ROW_GAP
+    const paths: Array<{ from: string; to: string; path: string }> = []
+    for (const edge of edges) {
+      const source = positions.get(String(edge.from))
+      const target = positions.get(String(edge.to))
+      if (!source || !target) continue
+      const x1 = source.x + DAG_NODE_W
+      const y1 = source.y + DAG_NODE_H / 2
+      const x2 = target.x
+      const y2 = target.y + DAG_NODE_H / 2
+      paths.push({
+        from: String(edge.from),
+        to: String(edge.to),
+        path: `M${x1} ${y1}C${x1 + 14} ${y1},${x2 - 14} ${y2},${x2} ${y2}`,
+      })
+    }
+    return { width, height, nodes, paths }
   }
 
-  /** 节点字号随 cellH 联动（base 32 → 10px，下限 8px）。 */
-  function dagNodeFontSize(cellH: number): number {
-    return Math.max(8, Math.round((10 * cellH) / 32))
+  /**
+   * 聚焦任务的完整上下游链（dependencyFocus）：沿依赖两个方向遍历且环安全。
+   * 与宿主 dag-panel.tsx relatedTaskIds 同构的单文件移植（bundle 禁 import）。
+   */
+  function relatedDagTaskIds(taskId: string, tasks: TaskRow[], edges: Array<{ from: string; to: string }>): ReadonlySet<string> {
+    const upstream = new Map<string, string[]>()
+    const addUpstream = (from: string, to: string) => {
+      if (from === '' || to === '') return
+      const arr = upstream.get(to) ?? []
+      arr.push(from)
+      upstream.set(to, arr)
+    }
+    for (const task of tasks) {
+      for (const dep of task.dependencies ?? []) addUpstream(dep, String(task.id ?? ''))
+    }
+    for (const edge of edges) addUpstream(edge.from, edge.to)
+    if (!upstream.has(taskId) && !tasks.some((task: TaskRow) => String(task.id ?? '') === taskId)) {
+      return new Set<string>()
+    }
+    const dependents = new Map<string, string[]>()
+    for (const [to, sources] of upstream) {
+      for (const from of sources) {
+        const arr = dependents.get(from) ?? []
+        arr.push(to)
+        dependents.set(from, arr)
+      }
+    }
+    const related = new Set<string>()
+    const seenUp = new Set<string>()
+    const seenDown = new Set<string>()
+    const visitUpstream = (id: string): void => {
+      if (seenUp.has(id)) return
+      seenUp.add(id)
+      related.add(id)
+      for (const dep of upstream.get(id) ?? []) visitUpstream(dep)
+    }
+    const visitDownstream = (id: string): void => {
+      if (seenDown.has(id)) return
+      seenDown.add(id)
+      related.add(id)
+      for (const dependent of dependents.get(id) ?? []) visitDownstream(dependent)
+    }
+    visitUpstream(taskId)
+    visitDownstream(taskId)
+    return related
   }
 
   /** 状态 → 节点左边框颜色（与宿主 dag-panel P0 视图同源）。 */
@@ -2676,36 +2755,45 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   interface DagGraphProps {
     dag: TaskDagDetail
     selectedId: string
+    /** true = 用户显式点选（selectedId0 非空）；false = 默认派生选中（仅驱动详情区，不做聚焦暗化）。 */
+    focusPinned?: boolean
     onSelect: (taskId: string) => void
   }
 
-  function DagGraph({ dag, selectedId, onSelect }: DagGraphProps) {
-    // 自适应视口（doc/05 §6.3 P1-C）：ResizeObserver 浏览器全局可直接用（bundle 禁
-    // import）；不可用环境（jsdom/旧内核）保持未测量 → fit 回落 base 原尺寸，渲染与
-    // 历史一致。hooks 须在早退 return 之前调用。
-    const [viewport, setViewport] = useState({ w: 0, h: 0 })
-    const wrapRef = useRef(null)
-    useEffect(() => {
-      const el = wrapRef.current
-      if (!el || typeof ResizeObserver === 'undefined') return
-      // G 实测修复：观察稳定大盒子（页签体，minHeight 预算所在）而非 wrap——
-      // wrap 高度由 fit 结果回写，量自身会形成自参考反馈环；中间 auto 容器同理。
-      // viewport 取 clientWidth/Height（队长实测口径），1px 抖动抑制。
-      const box = (el.closest('.weave-panel-tab-body') as HTMLElement | null) ?? el
-      const observer = new ResizeObserver(() => {
-        const w = box.clientWidth
-        const h = box.clientHeight
-        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-          setViewport((prev: { w: number; h: number }) =>
-            Math.abs(prev.w - w) < 1 && Math.abs(prev.h - h) < 1
-              ? prev
-              : { w, h },
-          )
-        }
-      })
-      observer.observe(box)
-      return () => observer.disconnect()
+  /**
+   * 紧凑任务依赖图：画布=内容精确尺寸放入滚动容器；点节点（或悬停预览）聚焦上下游链，
+   * 关联边高亮、无关节点/边暗化；Esc 解除固定聚焦。默认派生选中不触发暗化——初始
+   * 视图与参照物一致为无聚焦干净图。布局与聚焦算法与宿主 dag-panel
+   * compactDagLayout/relatedTaskIds 同构（bundle 禁 import，手工移植）。
+   */
+  function DagGraph({ dag, selectedId, focusPinned = false, onSelect }: DagGraphProps) {
+    // 悬停为延迟生效的瞬态聚焦（180ms），固定选中优先——与参照物 dependencyFocus 一致。
+    const [hoverId, setHoverId] = useState('')
+    const hoverTimer = useRef(null as number | null)
+    useEffect(() => () => {
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current)
     }, [])
+    useEffect(() => {
+      const onKeyDown = (event: KeyboardEvent): void => {
+        if (event.key === 'Escape') onSelect('')
+      }
+      window.addEventListener('keydown', onKeyDown)
+      return () => window.removeEventListener('keydown', onKeyDown)
+    }, [onSelect])
+    const scheduleHover = (id: string): void => {
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current)
+      hoverTimer.current = window.setTimeout(() => {
+        hoverTimer.current = null
+        setHoverId(id)
+      }, 180)
+    }
+    const clearHover = (): void => {
+      if (hoverTimer.current !== null) {
+        window.clearTimeout(hoverTimer.current)
+        hoverTimer.current = null
+      }
+      setHoverId('')
+    }
     if (!dag || !Array.isArray(dag.tasks)) return null
     const tasks = dag.tasks ?? []
     const edges = (dag.edges ?? []).length > 0
@@ -2713,106 +2801,80 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       : tasks.flatMap((task: TaskRow) =>
           (task.dependencies ?? []).map((dep: string) => ({ from: dep, to: String(task.id ?? '') })),
         )
-    const levels = computeDagLevels(tasks, edges)
-    const byLevel = new Map<number, TaskRow[]>()
-    for (const task of tasks) {
-      const id = String(task.id ?? '')
-      const lv = levels.get(id) ?? 0
-      const group = byLevel.get(lv) ?? []
-      group.push(task)
-      byLevel.set(lv, group)
-    }
-    const maxLevel = Math.max(0, ...[...byLevel.keys()])
-    const maxRows = Math.max(1, ...[...byLevel.values()].map((group) => group.length))
-    const fit = fitDagLayout(viewport, maxLevel, maxRows)
-    // 节点盒为格子的 50% 并格内居中（与宿主 dag-panel 同构；用户反馈节点过大）：
-    // 格子/间距/铺满不变，仅渲染视觉减半；边端点跟随节点盒边缘。
-    const nodeW = fit.cellW * 0.5
-    const nodeH = fit.cellH * 0.5
-    const nodeOffsetX = (fit.cellW - nodeW) / 2
-    const nodeOffsetY = (fit.cellH - nodeH) / 2
-    const fontSize = dagNodeFontSize(fit.cellH)
-    const layout: Array<{ task: TaskRow; id: string; x: number; y: number }> = []
-    for (const [lv, group] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
-      group.forEach((task, index) =>
-        layout.push({
-          task,
-          id: String(task.id ?? ''),
-          x: lv * (fit.cellW + fit.levelGap),
-          y: index * (fit.cellH + fit.rowGap),
-        }),
-      )
-    }
-    const pos = new Map(layout.map((node) => [node.id, node]))
-    const width = (maxLevel + 1) * fit.cellW + maxLevel * fit.levelGap
-    const height = maxRows * fit.cellH + Math.max(0, maxRows - 1) * fit.rowGap
+    const focusId = focusPinned && selectedId !== '' ? selectedId : hoverId
+    const related = focusId !== '' ? relatedDagTaskIds(focusId, tasks, edges) : null
+    const layout = compactDagLayout(tasks, edges)
     return React.createElement(
       'div',
       {
         className: 'weave-dag-wrap',
         'data-testid': 'dag-panel',
-        ref: wrapRef,
-        // G 实测修复：高度用 fit 显式像素（'100%' 在父链高度 auto 下解析为 0，
-        // Playwright 实测 wrap 高 0 图不可见）；minHeight 420 兜底防塌缩。
-        // fit 尺度由 RO 实测的稳定大盒子（页签体）驱动，wrap 不参与测量无反馈环。
-        style: {
-          height: `${height}px`,
-          minHeight: '420px',
-          overflow: fit.overflow || viewport.w <= 0 ? 'auto' : 'hidden',
-        },
+        // 画布=内容精确尺寸（宽高写在 weave-dag-canvas 上），wrap 只做横向滚动，
+        // 不再做视口 fit（页签体 minHeight 高度预算由外层保留）。
+        style: { overflowX: 'auto' },
       },
       React.createElement(
-        'svg',
-        { width, height, style: { position: 'absolute', inset: 0, pointerEvents: 'none' }, 'data-testid': 'dag-edges' },
+        'div',
+        {
+          className: 'weave-dag-canvas',
+          'data-testid': 'dag-canvas',
+          style: { position: 'relative', width: layout.width, height: layout.height, minWidth: '100%' },
+        },
         React.createElement(
-          'defs',
-          null,
-          React.createElement(
-            'marker',
-            { id: 'weave-dag-arrow', markerWidth: 8, markerHeight: 8, refX: 8, refY: 4, orient: 'auto' },
-            React.createElement('path', { d: 'M0,0 L8,4 L0,8 z', fill: '#999' }),
-          ),
-        ),
-        ...edges.map((edge) => {
-          const from = pos.get(String(edge.from))
-          const to = pos.get(String(edge.to))
-          if (!from || !to) return null
-          return React.createElement('line', {
-            key: String(edge.from) + '->' + String(edge.to),
-            'data-edge': String(edge.from) + '->' + String(edge.to),
-            x1: from.x + nodeOffsetX + nodeW,
-            y1: from.y + nodeOffsetY + nodeH / 2,
-            x2: to.x + nodeOffsetX,
-            y2: to.y + nodeOffsetY + nodeH / 2,
-            stroke: '#999',
-            strokeWidth: 1.5,
-            markerEnd: 'url(#weave-dag-arrow)',
-          })
-        }),
-      ),
-      ...layout.map((node) =>
-        React.createElement(
-          'div',
+          'svg',
           {
-            key: node.id,
-            className: 'weave-dag-node',
-            'data-testid': 'dag-node-' + node.id,
-            'data-selected': node.id === selectedId ? 'true' : 'false',
-            onClick: () => onSelect(node.id),
-            title: String(node.task.description ?? ''),
-            style: {
-              left: node.x + nodeOffsetX,
-              top: node.y + nodeOffsetY,
-              width: nodeW,
-              minHeight: nodeH,
-              borderLeft: '4px solid ' + (DAG_STATUS_COLORS[String(node.task.status ?? '')] ?? '#8c8c8c'),
-              fontSize,
-            },
+            className: 'weave-dag-edges',
+            width: layout.width,
+            height: layout.height,
+            'data-testid': 'dag-edges',
           },
-          React.createElement('b', null, shortTaskId(node.id)),
-          React.createElement('span', { className: 'weave-muted', 'data-status': String(node.task.status ?? ''), title: String(node.task.status ?? '') }, labelOf(TASK_STATUS_LABELS, node.task.status)),
-          React.createElement('span', { className: 'weave-muted' }, String(node.task.assigned_agent ?? '未分配')),
+          ...layout.paths.map((edge) => {
+            const active = related !== null && related.has(edge.from) && related.has(edge.to)
+            return React.createElement('path', {
+              key: edge.from + '->' + edge.to,
+              d: edge.path,
+              'data-edge': edge.from + '->' + edge.to,
+              'data-active': related !== null ? String(active) : 'false',
+              'data-dimmed': related !== null && !active ? 'true' : 'false',
+            })
+          }),
         ),
+        ...layout.nodes.map((node) => {
+          const focused = related?.has(node.id) === true
+          const dimmed = related !== null && !focused
+          const status = String(node.task.status ?? '')
+          const assigned = String(node.task.assigned_agent ?? '未分配')
+          return React.createElement(
+            'div',
+            {
+              key: node.id,
+              className: 'weave-dag-node',
+              'data-testid': 'dag-node-' + node.id,
+              'data-selected': node.id === selectedId ? 'true' : 'false',
+              'data-focused': focused ? 'true' : 'false',
+              'data-dimmed': dimmed ? 'true' : 'false',
+              onClick: () => onSelect(selectedId === node.id ? '' : node.id),
+              onMouseEnter: () => scheduleHover(node.id),
+              onMouseLeave: clearHover,
+              title: String(node.task.description ?? ''),
+              // 参照物同款：left/top/width/height 内联（几何即数据）；字号/配色走 CSS
+              style: {
+                left: node.x,
+                top: node.y,
+                width: DAG_NODE_W,
+                height: DAG_NODE_H,
+              },
+            },
+            React.createElement('b', null,
+              React.createElement('i', { className: 'weave-dag-node-dot', style: { background: DAG_STATUS_COLORS[status] ?? '#8c8c8c' } }),
+              shortTaskId(node.id),
+            ),
+            React.createElement('span', { className: 'weave-muted' },
+              React.createElement('span', { 'data-status': status, title: status }, labelOf(TASK_STATUS_LABELS, node.task.status)),
+              ' · ' + assigned,
+            ),
+          )
+        }),
       ),
     )
   }
@@ -4566,6 +4628,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                           React.createElement(DagGraph, {
                             dag: dag as TaskDagDetail,
                             selectedId,
+                            // 默认派生选中只驱动下方详情区；聚焦暗化仅在用户显式点选后生效
+                            focusPinned: selectedId0 !== '',
                             onSelect: (next: string) => setSelectedId0(next),
                           }),
                           selectedNode

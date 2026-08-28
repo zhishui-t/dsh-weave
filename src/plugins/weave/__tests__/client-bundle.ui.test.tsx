@@ -662,13 +662,50 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
 
     await screen.findByTestId('dag-panel')
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
-    expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(2)
+    expect(screen.getByTestId('dag-edges').querySelectorAll('path').length).toBe(2)
     expect(screen.getByTestId('dag-node-T-C').textContent).toContain('已完成')
 
     // 层级：x 随最长依赖路径递增
     const leftOf = (id: string) => Number.parseInt((screen.getByTestId('dag-node-' + id) as HTMLElement).style.left, 10)
     expect(leftOf('T-C')).toBeGreaterThan(leftOf('T-B'))
     expect(leftOf('T-B')).toBeGreaterThan(leftOf('T-A'))
+  })
+
+  it('点节点聚焦上下游链：关联边 data-active 高亮、无关边/节点 data-dimmed 暗化', async () => {
+    const { panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 4, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] },
+      'task/get': {
+        dag_id: 'D1',
+        status: 'RUNNING',
+        tasks: [
+          { id: 'T-A', description: '根任务', status: 'COMPLETED', dependencies: [] },
+          { id: 'T-B', description: '中间任务', status: 'RUNNING', dependencies: ['T-A'] },
+          { id: 'T-C', description: '末级任务', status: 'WAITING', dependencies: ['T-B'] },
+          { id: 'T-D', description: '旁路任务', status: 'WAITING', dependencies: ['T-A'] },
+        ],
+        edges: [
+          { from: 'T-A', to: 'T-B' },
+          { from: 'T-A', to: 'T-D' },
+          { from: 'T-B', to: 'T-C' },
+        ],
+      },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    await screen.findByTestId('dag-panel')
+    // 默认选中首个任务 T-A（链头，全员相关）→ 无暗化
+    expect(screen.getByTestId('dag-edges').querySelectorAll('path[data-dimmed="true"]').length).toBe(0)
+    // 点击 T-B：聚焦其上下游链 T-A→T-B→T-C；旁路 T-D 及其入边暗化
+    fireEvent.click(screen.getByTestId('dag-node-T-B'))
+    const paths = screen.getByTestId('dag-edges').querySelectorAll('path')
+    expect(paths).toHaveLength(3)
+    expect(paths[0]!.getAttribute('data-active')).toBe('true') // T-A→T-B
+    expect(paths[1]!.getAttribute('data-dimmed')).toBe('true') // T-A→T-D
+    expect(paths[2]!.getAttribute('data-active')).toBe('true') // T-B→T-C
+    expect((screen.getByTestId('dag-node-T-B') as HTMLElement).getAttribute('data-focused')).toBe('true')
+    expect((screen.getByTestId('dag-node-T-D') as HTMLElement).getAttribute('data-dimmed')).toBe('true')
+    expect((screen.getByTestId('dag-node-T-A') as HTMLElement).getAttribute('data-dimmed')).toBe('false')
   })
 
   it('dag 激活时页签体有真实高度预算（minHeight）且 dag-panel 渲染（图小修复）', async () => {
@@ -684,15 +721,17 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     const body = screen.getByTestId('weave-session-tab-body') as HTMLElement
     expect(body.style.minHeight).toContain('100vh')
     expect(body.style.minHeight).toContain('420px')
-    // 图容器：jsdom 无 RO → 未测量回落 base，高度为 fit 显式像素（3 节点链=32px），
-    // minHeight 420 兜底防塌缩；RO 观察的是页签体大盒子（非 wrap 自身，无自参考环）
+    // 紧凑布局：画布=内容精确尺寸（3 节点链 328×30，不缩放不铺满），wrap 只做横向滚动
     const wrap = screen.getByTestId('dag-panel') as HTMLElement
-    expect(wrap.style.height).toBe('32px')
-    expect(wrap.style.minHeight).toBe('420px')
-    // dag 未测量回落 base：节点仍在、宽度为基础常量
+    expect(wrap.style.overflowX).toBe('auto')
+    const canvas = wrap.querySelector('.weave-dag-canvas') as HTMLElement
+    expect(canvas.style.width).toBe('328px')
+    expect(canvas.style.height).toBe('30px')
+    // 节点为参照物固定几何 92×30
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(3)
     const node = screen.getByTestId('dag-node-T-A') as HTMLElement
-    expect(node.style.width).toBe('50px')
+    expect(node.style.width).toBe('92px')
+    expect(node.style.height).toBe('30px')
   })
 
   it('节点治理动作：选中 RUNNING 节点出现取消按钮并调用 task/action', async () => {
@@ -756,7 +795,7 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     render(createElement(panel!, { sessionId: 'sess-ui' }))
     await screen.findByTestId('dag-panel')
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(1)
-    expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(0)
+    expect(screen.getByTestId('dag-edges').querySelectorAll('path').length).toBe(0)
     expect(screen.getByTestId('dag-node-S-1').textContent).toContain('执行中')
   })
 })

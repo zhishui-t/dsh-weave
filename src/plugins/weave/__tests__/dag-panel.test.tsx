@@ -10,13 +10,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 afterEach(cleanup)
 
 import {
+  COMPACT_DAG_COLUMN_GAP,
+  COMPACT_DAG_NODE_HEIGHT,
+  COMPACT_DAG_NODE_WIDTH,
+  COMPACT_DAG_ROW_GAP,
   DAG_BASE,
   DAG_FLOOR,
   DagPanel,
+  compactDagLayout,
   computeLevels,
   dagFontSize,
+  effectiveDagEdges,
   fitDagLayout,
   isCancelable,
+  relatedTaskIds,
 } from '../dag/dag-panel'
 import { DagRepository, type DagRepositoryOptions } from '../dag/repository'
 import { WeavePersistence } from '../persistence/persistence'
@@ -76,11 +83,29 @@ function sampleDag(): TaskDag {
   }
 }
 
+/** 分支 DAG：t-design 分出 t-implement（→t-test）与 t-ui 两条链，用于聚焦/暗化断言。 */
+function branchedDag(): TaskDag {
+  return {
+    dag_id: DAG_ID,
+    tasks: [
+      task('t-design', 'COMPLETED'),
+      task('t-implement', 'RUNNING', { dependencies: ['t-design'] }),
+      task('t-ui', 'WAITING', { dependencies: ['t-design'] }),
+      task('t-test', 'WAITING', { dependencies: ['t-implement'] }),
+    ],
+    edges: [
+      { from: 't-design', to: 't-implement' },
+      { from: 't-design', to: 't-ui' },
+      { from: 't-implement', to: 't-test' },
+    ],
+    status: 'running',
+  }
+}
+
 /** 用内存持久化 + 内置 DDL 建库，插入 DAG 数据。 */
-async function seedRepository(options: DagRepositoryOptions = {}): Promise<DagRepository> {
+async function seedRepository(options: DagRepositoryOptions = {}, dag: TaskDag = sampleDag()): Promise<DagRepository> {
   const persistence = new WeavePersistence({ inMemory: true })
   const repo = new DagRepository(persistence, options)
-  const dag = sampleDag()
   await persistence.tasks.run((db) => {
     db.prepare(
       `INSERT INTO dags (dag_id, team_id, project_id, version, difficulty, status, created_at, updated_at)
@@ -143,7 +168,75 @@ describe('DagPanel 纯函数', () => {
   })
 })
 
-describe('fitDagLayout（doc/05 §6.3 自适应布局，用户实测大界面图小后放大语义）', () => {
+/* ------------------------------ 紧凑布局纯函数 ------------------------------ */
+
+describe('compactDagLayout（参照物紧凑几何：节点 92×30，列距 26、行距 8）', () => {
+  it('画布=内容精确尺寸：3 任务链 → 328×30，stage 分列', () => {
+    const layout = compactDagLayout(sampleDag())
+    expect(layout.width).toBe(3 * COMPACT_DAG_NODE_WIDTH + 2 * COMPACT_DAG_COLUMN_GAP)
+    expect(layout.width).toBe(328)
+    expect(layout.height).toBe(COMPACT_DAG_NODE_HEIGHT)
+    expect(layout.height).toBe(30)
+    const byId = new Map(layout.nodes.map((node) => [node.id, node]))
+    expect(byId.get('t-design')).toMatchObject({ x: 0, y: 0 })
+    expect(byId.get('t-implement')).toMatchObject({ x: COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP, y: 0 })
+    expect(byId.get('t-test')).toMatchObject({ x: 2 * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP), y: 0 })
+  })
+
+  it('边为水平出入节点中线的短柄三次贝塞尔（C 控制柄 14px）', () => {
+    const layout = compactDagLayout(sampleDag())
+    expect(layout.edges.map((edge) => edge.path)).toEqual([
+      'M92 15C106 15,104 15,118 15',
+      'M210 15C224 15,222 15,236 15',
+    ])
+  })
+
+  it('stage 内按任务 id 稳定排序，多行时行距 8', () => {
+    const layout = compactDagLayout(branchedDag())
+    const implement = layout.nodes.find((node) => node.id === 't-implement')!
+    const ui = layout.nodes.find((node) => node.id === 't-ui')!
+    expect(implement.y).toBe(0)
+    expect(ui.y).toBe(COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
+    expect(ui.x).toBe(implement.x)
+    expect(layout.height).toBe(2 * COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
+  })
+
+  it('effectiveDagEdges：edges 优先；缺失时由 dependencies 推导', () => {
+    const dag = sampleDag()
+    expect(effectiveDagEdges(dag)).toEqual([
+      { from: 't-design', to: 't-implement' },
+      { from: 't-implement', to: 't-test' },
+    ])
+    expect(effectiveDagEdges({ ...dag, edges: [] })).toEqual([
+      { from: 't-design', to: 't-implement' },
+      { from: 't-implement', to: 't-test' },
+    ])
+  })
+})
+
+describe('relatedTaskIds（dependencyFocus 聚焦上下游链）', () => {
+  it('返回聚焦任务的完整上下游链，分支上的无关任务不在链内', () => {
+    const related = relatedTaskIds('t-implement', branchedDag())
+    expect([...related].sort()).toEqual(['t-design', 't-implement', 't-test'])
+    expect(related.has('t-ui')).toBe(false)
+    expect(relatedTaskIds('missing', branchedDag()).size).toBe(0)
+  })
+
+  it('持久化数据含环时遍历仍终止', () => {
+    const cyclic: TaskDag = {
+      dag_id: 'cyc',
+      status: 'running',
+      tasks: [
+        task('a', 'RUNNING', { dependencies: ['b'] }),
+        task('b', 'WAITING', { dependencies: ['a'] }),
+      ],
+      edges: [],
+    }
+    expect(relatedTaskIds('a', cyclic).size).toBe(2)
+  })
+})
+
+describe('fitDagLayout（doc/05 §6.3 自适应布局，已退役仅保留导出兼容）', () => {
   it('大视口小图：放大铺满视口，cellW 明显大于 base 且 overflow=false（用户实测修复）', () => {
     // natural = 3×248=744 × 5×88=440；viewport 1600×900 → scale=min(3, 2.15, 2.05)≈2.05
     const fit = fitDagLayout({ w: 1600, h: 900 }, 3, 5)
@@ -223,7 +316,7 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
     expect(screen.getByTestId('dag-status').textContent).toContain('running')
     expect(screen.getByTestId('dag-task-status-t-implement').textContent).toBe('RUNNING')
     expect(screen.getByTestId('dag-task-status-t-design').textContent).toBe('COMPLETED')
-    expect(screen.getByTestId('dag-edges').querySelectorAll('line').length).toBe(2)
+    expect(screen.getByTestId('dag-edges').querySelectorAll('path').length).toBe(2)
     // 可取消任务显示取消按钮；已完成任务不显示
     expect(screen.getByLabelText('取消任务 t-implement')).toBeDefined()
     expect(screen.getByLabelText('取消任务 t-test')).toBeDefined()
@@ -262,17 +355,36 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
     expect(screen.getByTestId('dag-panel-error').textContent).toContain('DAG 不存在')
   })
 
-  it('未测量视口（无 ResizeObserver）回落 base 布局：body 744×88、字号 10px、不滚动', async () => {
+  it('紧凑布局：画布=内容精确尺寸（3 链 328×30），视口只做横向滚动', async () => {
     const repo = await seedRepository()
     render(<DagPanel dagId={DAG_ID} repository={repo} />)
     await screen.findByText('任务 t-implement')
     const viewport = screen.getByTestId('dag-viewport')
-    expect(viewport.style.overflow).toBe('hidden') // fit 未触底 → hidden
+    expect(viewport.style.overflowX).toBe('auto')
     const body = viewport.querySelector('.weave-dag-panel__body') as HTMLElement
-    // 3 层 × (200+48) = 744；1 行 × (64+24) = 88 —— 与历史常量渲染逐字节一致
-    expect(body.style.width).toBe('744px')
-    expect(body.style.height).toBe('88px')
-    expect((screen.getByTestId('dag-task-t-design') as HTMLElement).style.fontSize).toBe('10px')
+    // 3 列 × (92+26) - 26 = 328；1 行 × 30 —— 不缩放不铺满，溢出走滚动
+    expect(body.style.width).toBe('328px')
+    expect(body.style.height).toBe('30px')
+  })
+
+  it('点节点聚焦上下游链：关联边 data-active、无关边/节点暗化；Esc 解除', async () => {
+    const repo = await seedRepository({}, branchedDag())
+    render(<DagPanel dagId={DAG_ID} repository={repo} />)
+    await screen.findByText('任务 t-implement')
+
+    fireEvent.click(screen.getByTestId('dag-task-t-implement'))
+    const paths = screen.getByTestId('dag-edges').querySelectorAll('path')
+    expect(paths).toHaveLength(3)
+    // t-design→t-implement、t-implement→t-test 在聚焦链上；t-design→t-ui 无关暗化
+    expect(paths[0]!.getAttribute('data-active')).toBe('true')
+    expect(paths[1]!.getAttribute('data-dimmed')).toBe('true')
+    expect(paths[2]!.getAttribute('data-active')).toBe('true')
+    expect((screen.getByTestId('dag-task-t-ui') as HTMLElement).style.opacity).toBe('0.3')
+    expect((screen.getByTestId('dag-task-t-design') as HTMLElement).style.opacity).toBe('1')
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByTestId('dag-edges').querySelectorAll('path')[0]!.getAttribute('data-active')).toBe('false')
+    expect((screen.getByTestId('dag-task-t-ui') as HTMLElement).style.opacity).toBe('1')
   })
 
   it('cancelTask 接线通知与审计（doc/05 §6.4 P1-D 接线点 4）', async () => {
@@ -313,23 +425,21 @@ describe('DagPanel 轻量视图（P0-DAG-017）', () => {
   })
 })
 
-describe('DagPanel 节点渲染尺寸（用户反馈节点过大 → 格子 50% 居中）', () => {
-  it('节点盒为格子 50% 并格内居中；SVG 边连接节点盒边缘', async () => {
+describe('DagPanel 紧凑节点几何（参照物观感：节点固定 92×30）', () => {
+  it('节点固定 92×30 按 stage 定位；SVG 边为水平出入中线的贝塞尔路径', async () => {
     const repo = await seedRepository()
     render(<DagPanel dagId={DAG_ID} repository={repo} />)
     await screen.findByText('任务 t-implement')
 
-    // 未测量回落 base：cellW=200/cellH=64 → 节点盒 100×32
     const node = screen.getByTestId('dag-task-t-implement') as HTMLElement
-    expect(node.style.width).toBe('100px')
-    expect(node.style.minHeight).toBe('32px')
-    // lv1 格子 x = 248 → 居中偏移 +50
-    expect(node.style.left).toBe('298px')
-    expect(node.style.top).toBe('16px')
+    expect(node.style.width).toBe('92px')
+    expect(node.style.height).toBe('30px')
+    // lv1 列 x = 92+26 = 118；单行 y = 0
+    expect(node.style.left).toBe('118px')
+    expect(node.style.top).toBe('0px')
 
-    // 边从节点盒边缘出发：首条边 T-A(lv0,x=0)→T-B(lv1,x=248)；from 右缘=0+50+100=150，to 左缘=248+50=298
-    const line = screen.getByTestId('dag-edges').querySelector('line')!
-    expect(Number(line.getAttribute('x1'))).toBe(150)
-    expect(Number(line.getAttribute('x2'))).toBe(298)
+    // 首条边 t-design(lv0, x=0) → t-implement(lv1, x=118)：从右缘 92 到左缘 118，中线 y=15
+    const path = screen.getByTestId('dag-edges').querySelector('path')!
+    expect(path.getAttribute('d')).toBe('M92 15C106 15,104 15,118 15')
   })
 })
