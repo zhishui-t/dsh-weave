@@ -144,6 +144,11 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     manager(['codex', 'zcode']).validateTeam(team)
   })
 
+  it('parseTeam 保留可选 description（团队简介）', () => {
+    const withDesc = GOOD_TEAM.replace('name: 阿尔法团队\n', 'name: 阿尔法团队\ndescription: 负责端到端协作交付\n')
+    const team = manager(['codex', 'zcode']).parseTeam(withDesc, 'fixture')
+    expect(team.description).toBe('负责端到端协作交付')
+  })
   it('schema_version 非法 → invalid_team', () => {
     const mgr = manager(['codex', 'zcode'])
     expectCode(() => mgr.parseTeam(GOOD_TEAM.replace('schema_version: "1"', 'schema_version: "2"'), 'f'), 'invalid_team')

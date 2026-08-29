@@ -169,10 +169,13 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
         processedMessages.delete(latest.id)
         throw error
       }
+      const teamIntro = command.action === 'enable' && typeof command.team.description === 'string' && command.team.description.trim() !== ''
+        ? `团队简介：${command.team.description.trim()}`
+        : ''
       deps.notify(
         sessionId,
         command.action === 'enable'
-          ? `[weave] 已在当前会话启用团队「${command.team.name}」。现在可以直接描述目标，我将作为队长拆解并派发任务。`
+          ? `[weave] 已在当前会话启用团队「${command.team.name}」。${teamIntro ? `${teamIntro}。` : ''}现在可以直接描述目标，我将作为队长拆解并派发任务。`
           : '[weave] 已关闭当前会话的团队。',
         payload.agent?.session,
       )

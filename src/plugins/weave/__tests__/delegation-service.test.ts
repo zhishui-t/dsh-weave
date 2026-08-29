@@ -15,6 +15,7 @@ import {
   type TaskContext,
   type TeamConfigLike,
 } from '../delegation-service'
+import { ExecutorProviderRegistry } from '../executors/executor-provider'
 import { ExecutorRegistry } from '../executor-registry'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { ProcessLimiter } from '../safety/process-limiter'
@@ -236,6 +237,55 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     // 不同角色 ⇒ 不同 sessionKey ⇒ 新会话重新全量注入
     expect(prompts[2]).toContain('## 角色人格')
     expect(prompts[2]).not.toContain('本会话已含你的角色与纪律约定')
+  })
+
+  it('provider.isSessionKnown：已知会话复用也跳过静态注入，新会话(true 判断)仍全量', async () => {
+    const makeKnown = (known: boolean) => {
+      const requests: Array<{ prompt: Array<{ text: string }> }> = []
+      const provider = {
+        id: 'zcode',
+        name: 'zcode',
+        kind: 'acp',
+        capabilities: { liveOutput: true, sessionReuse: true, sessionResume: true, modelSelection: false, providerSelection: false, thoughtControl: false, thoughtLevels: [], modeControl: false, modes: [], tools: { externalRuntime: true, filtering: 'none', permission: 'reject' } },
+        supports: () => true,
+        isSessionKnown: () => known,
+        start: async (request: { prompt: Array<{ text: string }> }) => {
+          requests.push(request)
+          return {
+            id: 'run-provider',
+            sessionId: 'acp-session',
+            result: Promise.resolve({ output: [], stopReason: 'completed', applied: {} }),
+            readOutput: () => [],
+            onEvent: () => () => undefined,
+            dispose: async () => undefined,
+          }
+        },
+      }
+      const providers = new ExecutorProviderRegistry()
+      providers.register(provider as never)
+      const ctx = new MockSubagentsContext()
+      const service = new DelegationService({ subagents: ctx } as never, {
+        executorRegistry: { get: () => ({ id: 'zcode', kind: 'acp', capabilities: {} }), list: () => [] } as never,
+        sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
+        processLimiter: new ProcessLimiter(),
+        knowledgeEngine: makeKnowledge([]),
+        executorProviders: providers,
+      })
+      return { service, requests }
+    }
+
+    const zcodeTask = { ...BASE_TASK, executor: 'zcode' }
+    const known = makeKnown(true)
+    await known.service.executeTask(zcodeTask, { ...BASE_ROLE, executor: 'zcode' }, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    expect(known.requests[0]!.prompt[0]!.text).not.toContain('## 角色人格')
+    expect(known.requests[0]!.prompt[0]!.text).not.toContain('## 执行纪律')
+    expect(known.requests[0]!.prompt[0]!.text).toContain('本会话已含你的角色与纪律约定')
+
+    const fresh = makeKnown(false)
+    await fresh.service.executeTask(zcodeTask, { ...BASE_ROLE, executor: 'zcode' }, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    expect(fresh.requests[0]!.prompt[0]!.text).toContain('## 角色人格')
+    expect(fresh.requests[0]!.prompt[0]!.text).toContain('## 执行纪律')
+    expect(fresh.requests[0]!.prompt[0]!.text).not.toContain('本会话已含你的角色与纪律约定')
   })
 
   it('buildPrompt firstDispatch 参数：缺省/true 全量；false 精简且无静态段残留', () => {

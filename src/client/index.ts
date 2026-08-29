@@ -212,6 +212,7 @@ interface ZcodeCapabilities {
 interface TeamSummaryRow {
   team_id?: string
   name?: string
+  description?: string
   default?: boolean
   roles?: Array<Json>
 }
@@ -311,7 +312,7 @@ interface SessionStatusMember {
 
 interface SessionStatusData {
   session_id?: string
-  team?: { team_id?: string; name?: string } | null
+  team?: { team_id?: string; name?: string; description?: string } | null
   /** binding=已启用/绑定；default/single=配置自动生效，未锁定。 */
   resolved_via?: 'binding' | 'default' | 'single' | null
   members?: SessionStatusMember[]
@@ -1133,6 +1134,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [teamId, setTeamId] = useState('')
     const [editingTeamId, setEditingTeamId] = useState('')
     const [name, setName] = useState('')
+    const [description, setDescription] = useState('')
     const [defaultFlag, setDefaultFlag] = useState(false)
     const [roles, setRoles] = useState([blankRole()] as RoleDraft[])
     const [advanced, setAdvancedState] = useState(blankAdvanced())
@@ -1160,6 +1162,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       setEditingTeamId('')
       setTeamId('')
       setName('')
+      setDescription('')
       setDefaultFlag(false)
       setRoles([blankRole()])
       setAdvancedState(blankAdvanced())
@@ -1173,7 +1176,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }
 
     const buildDraftJson = (): string =>
-      JSON.stringify({ teamId, name, defaultFlag, roles, advanced })
+      JSON.stringify({ teamId, name, description, defaultFlag, roles, advanced })
     const dirty = editorMode === 'edit' && editSnapshotJson !== '' && buildDraftJson() !== editSnapshotJson
 
     const closeEditor = (): void => {
@@ -1345,6 +1348,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               schema_version: String(base['schema_version'] ?? '1'),
               team_id: resolvedId,
               name: name.trim() || resolvedId,
+              description: description.trim(),
               default: defaultFlag,
               roles: builtRoles,
               // spread 基底在前：matchers 等表单外字段原样保留，仅覆写三段可编辑值。
@@ -1369,6 +1373,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               schema_version: '1',
               team_id: resolvedId,
               name: name.trim() || resolvedId,
+              description: description.trim(),
               default: defaultFlag,
               roles: builtRoles,
               task_decomposition: advancedConfig.task_decomposition,
@@ -1454,6 +1459,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         setEditingTeamId(String(team.team_id ?? id))
         setTeamId(String(team.team_id ?? id))
         setName(String(team.name ?? ''))
+        setDescription(String(team.description ?? ''))
         setDefaultFlag(team.default === true)
         setRoles(drafts)
         setAdvancedState(advancedFromConfig(team))
@@ -1466,6 +1472,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         setEditSnapshotJson(JSON.stringify({
           teamId: String(team.team_id ?? id),
           name: String(team.name ?? ''),
+          description: String(team.description ?? ''),
           defaultFlag: team.default === true,
           roles: drafts,
           advanced: advancedFromConfig(team),
@@ -1867,6 +1874,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                         : null,
                       React.createElement(Pill, { label: id, title: `团队 ID：${id}` }),
                     ),
+                    typeof team.description === 'string' && team.description.trim() !== ''
+                      ? React.createElement(
+                          'span',
+                          { className: 'weave-muted', 'data-testid': `team-description-${id}` },
+                          team.description,
+                        )
+                      : null,
                     React.createElement(
                       'span',
                       { className: 'weave-muted' },
@@ -1969,6 +1983,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 { className: 'weave-muted' },
                 `ID：${String(detailRows.team_id ?? '')}${detailRows.default === true ? ' · 未绑定的会话自动启用本团队' : ''}`,
               ),
+              typeof detailRows.description === 'string' && detailRows.description.trim() !== ''
+                ? React.createElement(
+                    'p',
+                    { 'data-testid': `team-detail-description-${String(detailRows.team_id ?? '')}` },
+                    detailRows.description,
+                  )
+                : null,
               React.createElement(
                 'span',
                 { className: 'weave-adv-note' },
@@ -2109,6 +2130,19 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   fieldErrors.name
                     ? React.createElement('span', { className: 'weave-field-error' }, fieldErrors.name)
                     : null,
+                ),
+                React.createElement(
+                  'label',
+                  { className: 'weave-field' },
+                  React.createElement('span', null, '团队简介'),
+                  React.createElement('textarea', {
+                    className: 'weave-control',
+                    rows: 2,
+                    value: description,
+                    placeholder: '简要说明团队定位、职责或协作方式（会话启用团队时展示）',
+                    'data-testid': 'team-description-input',
+                    onChange: (event: { target: { value: string } }) => setDescription(event.target.value),
+                  }),
                 ),
               ),
               React.createElement(
@@ -3196,6 +3230,19 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       'section',
       { className: 'weave-page', 'data-testid': 'page-knowledge' },
       React.createElement('h1', null, '知识库'),
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'knowledge-team-guide' },
+        React.createElement('b', { className: 'weave-subh' }, '团队如何使用知识库'),
+        React.createElement(
+          'div',
+          { className: 'weave-list' },
+          React.createElement('span', { className: 'weave-muted' }, '① 执行器在任务输出中写 `WEAVE_KNOWLEDGE` 块 → 自动生成候选知识；'),
+          React.createElement('span', { className: 'weave-muted' }, '② 在这里审核：通过（approve）进入可注入知识，驳回（reject）归档；'),
+          React.createElement('span', { className: 'weave-muted' }, '③ 后续任务派发时按团队 `knowledge_injection` 限额自动注入相关知识；'),
+          React.createElement('span', { className: 'weave-muted' }, '④ 知识按 项目 / 角色 / 实例 / 全局 分层，下方双链图谱可查看关联与缺失目标。'),
+        ),
+      ),
       Note({
         text: list.loading
           ? '正在加载...'
@@ -4478,6 +4525,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           status.data?.team
             ? `团队 · ${String(status.data.team.name ?? status.data.team.team_id)}${status.data.resolved_via && status.data.resolved_via !== 'binding' ? '（自动）' : ''}`
             : '未确定团队'),
+        status.data?.team && typeof status.data.team.description === 'string' && status.data.team.description.trim() !== ''
+          ? React.createElement(
+              'div',
+              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px' }, 'data-testid': 'weave-session-team-description' },
+              status.data.team.description,
+            )
+          : null,
         hasActiveTasks
           ? React.createElement(
               'span',

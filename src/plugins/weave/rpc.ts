@@ -145,6 +145,7 @@ function serializeTeam(team: TeamConfig) {
   return {
     team_id: team.team_id,
     name: team.name,
+    ...(team.description !== undefined ? { description: team.description } : {}),
     default: team.default,
     roles: team.roles.map((role) => ({
       id: role.id,

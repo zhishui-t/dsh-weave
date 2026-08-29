@@ -24,6 +24,7 @@ const lookup: ExecutorLookup = {
 const TEAM: TeamConfig = {
   team_id: 'pipe-team',
   name: '流水线团队',
+  description: '端到端流程团队',
   default: false,
   roles: [
     { id: 'researcher', name: '方案研究员', bias: 'design', executor: 'codex', stages: ['prepare'], max_concurrent_tasks: 1, personality: '调研' },
@@ -106,6 +107,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
     expect(decision).toEqual({ kind: 'reject' })
     expect(await env.manager.getSelection('sess-1')).toMatchObject({ team_id: 'pipe-team' })
     expect(env.notices.at(-1)?.text).toContain('已在当前会话启用团队「流水线团队」')
+    expect(env.notices.at(-1)?.text).toContain('团队简介：端到端流程团队')
   })
 
   it('自然语言关闭会清除绑定并通知', async () => {

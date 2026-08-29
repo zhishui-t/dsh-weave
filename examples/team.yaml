@@ -3,6 +3,7 @@
 schema_version: "1"
 team_id: alpha-squad
 name: 阿尔法团队
+description: 示例协作团队：负责从方案到实现到审核的完整交付。会话启用后会展示本简介。
 default: true
 
 roles:

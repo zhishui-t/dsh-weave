@@ -84,6 +84,8 @@ export interface RoleConfig {
 export interface TeamConfig {
   team_id: string
   name: string
+  /** 团队简介/说明（可选）；会话启用团队时展示。 */
+  description?: string
   default: boolean
   roles: RoleConfig[]
   task_decomposition: TaskDecomposition
@@ -222,6 +224,7 @@ export class TeamManager {
     const team: TeamConfig = {
       team_id: doc.team_id,
       name: typeof doc.name === 'string' ? doc.name : doc.team_id,
+      ...(typeof doc.description === 'string' && doc.description.trim() !== '' ? { description: doc.description } : {}),
       default: doc.default === true,
       roles: (doc.roles as unknown[]).map((r, index) => {
         if (!isRecord(r) || typeof r.id !== 'string' || r.id.length === 0) {

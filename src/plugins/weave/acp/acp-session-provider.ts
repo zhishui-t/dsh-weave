@@ -579,6 +579,17 @@ export class AcpSessionProvider {
   }
 
   /**
+   * 会话是否已存在（当前连接已知，或持久索引有可恢复线索）。
+   * 调度侧据此决定“首次真正创建会话才全量注入角色/纪律”，复用会话只注入任务段。
+   */
+  isSessionKnown(sessionKey: string): boolean {
+    const normalized = normalizeSessionKey(sessionKey)
+    if (normalized === undefined) return false
+    if (this.#sessions.has(normalized)) return true
+    return readSessionIndexFile(this.#sessionIndexFile, normalized) !== undefined
+  }
+
+  /**
    * 跨生命周期会话恢复链：session/load → session/resume，全部失败返回 undefined
    * （调用方回落 newSession 自愈）。链上每一环的异常都必须在本方法内接住——
    * 任何一处冒泡到 start() 都会被 delegation 层包装成 WeaveError('execution_failed')，
@@ -958,6 +969,11 @@ export class ZcodeAcpExecutorProvider {
 
   supports(executor: string): boolean {
     return this.#executorIds.has(executor)
+  }
+
+  /** 是否已有该 sessionKey 的可复用会话（供首次/复用注入决策）。 */
+  isSessionKnown(sessionKey: string): boolean {
+    return this.#provider.isSessionKnown(sessionKey)
   }
 
   /** 转发底层 ACP session/new 能力目录。 */

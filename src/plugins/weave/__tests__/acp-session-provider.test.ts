@@ -499,6 +499,18 @@ describe('AcpSessionProvider', () => {
       expect(run.id).toBe('acp-acp-session-1')
       expect(connections[0]!.newSession).toHaveBeenCalledTimes(1)
     })
+
+    it('isSessionKnown：持久索引/当前连接已知为 true，未知 key 为 false', async () => {
+      const indexFile = join(dir, 'idx-known.json')
+      writeFileSync(
+        indexFile,
+        JSON.stringify({ version: 1, keys: { 'changan:known:x': { acpSid: 'sid-1', updatedAt: 1 } } }),
+        'utf8',
+      )
+      const { provider } = makeFixtures({ sessionIndexFile: indexFile })
+      expect(provider.isSessionKnown('changan:known:x')).toBe(true)
+      expect(provider.isSessionKnown('changan:nope:x')).toBe(false)
+    })
   })
 })
 

@@ -496,7 +496,7 @@ export class WeaveQueryService {
    */
   async sessionStatus(input: unknown): Promise<{
     session_id: string
-    team: { team_id: string; name: string } | null
+    team: { team_id: string; name: string; description?: string } | null
     /** 团队解析来源：binding=显式启用/绑定；default/single=零仪式自动解析。 */
     resolved_via?: 'binding' | 'default' | 'single' | null
     members: Array<{
@@ -523,6 +523,13 @@ export class WeaveQueryService {
       return { session_id: sessionId, team: null, resolved_via: null, members: [] }
     }
     const team = resolved.team
+
+    // 会话面板主会话启动展示：携带团队简介（若有）。
+    const teamView: { team_id: string; name: string; description?: string } = {
+      team_id: team.team_id,
+      name: team.name,
+      ...(team.description !== undefined ? { description: team.description } : {}),
+    }
 
     // 本会话最近的任务（跨 DAG，按创建时间倒序取一批），每个角色取最近一条做“上次结果”。
     const recent = await this.persistence.tasks.run((db) => {
@@ -572,7 +579,7 @@ export class WeaveQueryService {
 
     return {
       session_id: sessionId,
-      team: { team_id: team.team_id, name: team.name },
+      team: teamView,
       resolved_via: resolved.via,
       members,
     }

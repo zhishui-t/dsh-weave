@@ -673,15 +673,21 @@ export class DelegationService {
       // iso-1 会话隔离键：团队+角色+项目+版本。角色维度不同 ⇒ 键不同；
       // 同一角色重复执行同项目同版本任务 ⇒ 复用同一 ACP/zcode 会话。
       const sessionKey = `${team.team_id}:${role.id}:${task.project_id}:${task.version}`
-      // 会话复用注入去重：同 sessionKey 首次派发全量注入（角色人格/执行纪律 +
-      // 任务专属段）；复用会话只注入任务专属段——静态段会话里已有，
-      // 重复注入纯耗 token 且稀释任务焦点。
-      const firstDispatch = !this.#dispatchedSessionKeys.has(sessionKey)
+      const provider = this.#executorProviders?.resolve(executor)
+      // 会话复用注入去重：同 sessionKey 首次真正创建会话才全量注入
+      // （角色人格/执行纪律）；已有可复用会话只注入任务专属段，不重复静态段。
+      // Provider 能根据持久索引/连接状态判断会话是否已存在；无该方法时退回
+      // 内存 Set（历史行为）。
+      const sessionKnown =
+        typeof (provider as unknown as { isSessionKnown?: (key: string) => boolean } | undefined)?.isSessionKnown === 'function'
+          ? (provider as unknown as { isSessionKnown: (key: string) => boolean }).isSessionKnown(sessionKey)
+          : undefined
+      const firstDispatch =
+        sessionKnown === false || (sessionKnown === undefined && !this.#dispatchedSessionKeys.has(sessionKey))
       const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection, firstDispatch)
 
       const startedAt = this.#now()
       const runtime = this.#resolveRuntime(role, context)
-      const provider = this.#executorProviders?.resolve(executor)
 
       let run: DelegationRunLike
       if (provider) {
