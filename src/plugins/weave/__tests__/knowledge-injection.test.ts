@@ -12,7 +12,6 @@ import {
 } from '../knowledge-engine'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeScope } from '../knowledge-model'
 import { openPersistence } from '../persistence/index'
-import { ProcessLimiter } from '../safety/process-limiter'
 import { SessionTracker } from '../session-tracker'
 import type { TaskRecord } from '../state/types'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
@@ -221,7 +220,6 @@ describe('KnowledgeEngine.searchForInjection', () => {
     const service = new DelegationService({ subagents: ctx } as never, {
       executorRegistry: registry,
       sessionTracker: new SessionTracker(db.feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: engine,
     })
     const task: TaskRecord = {

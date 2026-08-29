@@ -640,7 +640,7 @@ describe('WeaveScheduler run 冷启动重建（doc/05 §6.5 P1-G G-②）', () =
 })
 
 /**
- * 支持槽位回调的替身（假并行修复）：acquiredGate 模拟 ProcessLimiter 排队窗口——
+ * 支持槽位回调的替身（假并行修复）：acquiredGate 模拟排队/放行窗口——
  * executeTask 先卡在「等槽」，releaseAcquired 放行后才触发 context.onAcquired，
  * 再进入基类执行流。复刻真实 DelegationService 的时序契约。
  */

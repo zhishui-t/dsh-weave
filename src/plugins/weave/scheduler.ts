@@ -30,7 +30,7 @@ export interface SchedulerDelegationContext {
   upstreamOutputs?: Array<{ label: string; output: string }>
   outputRequirements?: string
   /**
-   * 槽位获得回调（假并行修复）：DelegationService 在 processLimiter 拿到槽后、
+   * 槽位获得回调（假并行修复）：DelegationService 在任务实际开始执行前、
    * provider.start 前触发；调度器在此写 RUNNING + 发开始通知（真·RUNNING 时点）。
    */
   onAcquired?: () => void | Promise<void>

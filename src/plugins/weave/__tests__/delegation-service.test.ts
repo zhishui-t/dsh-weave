@@ -18,7 +18,6 @@ import {
 import { ExecutorProviderRegistry } from '../executors/executor-provider'
 import { ExecutorRegistry } from '../executor-registry'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
-import { ProcessLimiter } from '../safety/process-limiter'
 import { SessionTracker } from '../session-tracker'
 import type { TaskRecord } from '../state/types'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
@@ -85,24 +84,21 @@ function makeKnowledge(entries: KnowledgeInjectionEntryLike[]): {
 function makeService(opts: {
   mock?: MockSubagentsContext
   registry?: ExecutorRegistry
-  limiter?: ProcessLimiter
   knowledge?: ReturnType<typeof makeKnowledge>
   timeoutMs?: number
-}): { service: DelegationService; ctx: MockSubagentsContext; registry: ExecutorRegistry; limiter: ProcessLimiter; db: WeavePersistence } {
+}): { service: DelegationService; ctx: MockSubagentsContext; registry: ExecutorRegistry; db: WeavePersistence } {
   const db = openPersistence({ inMemory: true })
   const ctx = opts.mock ?? new MockSubagentsContext()
   const registry = opts.registry ?? new ExecutorRegistry()
   if (!opts.registry) registry.load({ subagents: ctx } as never)
-  const limiter = opts.limiter ?? new ProcessLimiter()
   const tracker = new SessionTracker(db.feedback)
   const service = new DelegationService({ subagents: ctx } as never, {
     executorRegistry: registry,
     sessionTracker: tracker,
-    processLimiter: limiter,
     knowledgeEngine: opts.knowledge ?? makeKnowledge([]),
     timeoutMs: opts.timeoutMs,
   })
-  return { service, ctx, registry, limiter, db }
+  return { service, ctx, registry, db }
 }
 
 describe('mapStopReason / detectPermissionDenied / formatKnowledgeSection（TDD 2.4.3）', () => {
@@ -267,8 +263,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       const service = new DelegationService({ subagents: ctx } as never, {
         executorRegistry: { get: () => ({ id: 'zcode', kind: 'acp', capabilities: {} }), list: () => [] } as never,
         sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-        processLimiter: new ProcessLimiter(),
-        knowledgeEngine: makeKnowledge([]),
+          knowledgeEngine: makeKnowledge([]),
         executorProviders: providers,
       })
       return { service, requests }
@@ -394,7 +389,6 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const svc = new DelegationService({ subagents: ctx } as never, {
       executorRegistry: registry,
       sessionTracker: tracker,
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: makeKnowledge([]),
     })
     const revCtx = await tracker.getRevisionContext('task-1')
@@ -415,44 +409,10 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const service = new DelegationService({ subagents: ctx } as never, {
       executorRegistry: (() => { const r = new ExecutorRegistry(); r.load({ subagents: ctx } as never); return r })(),
       sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: { searchForInjection: async () => { throw new Error('db locked') } },
     })
     const output = await service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
     expect(output.stopReason).toBe('completed')
-  })
-
-  it('onAcquired 时序（假并行修复）：槽满排队时不触发；拿到槽后、start 前触发', async () => {
-    const ctx = new MockSubagentsContext()
-    const limiter = new ProcessLimiter({ limits: { spawn: { maxConcurrent: 1, maxPerHour: 100 } } })
-    const { service } = makeService({ mock: ctx, limiter })
-    expect(service.supportsSlotAcquiredHook).toBe(true)
-
-    const sequence: string[] = []
-    // 先占满 spawn 槽，模拟执行器繁忙：executeTask 应在 waitForProcessSlot 排队
-    expect(limiter.acquire('spawn')).toBe(true)
-    const pending = service.executeTask(
-      BASE_TASK,
-      BASE_ROLE,
-      BASE_TEAM,
-      {
-        ...BASE_CONTEXT,
-        onAcquired: () => {
-          // 记录触发瞬间 start 是否已发起（0 = 尚未，证明在 provider.start 之前）
-          sequence.push(`acquired@started=${ctx.started.length}`)
-        },
-      },
-      new AbortController().signal,
-    )
-    // 越过 limiter 轮询周期（100ms）数拍：仍在排队
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(sequence).toEqual([])
-    expect(ctx.started).toHaveLength(0)
-
-    limiter.release('spawn')
-    await pending
-    expect(sequence).toEqual(['acquired@started=0'])
-    expect(ctx.started).toHaveLength(1)
   })
 
   it('onAcquired 时序：槽空闲时同步获得槽位，同样在 start 前触发', async () => {
@@ -480,16 +440,14 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(ctx.started).toHaveLength(0)
   })
 
-  it('取消（启动前 abort）：start 拒绝但映射为 CANCELLED，不计熔断，槽位释放', async () => {
+  it('取消（启动前 abort）：start 拒绝但映射为 CANCELLED，不计熔断', async () => {
     const ctx = new MockSubagentsContext()
-    const limiter = new ProcessLimiter()
-    const { service } = makeService({ mock: ctx, limiter })
+    const { service } = makeService({ mock: ctx })
     const controller = new AbortController()
     controller.abort()
     const output = await service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, controller.signal)
     expect(output.stopReason).toBe('aborted')
     expect(output.weave).toEqual({ errorType: 'aborted', status: 'CANCELLED', countBreaker: false })
-    expect(limiter.status('spawn').active).toBe(0)
   })
 
   it('取消（运行中 abort）：result 以 aborted 结束 → CANCELLED', async () => {
@@ -548,35 +506,11 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const service = new DelegationService(failing as never, {
       executorRegistry: registry,
       sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: makeKnowledge([]),
     })
     await expect(
       service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal),
     ).rejects.toMatchObject({ code: 'execution_failed' })
-  })
-
-  it('排队限流：并发超限排队不熔断，释放后继续（AC-EXEC-005）', async () => {
-    const ctx = new MockSubagentsContext({ manualCompletion: true })
-    const limiter = new ProcessLimiter({ limits: { spawn: { maxConcurrent: 1, maxPerHour: 10 } }, pollIntervalMs: 5 })
-    const { service } = makeService({ mock: ctx, limiter })
-    const c1 = new AbortController()
-    const c2 = new AbortController()
-    const run2 = service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, c2.signal)
-    const run1 = service.executeTask({ ...BASE_TASK, id: 'task-a' }, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, c1.signal)
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    expect(ctx.started).toHaveLength(1) // 后一个在排队
-    // 释放第一个槽位 → 排队者获得槽位并启动
-    ctx.settle(ctx.started[0]!.runId, { output: [{ type: 'text', text: 'done' }], stopReason: 'completed' })
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    expect(ctx.started).toHaveLength(2)
-    // 先结算排队运行的 result，再等待任务完成（避免颠倒顺序导致的死锁）
-    ctx.settle(ctx.started[1]!.runId, { output: [{ type: 'text', text: 'done2' }], stopReason: 'completed' })
-    const o2 = await run2
-    const o1 = await run1
-    expect(o1.stopReason).toBe('completed')
-    expect(o2.stopReason).toBe('completed')
-    expect(limiter.status('spawn').active).toBe(0)
   })
 
   it('角色模型路由：provider/model 透传为 agentOptions；缺省不传', async () => {
@@ -630,7 +564,6 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const service = new DelegationService(delegationCtx as never, {
       executorRegistry: registry,
       sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: makeKnowledge([]),
       onExecutorEvent: (event) => events.push(event),
     })
@@ -689,7 +622,6 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const service = new DelegationService(delegationCtx as never, {
       executorRegistry: registry,
       sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: makeKnowledge([]),
       onExecutorEvent: (event) => events.push(event),
     })
@@ -717,7 +649,6 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     const service = new DelegationService(delegationCtx as never, {
       executorRegistry: registry,
       sessionTracker: new SessionTracker(openPersistence({ inMemory: true }).feedback),
-      processLimiter: new ProcessLimiter(),
       knowledgeEngine: makeKnowledge([]),
       onExecutorEvent: (event) => events.push(event),
     })

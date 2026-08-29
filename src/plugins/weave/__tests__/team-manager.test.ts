@@ -69,13 +69,6 @@ feedback:
   max_revisions: 5
   reopen_window_seconds: 86400
 
-executor_limits:
-  codex:
-    max_concurrent: 2
-    max_per_hour: 20
-  zcode:
-    max_concurrent: 2
-    max_per_hour: 20
 `
 
 const EXAMPLES_TEAM_YAML = fileURLToPath(
@@ -140,7 +133,6 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     expect(team.roles).toHaveLength(3)
     expect(team.task_decomposition.default_difficulty).toBe('hard')
     expect(team.roles[0]?.stages).toEqual(['prepare', 'design'])
-    expect(team.executor_limits?.codex).toEqual({ max_concurrent: 2, max_per_hour: 20 })
     manager(['codex', 'zcode']).validateTeam(team)
   })
 
@@ -213,13 +205,6 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('executor_limits 负数 → invalid_team；0 表示不限制并允许', () => {
-    const mgr = manager(['codex', 'zcode'])
-    const bad = GOOD_TEAM.replace('    max_concurrent: 2\n    max_per_hour: 20', '    max_concurrent: -1\n    max_per_hour: 20')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
-    const unlimited = GOOD_TEAM.replace('    max_concurrent: 2\n    max_per_hour: 20', '    max_concurrent: 0\n    max_per_hour: 0')
-    expect(() => mgr.validateTeam(mgr.parseTeam(unlimited, 'f'))).not.toThrow()
-  })
 })
 
 /* ------------------------------- loadTeam / listTeams ------------------------------- */

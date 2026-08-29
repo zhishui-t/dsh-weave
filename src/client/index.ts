@@ -1277,7 +1277,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     }, [snapshot.data, editorMode])
 
     /* ---- 提交（唯一写入路径）：create 全新构建；edit 以 team/get 全量为基底展开，
-       只覆写表单可见字段，matchers/executor_limits 等未编辑内容原样保留（评审 C1）。 ---- */
+       只覆写表单可见字段，matchers 等未编辑内容原样保留（评审 C1）。 ---- */
     const submit = async (event: { preventDefault(): void }) => {
       event.preventDefault()
       if (editorMode === null) return
@@ -1335,11 +1335,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         })
         const resolvedId =
           (mode === 'edit' ? editingTeamId : teamId || slugifyTeamId(name) || 'team') || 'team'
-        const executorLimits: Json = {}
-        for (const role of builtRoles) {
-          const key = String(role.executor ?? 'spawn')
-          if (!(key in executorLimits)) executorLimits[key] = { max_concurrent: 1, max_per_hour: 20 }
-        }
         const advancedConfig = configFromAdvanced(advanced)
         const base = mode === 'edit' && editBase ? editBase : null
         const config: Json = base
@@ -1364,10 +1359,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                 ...(base['feedback'] as Json | undefined ?? {}),
                 ...advancedConfig.feedback,
               },
-              executor_limits:
-                (base['executor_limits'] as Json | undefined) && Object.keys(base['executor_limits'] as Json).length > 0
-                  ? base['executor_limits']
-                  : executorLimits,
             }
           : {
               schema_version: '1',
@@ -1379,7 +1370,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               task_decomposition: advancedConfig.task_decomposition,
               knowledge_injection: advancedConfig.knowledge_injection,
               feedback: advancedConfig.feedback,
-              executor_limits: executorLimits,
             }
         await rpc('team/import', { overwrite: true, config })
         setEditorMode(null)

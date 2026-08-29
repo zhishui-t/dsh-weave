@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   CircuitBreaker,
   BREAKER_SCOPE_ORDER,
-  ProcessLimiter,
   LoopGuard,
   DelegationChain,
   MAX_DELEGATION_DEPTH,
@@ -10,7 +9,6 @@ import {
 } from '../safety/index.js'
 import { WeaveError } from '../state/weave-error.js'
 
-const HOUR_MS = 3600_000
 
 describe('CircuitBreaker：ACTIVE → BANNED → COOLDOWN → ACTIVE', () => {
   it('连续失败 ≥ 3 触发 BANNED', async () => {
@@ -147,76 +145,6 @@ describe('CircuitBreaker：ACTIVE → BANNED → COOLDOWN → ACTIVE', () => {
     await cb.recordFailure('agent', 'nope')
     await cb.recordFailure('agent', 'nope')
     expect(cb.status('agent', 'nope')?.state).toBe('BANNED')
-  })
-})
-
-describe('ProcessLimiter：per-executor 并发 + 小时频率，超限排队不熔断', () => {
-  it('acquire 占用并发槽位；超限返回 false；release 后恢复', () => {
-    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 1, maxPerHour: 100 } })
-    expect(pl.acquire('codex')).toBe(true)
-    expect(pl.acquire('codex')).toBe(false)
-    pl.release('codex')
-    expect(pl.acquire('codex')).toBe(true)
-  })
-
-  it('per-executor 隔离：A 占满不影响 B', () => {
-    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 1, maxPerHour: 100 } })
-    expect(pl.acquire('codex')).toBe(true)
-    expect(pl.acquire('claude_code')).toBe(true)
-    expect(pl.acquire('codex')).toBe(false)
-    expect(pl.acquire('claude_code')).toBe(false)
-  })
-
-  it('小时频率限制已移除：超过 maxPerHour 后仍可继续获取（仅并发生效）', () => {
-    let t = 0
-    const pl = new ProcessLimiter({
-      defaultLimits: { maxConcurrent: 10, maxPerHour: 3 },
-      now: () => t,
-    })
-    expect(pl.acquire('a')).toBe(true)
-    expect(pl.acquire('a')).toBe(true)
-    expect(pl.acquire('a')).toBe(true)
-    expect(pl.acquire('a')).toBe(true) // 不再因小时频率拒绝
-    t += HOUR_MS + 1
-    expect(pl.acquire('a')).toBe(true)
-  })
-
-  it('waitForProcessSlot 排队等待，释放后自动继续（AC-EXEC-005，不熔断）', async () => {
-    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 1, maxPerHour: 100 }, pollIntervalMs: 5 })
-    expect(pl.acquire('spawn')).toBe(true)
-    const waiter = pl.waitForProcessSlot('spawn')
-    setTimeout(() => pl.release('spawn'), 20)
-    await waiter // 释放后自动获得槽位
-    expect(pl.status('spawn').active).toBe(1)
-    pl.release('spawn')
-  })
-
-  it('AbortSignal 中止等待', async () => {
-    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 1, maxPerHour: 100 }, pollIntervalMs: 5 })
-    pl.acquire('spawn')
-    const ac = new AbortController()
-    const p = pl.waitForProcessSlot('spawn', ac.signal)
-    setTimeout(() => ac.abort(), 10)
-    await expect(p).rejects.toThrow(/abort/i)
-  })
-
-  it('maxConcurrent=0 表示不限制并发', () => {
-    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 0, maxPerHour: 0 } })
-    for (let i = 0; i < 50; i += 1) expect(pl.acquire('x')).toBe(true)
-    expect(pl.status('x').active).toBe(50)
-  })
-
-  it('status() 快照反映并发与窗口内频率', () => {
-    let t = 0
-    const pl = new ProcessLimiter({
-      defaultLimits: { maxConcurrent: 2, maxPerHour: 5 },
-      now: () => t,
-    })
-    pl.acquire('x')
-    pl.acquire('x')
-    expect(pl.status('x')).toMatchObject({ active: 2, maxConcurrent: 2, usedInHour: 2, maxPerHour: 5, waiting: 0 })
-    t += HOUR_MS + 1
-    expect(pl.status('x')).toMatchObject({ usedInHour: 0 })
   })
 })
 

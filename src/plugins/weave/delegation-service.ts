@@ -1,6 +1,5 @@
 import type { ExecutorRegistry } from './executor-registry.js'
 import type { SessionTracker } from './session-tracker.js'
-import type { ProcessLimiter } from './safety/process-limiter.js'
 import type { TaskRecord } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
 import type { ExecutorProviderRegistry, ExecutorRuntimeOptions } from './executors/executor-provider.js'
@@ -17,7 +16,6 @@ import type { ExecutorProviderRegistry, ExecutorRuntimeOptions } from './executo
  * - parent / signal 必填（真实 DSH 0.1.1-rc.2）；
  * - 子代理失败时 run.result **resolve**（stopReason='error'），不 reject；
  *   仅基础设施故障 reject → 抛 WeaveError('execution_failed')；
- * - 执行前申请 ProcessLimiter 槽位（排队不熔断），finally 释放；
  * - `duration_ms` 由 Weave 自计时（start() → result 完成）。
  *
  * 错误映射（TDD 2.4.3）：`mapStopReason`/`detectPermissionDenied` 输出值域
@@ -187,7 +185,7 @@ export interface TaskContext {
   /** 本次委托的运行时覆盖；优先于角色默认配置。 */
   runtime?: ExecutorRuntimeOptions
   /**
-   * 槽位获得回调（假并行修复）：processLimiter.acquire/waitForProcessSlot 通过后、
+   * 槽位获得回调（假并行修复）：任务实际开始执行前、
    * provider.start 前触发；调度器借此把「写 RUNNING + 开始通知」后移到真实执行时点，
    * 排队期任务在面板保持 WAITING。可选：历史调用方无此字段时行为不变。
    */
@@ -290,7 +288,6 @@ export interface ExecutorRunEvent {
 export interface DelegationServiceOptions {
   executorRegistry: ExecutorRegistry
   sessionTracker: SessionTracker
-  processLimiter: ProcessLimiter
   knowledgeEngine: KnowledgeEngineLike
   /**
    * 兼容入参：历史语义「单次委托总时长上限」。仍被接受并映射为绝对墙钟；
@@ -333,7 +330,6 @@ export class DelegationService {
   readonly #ctx: DelegationContext
   readonly #executorRegistry: ExecutorRegistry
   readonly #sessionTracker: SessionTracker
-  readonly #processLimiter: ProcessLimiter
   readonly #knowledgeEngine: KnowledgeEngineLike
   readonly #wallClockMs: number
   readonly #idleTimeoutMs: number
@@ -355,7 +351,6 @@ export class DelegationService {
     this.#ctx = ctx
     this.#executorRegistry = options.executorRegistry
     this.#sessionTracker = options.sessionTracker
-    this.#processLimiter = options.processLimiter
     this.#knowledgeEngine = options.knowledgeEngine
     // 墙钟解析：delegationMaxWallClockMs 显式 > 历史 timeoutMs（等义映射）> 缺省不限。
     // 历史 timeoutMs 的原语义是「总时长上限」，与绝对墙钟一致。
@@ -644,11 +639,6 @@ export class DelegationService {
       })
     }
 
-    // 执行器级硬限制：超限排队（不熔断）；signal 中止时 waitForProcessSlot 抛错
-    if (!this.#processLimiter.acquire(executor)) {
-      await this.#processLimiter.waitForProcessSlot(executor, cancelSignal)
-    }
-
     try {
       // 假并行修复：拿到执行器槽才算真正开跑（排队期任务保持 WAITING）；
       // 调度器经此回调写 RUNNING + 发开始通知，无回调的历史调用方为 no-op。
@@ -811,7 +801,7 @@ export class DelegationService {
         executor,
       })
     } finally {
-      this.#processLimiter.release(executor)
+      // 并发限制已移除：无需释放执行器槽位。
     }
   }
 

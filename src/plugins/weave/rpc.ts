@@ -167,7 +167,6 @@ function serializeTeam(team: TeamConfig) {
     task_decomposition: team.task_decomposition,
     knowledge_injection: team.knowledge_injection,
     feedback: team.feedback,
-    ...(team.executor_limits ? { executor_limits: team.executor_limits } : {}),
   }
 }
 

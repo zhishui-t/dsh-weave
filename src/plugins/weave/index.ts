@@ -5,7 +5,6 @@ import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
 import { KnowledgeEngine } from './knowledge-engine.js'
-import { ProcessLimiter } from './safety/process-limiter.js'
 import { DelegationService } from './delegation-service.js'
 import { SessionTracker } from './session-tracker.js'
 import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
@@ -163,30 +162,6 @@ export function apply(ctx: Context): void {
           // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
           executorProviders: service.executorProviders,
           sessionTracker: new SessionTracker(deps.persistence.feedback),
-          processLimiter: new ProcessLimiter({
-            // 团队 executor_limits 接线（曾缺失：空参导致硬编码默认 2/10 生效，yaml 改了也不管）。
-            // 合并全部团队同执行器取最大，避免多团队共宿主时被单团队低值卡死。
-            limits: (() => {
-              const merged: Record<string, { maxConcurrent: number; maxPerHour: number }> = {}
-              try {
-                for (const team of deps.teamManager.listTeams()) {
-                  for (const [executor, lim] of Object.entries(team.executor_limits ?? {})) {
-                    const prev = merged[executor]
-                    // 0 = 不限制；任一家为 0 即为不限制（避免其他团队的正数限制把总上限拉回来）。
-                    const mergedConcurrent =
-                      (prev?.maxConcurrent === 0 || (lim.max_concurrent ?? 0) === 0)
-                        ? 0
-                        : Math.max(lim.max_concurrent ?? 0, prev?.maxConcurrent ?? 0)
-                    merged[executor] = {
-                      maxConcurrent: mergedConcurrent,
-                      maxPerHour: (prev?.maxPerHour === 0 || (lim.max_per_hour ?? 0) === 0) ? 0 : Math.max(lim.max_per_hour ?? 0, prev?.maxPerHour ?? 0),
-                    }
-                  }
-                }
-              } catch { /* 团队列举失败回落默认 */ }
-              return merged
-            })(),
-          }),
           knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
           // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
           // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至

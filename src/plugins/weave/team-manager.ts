@@ -12,8 +12,8 @@ import { TEAM_BINDINGS_TABLE_DDL } from './persistence/schemas.js'
 export { TEAM_BINDINGS_TABLE_DDL } // 兼容旧导入路径
 
 /* ------------------------------------------------------------------ */
-/* TDD §2.3 角色与团队模型（第 3 轮修订：stages / default_difficulty /  */
-/* executor_limits；pipeline 契约与 doc/ 五份文档一致）                 */
+/* TDD §2.3 角色与团队模型（第 3 轮修订：stages / default_difficulty； */
+/* pipeline 契约与 doc/ 五份文档一致）                                 */
 /* ------------------------------------------------------------------ */
 
 export type Difficulty = 'easy' | 'medium' | 'hard' | 'critical'
@@ -27,11 +27,6 @@ export const DEFAULT_DIFFICULTY: Difficulty = 'hard'
 export interface MatcherRule {
   pattern: string
   difficulty: Difficulty
-}
-
-export interface ExecutorLimit {
-  max_concurrent: number
-  max_per_hour: number
 }
 
 export interface KnowledgeInjection {
@@ -91,8 +86,6 @@ export interface TeamConfig {
   task_decomposition: TaskDecomposition
   knowledge_injection: KnowledgeInjection
   feedback: FeedbackConfig
-  /** 执行器级限流（ME-6）；键 = role.executor provider 名 */
-  executor_limits?: Record<string, ExecutorLimit>
 }
 
 /* ------------------------------------------------------------------ */
@@ -272,17 +265,6 @@ export class TeamManager {
         reopen_window_seconds: Number(feedback.reopen_window_seconds),
       },
     }
-    if (isRecord(doc.executor_limits)) {
-      const limits: Record<string, ExecutorLimit> = {}
-      for (const [executor, value] of Object.entries(doc.executor_limits)) {
-        if (!isRecord(value)) continue
-        limits[executor] = {
-          max_concurrent: Number(value.max_concurrent),
-          max_per_hour: Number(value.max_per_hour),
-        }
-      }
-      team.executor_limits = limits
-    }
     return team
   }
 
@@ -376,18 +358,6 @@ export class TeamManager {
     }
     if (!(fallback in td.dag_templates)) {
       throw new WeaveError('invalid_team', `dag_templates 缺少默认难度模板: ${fallback}`)
-    }
-    for (const [executor, limit] of Object.entries(team.executor_limits ?? {})) {
-      if (
-        !Number.isInteger(limit.max_concurrent) ||
-        limit.max_concurrent < 0 ||
-        !Number.isInteger(limit.max_per_hour) ||
-        limit.max_per_hour < 0
-      ) {
-        throw new WeaveError('invalid_team', `executor_limits.${executor} 的并发/小时频率必须 >= 0（0 = 不限制）`, {
-          executor,
-        })
-      }
     }
     return team
   }
