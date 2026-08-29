@@ -161,7 +161,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     bundle.dispose() // 二次调用不抛
   })
 
-  it('宿主 ctx.tools 存在时注册全部 15 个 weave_* 工具，核心命令可执行', async () => {
+  it('宿主 ctx.tools 存在时注册全部 16 个 weave_* 工具，核心命令可执行', async () => {
     const env = await newEnv()
     const ctx = env.ctx as Context & { weave?: { mcp?: unknown } }
     const registered: Array<{ def: unknown; unregister: () => void }> = []
@@ -188,6 +188,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_team_list',
       'weave_team_switch',
       'weave_executor_list',
+      'weave_knowledge_search',
       'weave_knowledge_review',
       'weave_knowledge_approve',
       'weave_knowledge_reject',
@@ -197,7 +198,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_task_reopen',
       'weave_ban_list',
     ])
-    expect(registered).toHaveLength(15)
+    expect(registered).toHaveLength(16)
 
     // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
     const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
@@ -294,11 +295,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
   })
 
-  it('buildWeaveToolDefinitions 15 个定义：名称齐全且每个具 execute/description/parameters', async () => {
+  it('buildWeaveToolDefinitions 16 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const defs = buildWeaveToolDefinitions(bundle.mcp)
-    expect(defs).toHaveLength(15)
+    expect(defs).toHaveLength(16)
     for (const d of defs) {
       expect(d.name).toMatch(/^weave_/)
       expect(d.description.length).toBeGreaterThan(0)
@@ -307,7 +308,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     }
     const names = defs.map((d) => d.name)
     for (const n of [
-      'weave_knowledge_review', 'weave_knowledge_approve', 'weave_knowledge_reject',
+      'weave_knowledge_search', 'weave_knowledge_review', 'weave_knowledge_approve', 'weave_knowledge_reject',
       'weave_task_retry', 'weave_task_skip', 'weave_task_cancel', 'weave_task_reopen',
       'weave_ban_list',
     ]) {
@@ -336,6 +337,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const candId = cand.id
     const approved = (await def('weave_knowledge_approve').execute({ knowledge_id: candId })) as { status: string }
     expect(approved.status).toBe('active')
+
+    // 2.5) knowledge_search：按需检索到刚转正的 active 知识
+    const searched = (await def('weave_knowledge_search').execute({ query: 't39' })) as { total_hits: number; results: Array<{ id: string }> }
+    expect(searched.total_hits).toBeGreaterThan(0)
+    expect(searched.results.some((r) => r.id === candId)).toBe(true)
 
     // 3) ban_list：无熔断 → 空清单
     const bans = (await def('weave_ban_list').execute({})) as { bans: unknown[] }

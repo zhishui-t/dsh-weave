@@ -3737,6 +3737,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { cmd: '/weave provider add <JSON|YAML|文件路径|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
+    { cmd: '/weave knowledge search <关键词> [--project <pid>] [--version <ver>] [--role <rid>]', desc: '按需检索已审核通过的知识（执行器/子代理可调用）' },
     { cmd: '/weave knowledge review', desc: '知识候选队列' },
     { cmd: '/weave knowledge approve <id>', desc: '知识审核通过' },
     { cmd: '/weave knowledge reject <id> <原因>', desc: '知识驳回' },

@@ -268,6 +268,22 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
     },
     // ---------- t36 补充命令（t39 补齐） ----------
     {
+      name: `${prefix}knowledge_search`,
+      description: '按需检索知识库（仅 active）：执行器/DSH 子代理可自行查询项目/角色/版本相关知识',
+      parameters: {
+        query: { type: 'string', required: true },
+        project_id: { type: 'string' },
+        version: { type: 'string' },
+        role_id: { type: 'string' },
+        instance_id: { type: 'string' },
+        layer: { type: 'string' },
+        visibility: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.knowledgeSearch(args as unknown as { query?: string; project_id?: string; version?: string; role_id?: string; instance_id?: string; layer?: string; visibility?: string; limit?: number }),
+    },
+    {
       name: `${prefix}knowledge_review`,
       description: '知识审核队列：默认 candidate；可过滤状态/层级并限制条数（TDD 1.2.8）',
       parameters: { status: { type: 'string' }, layer: { type: 'string' }, limit: { type: 'number' } },

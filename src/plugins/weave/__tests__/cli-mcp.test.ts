@@ -391,6 +391,19 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
     await expect(env.mcp.knowledgeApprove('ghost-id')).rejects.toMatchObject({ code: 'knowledge_not_found' })
   })
 
+  it('knowledgeSearch：只检索 active，支持关键词命中；缺 query 报错', async () => {
+    const env = await newEnv()
+    const candId = await makeCandidate(env, 'search1')
+    // candidate 不应被检索到
+    const before = await env.mcp.knowledgeSearch({ query: '正文' })
+    expect(before.total_hits).toBe(0)
+    await env.mcp.knowledgeApprove(candId)
+    const after = await env.mcp.knowledgeSearch({ query: 'search1' })
+    expect(after.total_hits).toBeGreaterThan(0)
+    expect(after.results.some((r) => r.id === candId)).toBe(true)
+    await expect(env.mcp.knowledgeSearch({})).rejects.toMatchObject({ code: 'invalid_argument' })
+  })
+
   it('taskRetry：FAILED/CANCELLED → WAITING；RUNNING → invalid_status_transition', async () => {
     const env = await newEnv()
     const { tasks } = await seedTask(env.p)

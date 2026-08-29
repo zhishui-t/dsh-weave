@@ -2,7 +2,7 @@ import type { DagRepository } from './dag/repository.js'
 import type { ExecutorRegistry } from './executor-registry.js'
 import type { FeedbackRouter } from './feedback-router.js'
 import type { KnowledgeReviewService } from './knowledge-review.js'
-import type { KnowledgeStore, KnowledgeMeta, KnowledgeLayer, KnowledgeStatus } from './knowledge-model.js'
+import type { KnowledgeStore, KnowledgeMeta, KnowledgeFile, KnowledgeLayer, KnowledgeStatus, Visibility } from './knowledge-model.js'
 import type { ImportPipeline } from './import-pipeline.js'
 import type { WeavePersistence } from './persistence/index.js'
 import { TaskStateMachine } from './state/task-state-machine.js'
@@ -175,6 +175,59 @@ export class WeaveMcp {
     if (!store) throw new WeaveError('configuration_error', 'knowledgeStore 未注入（非 candidate 状态查询需要）')
     const metas = await store.listMeta({ status, ...(layer ? { layer } : {}) })
     return { candidates: metas.slice(0, limit) }
+  }
+
+  /** weave_knowledge_search：执行器/DSH 子代理按需检索 active 知识（R7 执行器按需检索）。 */
+  async knowledgeSearch(
+    input: { query?: string; project_id?: string; version?: string; role_id?: string; instance_id?: string; layer?: string; visibility?: string; limit?: number } = {},
+  ): Promise<{ query: string; total_hits: number; results: Array<{ id: string; title: string; path: string; layer: string; status: string; visibility: string; freshness_score: number; content: string }> }> {
+    const store = this.#deps.knowledgeStore
+    if (!store) throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge_search 需要 KnowledgeStore）')
+    const query = String(input.query ?? '').trim().toLowerCase()
+    if (query === '') throw new WeaveError('invalid_argument', 'query 不能为空', { field: 'query' })
+    const limit = Math.max(1, Math.min(20, Number(input.limit ?? 5) || 5))
+    const layer = input.layer && input.layer !== '' ? input.layer as KnowledgeLayer : undefined
+    const visibility = input.visibility && input.visibility !== '' ? input.visibility as Visibility : undefined
+    const metas = await store.listMeta({ status: 'active', ...(layer ? { layer } : {}) })
+    const scored: Array<{ meta: KnowledgeMeta; score: number; file: KnowledgeFile }> = []
+    let totalChars = 0
+    for (const meta of metas) {
+      const file = store.getKnowledgeFile(meta.id)
+      if (!file) continue
+      if (visibility !== undefined && file.frontmatter.visibility !== visibility) continue
+      const path = meta.path.toLowerCase()
+      if (input.project_id !== undefined && !path.includes(String(input.project_id).toLowerCase())) continue
+      if (input.version !== undefined && !path.includes(String(input.version).toLowerCase())) continue
+      if (input.role_id !== undefined && !path.includes(String(input.role_id).toLowerCase())) continue
+      if (input.instance_id !== undefined && !path.includes(String(input.instance_id).toLowerCase())) continue
+      const title = file.frontmatter.title.toLowerCase()
+      const body = file.body.toLowerCase()
+      let score = 0
+      if (title.includes(query)) score += 5
+      if (body.includes(query)) score += 1
+      if (path.includes(query)) score += 2
+      if (score === 0) continue
+      scored.push({ meta, score, file })
+    }
+    scored.sort((a, b) => b.score - a.score || b.meta.freshness_score - a.meta.freshness_score)
+    const results: Array<{ id: string; title: string; path: string; layer: string; status: string; visibility: string; freshness_score: number; content: string }> = []
+    for (const item of scored.slice(0, limit)) {
+      const content = item.file.body
+      const clamped = totalChars + content.length > 2500 ? content.slice(0, Math.max(0, 2500 - totalChars)) : content
+      totalChars += clamped.length
+      results.push({
+        id: item.meta.id,
+        title: item.file.frontmatter.title,
+        path: item.meta.path,
+        layer: item.meta.layer,
+        status: item.meta.status,
+        visibility: item.file.frontmatter.visibility,
+        freshness_score: item.meta.freshness_score,
+        content: clamped,
+      })
+      if (totalChars >= 2500) break
+    }
+    return { query: String(input.query ?? ''), total_hits: scored.length, results }
   }
 
   /** weave_knowledge_approve：candidate → active（显式审核，AC-KNOW-003）。 */
@@ -486,6 +539,26 @@ export class WeaveCli {
         break
       }
       case 'knowledge': {
+        if (command === 'search') {
+          const [query, ...extra] = rest
+          const flags = new Map<string, string>()
+          for (let i = 0; i < extra.length; i += 1) {
+            const token = extra[i]!
+            if (token.startsWith('--')) {
+              const value = extra[i + 1]
+              if (value !== undefined && !value.startsWith('--')) { flags.set(token.slice(2), value); i += 1 }
+            }
+          }
+          const data = await this.#mcp.knowledgeSearch({
+            query,
+            ...(flags.get('project') ? { project_id: flags.get('project') } : {}),
+            ...(flags.get('version') ? { version: flags.get('version') } : {}),
+            ...(flags.get('role') ? { role_id: flags.get('role') } : {}),
+            ...(flags.get('limit') ? { limit: Number(flags.get('limit')) } : {}),
+          })
+          const lines = data.results.map((r) => `- [${r.layer}] ${r.title}（${r.id}）${r.content.slice(0, 120)}`)
+          return { json: lines.length ? `${data.total_hits} 条命中，展示 ${data.results.length} 条：\n${lines.join('\n')}` : '（无匹配知识）', data }
+        }
         if (command === 'review') {
           const data = await this.#mcp.knowledgeReview()
           const lines = data.candidates.map((c) => `- ${c.id} [${c.layer}] ${c.title ?? ''}（${c.status}）`)
