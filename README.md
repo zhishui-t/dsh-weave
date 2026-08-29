@@ -38,7 +38,46 @@ weave/
 pnpm install
 ```
 
+### 依赖来源说明
+
+所有依赖都声明在 **`package.json`** 中，`pnpm install` 会从 npm registry 自动下载到本仓库的
+`node_modules/`，**不需要手工单独下载**。本仓库不提交 `node_modules` 与 `dist`，克隆后必须执行
+`pnpm install` 才能构建/测试。
+
+| 类型 | 主要依赖 | 说明 |
+| --- | --- | --- |
+| 运行时依赖 | `@deepseek-ai/cordis`、`yaml`、`zcode-acp-server`、`@firecrawl/anydoc` | `pnpm install` 自动安装 |
+| 开发/测试依赖 | `typescript`、`vitest`、`eslint`、`@playwright/test`、`react`、`jsdom` 等 | 仅开发/测试用，不进入生产运行 |
+| DSH 相关 | `@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-commands` | 已作为 dev/peer 依赖声明，由 pnpm 安装 |
+| 外部宿主 | DeepSeek Harness（DSH）本体 | **需要单独安装/配置**；本仓库是 DSH 插件 |
+| 外部执行器 | ZCode CLI | 可通过 `WEAVE_ZCODE_BIN` 指定已安装的 ZCode；未指定时尝试自动探测 |
+
 ## 3. 常用命令
+
+### 从零构建步骤
+
+```bash
+# 1. 准备环境：Node.js >= 20，pnpm
+node -v
+pnpm -v
+
+# 2. 进入仓库并安装依赖
+git clone <仓库地址> weave
+cd weave
+pnpm install
+
+# 3. 构建产物到 dist/
+pnpm build
+
+# 4. 验证
+pnpm typecheck
+pnpm lint
+pnpm test
+
+# 5. （可选）前端控制台/e2e
+pnpm build
+pnpm test:e2e:harness
+```
 
 | 命令 | 说明 |
 | --- | --- |
@@ -236,6 +275,20 @@ ACP 标准协议由统一内核处理；ZCode 的 model/thought/mode 是内置 e
 团队文件写入 `~/.dsh/teams/<team_id>.yaml`；保存前会做完整结构和执行器校验。
 
 ## 6. 构建说明
+
+构建只依赖项目内声明的 npm 包，不需要额外下载源码。
+
+### 步骤
+
+```bash
+pnpm install      # 安装 package.json 内全部依赖
+pnpm build        # tsc -p tsconfig.build.json → 产出 dist/
+pnpm typecheck    # tsc --noEmit
+pnpm lint         # eslint
+pnpm test         # vitest run
+```
+
+### 产物与入口
 
 - 开发/测试：`tsconfig.json`（bundler 解析 + noEmit），vitest 直接跑 TS 源码。
 - 发布：`tsconfig.build.json` 继承开发配置，改为产出 `dist/`（声明文件 + sourcemap），
