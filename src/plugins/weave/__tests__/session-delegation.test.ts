@@ -9,6 +9,8 @@ import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manag
 import { createWeaveRpcHandler } from '../rpc'
 import {
   createPreStepDelegationHook,
+  createWeaveNoticeMessage,
+  hasPendingToolCall,
   notifySession,
   parseTeamSelectionCommand,
 } from '../session-delegation'
@@ -182,6 +184,35 @@ describe('自然语言团队启停（会话控制通道）', () => {
     expect(record.opts).toEqual({ surfaceOp: 'append' })
     expect((record.data as { source: { kind: string; plugin: string } }).source).toEqual({ kind: 'plugin', plugin: 'dsh-weave' })
     expect((record.data as { role: string }).role).toBe('user')
+  })
+
+  it('createWeaveNoticeMessage 生成稳定形状的 plugin 消息', () => {
+    const msg = createWeaveNoticeMessage('[weave] 测试')
+    expect(msg.role).toBe('user')
+    expect(msg.content).toEqual([{ type: 'text', text: '[weave] 测试' }])
+    expect(msg.source).toEqual({ kind: 'plugin', plugin: 'dsh-weave' })
+    expect(msg.id.startsWith('weave-notice-')).toBe(true)
+  })
+
+  it('hasPendingToolCall：未回结果的 tool-call 会命中，已闭合则不会', () => {
+    const base = {
+      surface: { nodes: [1, 2] },
+      events: [
+        { seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'call_1' }] } } },
+        { seq: 2, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'x' }] } } },
+      ],
+    }
+    expect(hasPendingToolCall(base as never)).toBe(true)
+
+    const closed = {
+      surface: { nodes: [1, 2, 3] },
+      events: [
+        { seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'call_1' }] } } },
+        { seq: 2, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'x' }] } } },
+        { seq: 3, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'call_1' }] } } },
+      ],
+    }
+    expect(hasPendingToolCall(closed as never)).toBe(false)
   })
 })
 

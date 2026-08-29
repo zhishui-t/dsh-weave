@@ -9,7 +9,7 @@ import { CircuitBreaker } from './safety/circuit-breaker.js'
 import { DagRepository } from './dag/repository.js'
 import { ExecutorRegistry } from './executor-registry.js'
 import { FeedbackRouter } from './feedback-router.js'
-import { notifySession, type NoticeSessionLike } from './session-delegation.js'
+import { createWeaveNoticeMessage, hasPendingToolCall, notifySession, type NoticeSessionLike, type WeaveNoticeMessage } from './session-delegation.js'
 import { TaskStatusNotifier } from './task-status-notifier.js'
 import { KnowledgeReviewService } from './knowledge-review.js'
 import { KnowledgeStore } from './knowledge-model.js'
@@ -618,9 +618,14 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   const audit = new AuditLog({ dir: auditDir })
   const statusNotifier = new TaskStatusNotifier({
     notify: (sessionId, text) => {
-      const agent = (ctx as unknown as { agents?: { get?: (id: string) => { session?: unknown } | undefined } }).agents?.get?.(sessionId)
+      const agent = (ctx as unknown as { agents?: { get?: (id: string) => { session?: unknown; inject?: (message: WeaveNoticeMessage) => void } | undefined } }).agents?.get?.(sessionId)
       const session = (agent as { session?: NoticeSessionLike } | undefined)?.session
-      if (session) notifySession(session, text)
+      const inject = (agent as { inject?: (message: WeaveNoticeMessage) => void } | undefined)?.inject
+      if (session && inject && hasPendingToolCall(session)) {
+        inject(createWeaveNoticeMessage(text))
+      } else if (session) {
+        notifySession(session, text)
+      }
     },
   })
   const router = new FeedbackRouter({

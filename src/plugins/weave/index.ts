@@ -14,8 +14,11 @@ import { createExecutorEventNotifier } from './session-stream.js'
 import { TaskStatusNotifier } from './task-status-notifier.js'
 import {
   createPreStepDelegationHook,
+  createWeaveNoticeMessage,
+  hasPendingToolCall,
   notifySession,
   type NoticeSessionLike,
+  type WeaveNoticeMessage,
 } from './session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
@@ -186,6 +189,17 @@ export function apply(ctx: Context): void {
           return
         }
         try {
+          // 工具执行期间直接 append 会把 user notice 插入 tool_calls 与 tool/result
+          // 之间，使后续 provider 请求永久报 “tool_calls must be followed by tool
+          // messages”。有真实 Agent 时改走 inbox next-step 安全边界，等工具结果落账后
+          // 再在下一步作为普通用户消息进入模型历史。
+          const agent = agentsRegistry?.get(sessionId) as
+            | { inject?: (message: WeaveNoticeMessage) => void }
+            | undefined
+          if (hasPendingToolCall(session) && typeof agent?.inject === 'function') {
+            agent.inject(createWeaveNoticeMessage(text))
+            return
+          }
           notifySession(session, text)
         } catch (error) {
           console.warn('[dsh-weave] notify session failed:', error)

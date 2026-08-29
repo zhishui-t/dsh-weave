@@ -33,18 +33,82 @@ export interface PreStepPayloadLike {
 
 export type PreStepDecisionLike = { kind: 'reject' } | { kind: 'enter'; messages: ReadonlyArray<unknown> }
 
+/** 会话追加 notice 的消息结构（真实 UserMessage 结构化满足）。 */
+export interface WeaveNoticeMessage {
+  readonly id: string
+  readonly role: 'user'
+  readonly content: ReadonlyArray<{ readonly type: 'text'; readonly text: string }>
+  readonly source: { readonly kind: 'plugin'; readonly plugin: 'dsh-weave' }
+}
+
+/** 仅用于检测会话是否正处于「工具调用已发、工具结果未回」的危险窗口。 */
+export interface NoticeEventLike {
+  readonly seq: number
+  readonly type: string
+  readonly data?: {
+    readonly message?: {
+      readonly content?: ReadonlyArray<{
+        readonly type?: string
+        readonly id?: string
+        readonly toolCallId?: string
+      }>
+    }
+  }
+}
+
 /** 会话追加 notice 的最小结构视面（真实 Session.append 结构化满足）。 */
 export interface NoticeSessionLike {
   append(
     type: 'user/message',
-    data: {
-      id: string
-      role: 'user'
-      content: Array<{ type: 'text'; text: string }>
-      source: { kind: 'plugin'; plugin: string }
-    },
+    data: WeaveNoticeMessage,
     opts: { surfaceOp: 'append' },
   ): unknown
+  /** 真实 Session 才有；缺失时保守按“无待决工具调用”处理。 */
+  readonly surface?: { readonly nodes: readonly number[] }
+  readonly events?: readonly NoticeEventLike[]
+}
+
+/** 构造一条插件来源的 weave notice。 */
+export function createWeaveNoticeMessage(text: string): WeaveNoticeMessage {
+  return {
+    id: `weave-notice-${randomUUID()}`,
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'dsh-weave' },
+  }
+}
+
+/**
+ * 判断当前会话表面是否还有未闭合的 assistant tool-call。
+ *
+ * DSH 的消息历史严格要求：assistant 的 tool_calls 之后必须紧跟对应的
+ * tool 结果；如果在工具执行期间把插件 notice 直接 append 成 user/message，
+ * 会把 user 消息插到 tool_calls 与 tool/result 之间，导致后续每次请求都被
+ * 上游以 “An assistant message with 'tool_calls' must be followed by tool
+ * messages” 拒绝。该函数用于在危险窗口改走 Agent.inbox 的 next-step 安全边界。
+ */
+export function hasPendingToolCall(session: NoticeSessionLike): boolean {
+  const surface = session.surface?.nodes
+  const events = session.events
+  if (!surface || !events) return false
+  const bySeq = new Map<number, NoticeEventLike>()
+  for (const event of events) bySeq.set(event.seq, event)
+  const pending = new Set<string>()
+  for (const seq of surface) {
+    const event = bySeq.get(seq)
+    if (!event) continue
+    const blocks = event.data?.message?.content ?? []
+    if (event.type === 'assistant/message') {
+      for (const block of blocks) {
+        if (block.type === 'tool-call' && block.id) pending.add(block.id)
+      }
+    } else if (event.type === 'tool/result') {
+      for (const block of blocks) {
+        if (block.type === 'tool-result' && block.toolCallId) pending.delete(block.toolCallId)
+      }
+    }
+  }
+  return pending.size > 0
 }
 
 /**
@@ -55,12 +119,7 @@ export interface NoticeSessionLike {
 export function notifySession(session: NoticeSessionLike, text: string): void {
   session.append(
     'user/message',
-    {
-      id: `weave-notice-${randomUUID()}`,
-      role: 'user',
-      content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'dsh-weave' },
-    },
+    createWeaveNoticeMessage(text),
     { surfaceOp: 'append' },
   )
 }
