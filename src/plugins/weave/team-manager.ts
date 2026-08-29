@@ -5,7 +5,8 @@ import { join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 
 import { WeaveError } from './state/weave-error.js'
-import type { ExecutorInfo } from './executor-registry.js'
+import { classifyProvider, type ExecutorInfo } from './executor-registry.js'
+import { ProviderStore } from './acp/provider-store.js'
 import type { WeavePersistence } from './persistence/persistence.js'
 import { TEAM_BINDINGS_TABLE_DDL } from './persistence/schemas.js'
 export { TEAM_BINDINGS_TABLE_DDL } // 兼容旧导入路径
@@ -113,6 +114,11 @@ export interface TeamManagerOptions {
   teamsDir?: string
   /** 会话绑定持久化（ME-4）；缺省则 bind/select 的绑定解析不可用 */
   persistence?: WeavePersistence
+  /**
+   * ACP provider 清单来源（备用模型同执行器校验用）；缺省读本机
+   * ~/.dsh/weave/providers.json。清单为空/不可读时跳过该校验（降级不误杀）。
+   */
+  acpProviders?: { list(): Array<{ name: string }> }
 }
 
 export const DEFAULT_TEAMS_DIR = join(homedir(), '.dsh', 'teams')
@@ -162,6 +168,7 @@ function asStringArray(value: unknown, field: string): string[] {
 export class TeamManager {
   readonly teamsDir: string
   readonly persistence?: WeavePersistence
+  readonly #acpProviders: { list(): Array<{ name: string }> }
   #bindingsReady = false
 
   constructor(
@@ -170,6 +177,7 @@ export class TeamManager {
   ) {
     this.teamsDir = options.teamsDir ?? DEFAULT_TEAMS_DIR
     this.persistence = options.persistence
+    this.#acpProviders = options.acpProviders ?? new ProviderStore()
   }
 
   /** 团队配置文件的规范路径：{teamsDir}/{team_id}.yaml */
@@ -314,12 +322,40 @@ export class TeamManager {
       if (role.fallback_model !== undefined && role.fallback_model.trim() === '') {
         throw new WeaveError('invalid_team', `角色 ${role.id} 的 fallback_model 不能为空`, { role: role.id })
       }
+      // 备用模型同执行器校验（用户裁定）：主/备必须在同一执行器域内——
+      // executor 为 ACP 系时 fallback_provider 必须是本机 ACP provider；
+      // DSH 系（spawn/fork/codex/claude-code）时禁止指向 ACP provider。
+      // 跨执行器备用会断会话/人格/工具链（zcode 会话拿 DSH LLM 路由无法解析）。
+      // kind 优先取注册表；执行器未注册（注册检查已降级，见下）时按名字规则
+      // classifyProvider 兜底，校验仍可执行。ACP 清单为空/不可读时整体跳过——
+      // 与执行器注册检查同一降级哲学：清单波动不得让团队从 listTeams 消失。
+      if (role.fallback_provider !== undefined) {
+        const kind = lookup.get(role.executor)?.kind ?? classifyProvider(role.executor)
+        const acpNames = this.#acpProviders.list().map((item) => item.name)
+        if (acpNames.length > 0) {
+          const isAcpProvider = acpNames.includes(role.fallback_provider)
+          if (kind === 'acp' && !isAcpProvider) {
+            throw new WeaveError(
+              'invalid_team',
+              `角色 ${role.id} 的备用模型跨执行器：executor=${role.executor}（ACP 系）的 fallback_provider 必须是本机 ACP provider（可用: ${acpNames.join('、')}），实际为 '${role.fallback_provider}'`,
+              { role: role.id },
+            )
+          }
+          if (kind !== 'acp' && isAcpProvider) {
+            throw new WeaveError(
+              'invalid_team',
+              `角色 ${role.id} 的备用模型跨执行器：executor=${role.executor}（DSH 系）的 fallback_provider 不能指向 ACP provider '${role.fallback_provider}'（应为 DSH LLM provider）`,
+              { role: role.id },
+            )
+          }
+        }
+      }
       // iso-1-hotfix: registry 尚未 load（宿主启动时序）或执行器名单波动时，
       // 不应让整个团队从 listTeams 消失——降级为跳过该校验，委派期再由
       // DelegationService/executorRegistry 兜底报 executor_unavailable。
       // v4 hotfix：执行器注册检查彻底降级为“委派期兜底”——listTeams 不再因
       // registry 时序/名单波动清空团队（会话面板与团队页 405/空列表根因）。
-      void lookup
+      // lookup 仅用于上方同执行器校验的 kind 判定（缺失时 classifyProvider 兜底）。
     }
     const td = team.task_decomposition
     for (const [index, matcher] of td.matchers.entries()) {

@@ -21,6 +21,8 @@ export interface KnowledgeGraphEdge {
 export interface KnowledgeGraphResult {
   nodes: KnowledgeGraphNode[]
   edges: KnowledgeGraphEdge[]
+  /** 知识库实际出现的项目 id（listMeta 全量去重排序；供控制台「按项目看图」下拉，与 project 过滤无关）。 */
+  projects: string[]
   counts: {
     knowledge: number
     missing: number
@@ -40,6 +42,13 @@ function normalize(value: string): string {
 function pathTitle(path: string): string {
   const base = path.split('/').at(-1) ?? path
   return base.replace(/\.md$/i, '')
+}
+
+/** 解析条目所属项目 id（path 前缀 _agent/projects/{projectId}/…）；非项目区返回 null。 */
+function projectOf(path: string): string | null {
+  const segments = path.split('/')
+  const projectId = segments.length >= 4 && segments[0] === '_agent' && segments[1] === 'projects' ? segments[2] : undefined
+  return projectId ? projectId : null
 }
 
 /**
@@ -70,6 +79,8 @@ export async function buildKnowledgeGraph(
     layer?: KnowledgeLayer
     limit?: number
     includeLinkedLayers?: boolean
+    /** 按项目过滤：只保留 path 前缀为 _agent/projects/{project}/ 的条目（includeLinkedLayers 时跨层引用边保留）。 */
+    project?: string
   } = {},
 ): Promise<KnowledgeGraphResult> {
   if (input.status !== undefined && !STATUSES.has(input.status)) {
@@ -77,6 +88,9 @@ export async function buildKnowledgeGraph(
   }
   if (input.layer !== undefined && !LAYERS.has(input.layer)) {
     throw new WeaveError('invalid_argument', `不支持的知识层级: ${input.layer}`, { layer: input.layer })
+  }
+  if (input.project !== undefined && input.project.trim() === '') {
+    throw new WeaveError('invalid_argument', 'project 不能为空白字符串', { project: input.project })
   }
   if (input.limit !== undefined && (input.limit <= 0 || input.limit > 500)) {
     throw new WeaveError('invalid_argument', 'limit 必须在 1..500 之间', { limit: input.limit })
@@ -86,7 +100,13 @@ export async function buildKnowledgeGraph(
     ...(input.status ? { status: input.status } : {}),
     ...(input.layer ? { layer: input.layer } : {}),
   })
-  const selected = metas.slice(0, input.limit ?? 200)
+  // 全量元数据一次查询两用：projects 下拉去重来源 + includeLinkedLayers 跨层解析。
+  const allMetas = await store.listMeta({})
+
+  const matchesProject = (path: string): boolean =>
+    input.project === undefined || projectOf(path) === input.project
+  // project 过滤先于 limit：limit 语义是「该筛选下最多 N 条」，不是「前 N 条里再筛」。
+  const selected = metas.filter((meta) => matchesProject(meta.path)).slice(0, input.limit ?? 200)
 
   type LoadedEntry = {
     id: string
@@ -120,7 +140,7 @@ export async function buildKnowledgeGraph(
 
   const allEntries: LoadedEntry[] = []
   if (input.includeLinkedLayers === true) {
-    const allMetas = await store.listMeta({})
+    // 跨层解析不做 project 过滤：项目内条目引用其他项目/层的 [[双链]] 仍解析为 linked 节点。
     for (const meta of allMetas) {
       try {
         const file = store.getKnowledgeFile(meta.id)
@@ -208,9 +228,17 @@ export async function buildKnowledgeGraph(
   }
 
   const nodeList = [...nodes.values()]
+  const projects = [
+    ...new Set(
+      allMetas
+        .map((meta) => projectOf(meta.path))
+        .filter((item): item is string => item !== null),
+    ),
+  ].sort()
   return {
     nodes: nodeList,
     edges: [...edges.values()],
+    projects,
     counts: {
       knowledge: entries.length,
       missing: nodeList.filter((node) => node.kind === 'missing').length,

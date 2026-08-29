@@ -230,11 +230,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     await expect(bareDef.execute({}, undefined)).rejects.toMatchObject(/configuration_error/)
   })
 
-  it('队长执行纪律双通道提示：工具描述与返回汇总均含五条纪律；append_to 参数已暴露（doc/05 §7）', async () => {
+  it('队长执行纪律双通道提示：工具描述与返回汇总均含七条纪律；append_to 参数已暴露（doc/05 §7）', async () => {
     const defs = buildWeaveToolDefinitions({} as never, {})
     const def = defs.find((d) => d.name === 'weave_plan_tasks')!
-    // 通道一：工具描述（精简版，五条关键词齐全）
-    for (const keyword of ['不得结束', '通报进度', '长阻塞', '交付物', 'retry/cancel', 'append_to']) {
+    // 通道一：工具描述（精简版，关键词齐全）
+    for (const keyword of ['不得结束', '通报进度', '长阻塞', '交付物', 'retry/cancel', 'append_to', '15 秒级', '质量分层']) {
       expect(def.description).toContain(keyword)
     }
     // 通道二：返回汇总 render 追加完整纪律块（单一来源 CAPTAIN_DISCIPLINE；JSON 主体保持完整）
@@ -243,13 +243,25 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(rendered[0]!.type).toBe('text')
     expect(text).toContain('"dag_id": "d1"')
     expect(text).toContain('## 队长执行纪律')
-    for (let i = 1; i <= 6; i += 1) {
+    for (let i = 1; i <= 7; i += 1) {
       expect(text).toContain(`${i}. `)
     }
     expect(text).toContain('append_to 增量追加到当前任务组')
     expect(text).toContain('非用户明确要求，禁止新建任务组')
     expect(text).toContain('先读团队人员配置')
     expect(text).toContain('禁止长期只用子集')
+    // 第 1 条措辞强化（必须值守，不得擅自结束回合）
+    expect(text).toContain('有在途任务时必须值守')
+    expect(text).toContain('不得擅自结束会话回合')
+    // 第 2 条措辞强化（15 秒级高频轮询 + 一变即通报 + 用户消息优先，禁止延迟汇报）
+    expect(text).toContain('值守期间必须高频轮询（15 秒级）并及时响应')
+    expect(text).toContain('任务状态一变即向用户通报')
+    expect(text).toContain('用户消息优先处理')
+    expect(text).toContain('禁止延迟汇报')
+    // 第 7 条质量分层（常规任务 QA 不前置，重大任务块才提前介入）
+    expect(text).toContain('质量分层：常规任务由开发自测与测试（tester）覆盖，QA 只做终审收口')
+    expect(text).toContain('重大任务块（跨模块/架构级/高风险）可让 QA 提前介入评审')
+    expect(text).toContain('禁止每个任务都派 QA 审核')
     // append_to 参数已进 schema（第⑤条可执行的前提）
     expect((def.parameters as Record<string, unknown>).append_to).toBeDefined()
   })

@@ -50,7 +50,7 @@ test.describe(HARNESS_DESCRIBE, () => {
 
     // 改排序方向 + 提交查询（过滤条件在表单提交时应用）→ 重新请求携带 order=asc
     await page.getByTestId('audit-order').selectOption('asc')
-    await page.getByTestId('page-audit').locator('form button[type="submit"]').click()
+    await page.getByTestId('audit-query-btn').click()
     await expect
       .poll(async () => {
         const calls = await readCalls(page)

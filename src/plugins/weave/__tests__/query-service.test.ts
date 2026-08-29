@@ -453,6 +453,36 @@ describe('WeaveQueryService knowledge/graph', () => {
     expect(activeOnly.counts.knowledge).toBe(0)
     expect(await errorCodeOf(() => env.svc.knowledgeGraph({ status: 'archived' }))).toBe('invalid_argument')
   })
+
+  it('knowledge/graph：project 透传按项目过滤；空串视为未提供；非字符串报错', async () => {
+    const env = await newEnv()
+    const demo = await env.store.createCandidate({
+      layer: 'project',
+      scope: { projectId: 'demo', version: 'v1' },
+      filename: 'demo.md',
+      frontmatter: { title: 'Demo 指南', type: 'doc', visibility: 'project_only', tags: [] },
+      body: '# 正文',
+    })
+    const other = await env.store.createCandidate({
+      layer: 'project',
+      scope: { projectId: 'proj-b', version: 'v1' },
+      filename: 'other.md',
+      frontmatter: { title: 'Other 指南', type: 'doc', visibility: 'project_only', tags: [] },
+      body: '# 正文',
+    })
+
+    const demoGraph = await env.svc.knowledgeGraph({ project: 'demo' })
+    expect(demoGraph.nodes.filter((node) => node.kind === 'knowledge').map((node) => node.id)).toEqual([demo.id])
+    expect(demoGraph.projects).toEqual(['demo', 'proj-b'])
+
+    const otherGraph = await env.svc.knowledgeGraph({ project: 'proj-b' })
+    expect(otherGraph.nodes.filter((node) => node.kind === 'knowledge').map((node) => node.id)).toEqual([other.id])
+
+    // 空串按 optionalString 语义视为未提供 → 不过滤
+    const all = await env.svc.knowledgeGraph({ project: '' })
+    expect(all.counts.knowledge).toBe(2)
+    expect(await errorCodeOf(() => env.svc.knowledgeGraph({ project: 42 }))).toBe('invalid_argument')
+  })
 })
 
 describe('WeaveQueryService audit 域', () => {

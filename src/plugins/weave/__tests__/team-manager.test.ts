@@ -217,6 +217,59 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
 
 /* ------------------------------- loadTeam / listTeams ------------------------------- */
 
+describe('TeamManager 备用模型同执行器校验（用户裁定）', () => {
+  function managerWithAcp(executors: string[], acpNames: string[]): TeamManager {
+    return new TeamManager(makeLookup(executors), {
+      teamsDir: dir,
+      acpProviders: { list: () => acpNames.map((name) => ({ name })) },
+    })
+  }
+
+  /** 给 coder（executor=zcode）角色追加 fallback 配置。 */
+  const withCoderFallback = (fallback: string): string =>
+    GOOD_TEAM.replace(
+      '    personality: 你追求代码质量。',
+      `    personality: 你追求代码质量。\n    fallback_provider: ${fallback}\n    fallback_model: fb-model`,
+    )
+
+  it('同执行器通过：zcode 角色的 fallback_provider 在本机 ACP 清单内', () => {
+    const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
+    const team = mgr.validateTeam(mgr.parseTeam(withCoderFallback('zcode'), 'f'))
+    expect(team.roles[1]).toMatchObject({ fallback_provider: 'zcode', fallback_model: 'fb-model' })
+  })
+
+  it('跨执行器拒绝：zcode 角色 fallback_provider 指向 DSH LLM provider → invalid_team 并提示可用清单', () => {
+    const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
+    const error = expectCode(() => mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f')), 'invalid_team')
+    expect(error.message).toContain('跨执行器')
+    expect(error.message).toContain("实际为 'deepseek-official'")
+    expect(error.message).toContain('可用: zcode')
+  })
+
+  it('反向跨执行器拒绝：DSH 系角色（codex）fallback_provider 指向 ACP provider → invalid_team', () => {
+    // lookup 故意不含 codex → kind 走 classifyProvider 兜底（codex ≠ acp）
+    const mgr = managerWithAcp(['zcode'], ['zcode'])
+    const teamYaml = GOOD_TEAM.replace(
+      '    personality: 你是方案设计师。',
+      '    personality: 你是方案设计师。\n    fallback_provider: zcode\n    fallback_model: fb-model',
+    )
+    const error = expectCode(() => mgr.validateTeam(mgr.parseTeam(teamYaml, 'f')), 'invalid_team')
+    expect(error.message).toContain('不能指向 ACP provider')
+    expect(error.message).toContain('应为 DSH LLM provider')
+  })
+
+  it('ACP 清单为空 → 跳过校验（降级不误杀，与执行器注册检查同一哲学）', () => {
+    const mgr = managerWithAcp(['codex', 'zcode'], [])
+    const team = mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f'))
+    expect(team.roles[1]?.fallback_provider).toBe('deepseek-official')
+  })
+
+  it('未配置 fallback 的团队不受影响（GOOD_TEAM 基线）', () => {
+    const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
+    expect(() => mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))).not.toThrow()
+  })
+})
+
 describe('TeamManager loadTeam/listTeams', () => {
   it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', () => {
     // 样例文件的 team_id(alpha-squad) 与本夹具文件名对齐后再加载，保持对样例结构的真实覆盖

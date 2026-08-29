@@ -243,3 +243,48 @@
 **未入库（并行在途，如实登记）**：process-limiter.ts 默认限额放宽（2/10→20/1000）、index.ts 执行器限制接线与 delegationMaxWallClockMs=0、scheduler/delegation 的 phase/onAcquired 假并行修复、knowledge-graph.ts/query-service.ts/client 知识图谱项目筛选——归属各自任务终验，含 6 个 vitest 用例与 lint/build 污染源，待其交付时自行验收。
 
 ### 结论：**通过 — T54/T55 收口**（三路交付在隔离环境四门+e2e 全绿；并行混批已拆分隔离，无交叉污染入库）
+
+
+---
+
+## §总收口（T57/T58/T59/T62/T64/T65/T67/T68/T70/T71 + 在途批统一入库，2026-08-29 补记）
+
+**背景**：T66 原定在本轮执行“四门全绿 + e2e:harness 复确认 + 追加 §总收口 + 总 commit”，因 2026-08-28 16:10 触发 GLM 每周/每月额度上限（错误码 1310）中断，任务状态仍为 FAILED。现将 T66 的收口动作在本地补跑并统一入库。
+
+### 本批合入内容（对应任务/改动）
+
+| 来源 | 内容 |
+| --- | --- |
+| T57 | 知识图谱按项目过滤：`knowledge/graph` 支持 `project` 参数、返回 `projects` 列表、控制台项目下拉 |
+| T58 | code-map 设计落案：doc/05 新增 §8（仅设计文档，未实施 T59–T65 实现任务） |
+| T59 | 假并行修复：`onAcquired` 拿到执行器槽后才写 RUNNING/发开始通知；成员状态区分 `queued/running` |
+| T62 | 会话复用注入去重：`firstDispatch` 全量/精简两条 prompt 路径；同 `sessionKey` 复用角色静态段 |
+| T64 | executor prompt 瘦身：删除「DSH Memory 提示」与「项目上下文」两段 |
+| T65 | QA 微项清零：doc/05 §6.3 实现状态修订、acp-session-index 脏键清理、PromptDialog/audit 查询 testid 补齐等 |
+| T67 | 队长值守纪律强化：七条准则（15 秒高频轮询、状态一变即通报、用户消息优先、质量分层等） |
+| T68 | 会话面板事件驱动刷新：ObservableSnapshot 订阅 + 1s 活跃指纹探测 + 150ms 防抖 |
+| T70 | 备用模型同执行器校验：`fallback_provider` 不得跨 ACP/DSH 执行器域；changan.yaml 补配 |
+| T71 | 宿主重启后 ACP 会话复用：`sessionKey→acpSid` 持久索引 + `cwd/zcodeSid` 线索 + `load→resume→newSession` 恢复链 |
+| 在途批 | process-limiter 默认限额放宽并接线团队 `executor_limits`、`delegationMaxWallClockMs=0`、相关测试与 e2e 断言 |
+
+### 门禁（主树全量，非隔离树）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `pnpm vitest run` | ✅ 39 文件 / **617 用例全绿** |
+| `pnpm typecheck` | ✅ exit 0 |
+| `pnpm build` | ✅ exit 0 |
+| `pnpm lint` | ✅ **0 error** / 43 warning（存量 `no-explicit-any`） |
+| `pnpm test:e2e:harness` | ✅ **54/54 全绿** |
+
+### 遗留总账更新
+
+- 此前 T54/T55 报告登记为“未入库（并行在途）”的 process-limiter/index/scheduler/delegation/query/knowledge-graph 等改动，现已在本次总收口统一合入并随本报告提交。
+- 任务台账侧仍留有三项未收口：
+  - T47：2026-08-28 07:46 因 5 小时额度上限（1308）中断；
+  - T66：2026-08-28 16:10 因每周/每月额度上限（1310）中断；
+  - T72：2026-08-28 16:10 因每周/每月额度上限（1310）中断。
+  - T69 为 CANCELLED（用户纠偏），非额度失败，已由 T70 完成替代。
+- 代码层不再存在对应功能缺口；等额度恢复后如需恢复任务台账状态，再对 T47/T66/T72 重跑或人工置毕。
+
+### 结论：**Go — 本轮总收口**（门禁全绿；工作树统一入库，push 不做）

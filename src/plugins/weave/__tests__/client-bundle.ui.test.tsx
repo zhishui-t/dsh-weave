@@ -90,7 +90,7 @@ const SEP = String.fromCharCode(92)
 
 type RpcCall = { endpoint: string; payload: unknown }
 
-function makeClientContext(endpointValues: Record<string, unknown> = {}) {
+function makeClientContext(endpointValues: Record<string, unknown> = {}, sessionsService?: unknown) {
   const calls: RpcCall[] = []
   let component: WeaveActionComponent | undefined
   const registrations: Array<{ name: string; component: ComponentType<Record<string, unknown>> }> = []
@@ -99,6 +99,7 @@ function makeClientContext(endpointValues: Record<string, unknown> = {}) {
       execute()
     },
     get(service: string) {
+      if (service === 'sessions' && sessionsService !== undefined) return sessionsService
       if (service !== 'connection') throw new Error(`unexpected service: ${service}`)
       return {
         rpc: {
@@ -519,6 +520,7 @@ describe('t8 会话优先模型与治理化改造', () => {
           { source: 'g-a', target: 'g-b' },
           { source: 'g-a', target: 'missing:未收录' },
         ],
+        projects: ['proj-alpha', 'proj-beta'],
         counts: { knowledge: 2, missing: 1, edges: 2, unresolved: 1, skipped: 0 },
       },
       'knowledge/list': {
@@ -544,6 +546,16 @@ describe('t8 会话优先模型与治理化改造', () => {
     fireEvent.change(screen.getByTestId('knowledge-graph-layer-filter'), { target: { value: 'project' } })
     await waitFor(() => {
       expect(fixture.calls.some((call) => call.endpoint === 'knowledge/graph' && (call.payload as Record<string, unknown>).layer === 'project')).toBe(true)
+    })
+
+    // 项目下拉：选项来自服务端 projects 去重清单；选中后 graph 请求带 project
+    const projectFilter = screen.getByTestId('knowledge-graph-project-filter')
+    expect(projectFilter.textContent).toContain('全部项目')
+    expect(projectFilter.textContent).toContain('proj-alpha')
+    expect(projectFilter.textContent).toContain('proj-beta')
+    fireEvent.change(projectFilter, { target: { value: 'proj-alpha' } })
+    await waitFor(() => {
+      expect(fixture.calls.some((call) => call.endpoint === 'knowledge/graph' && (call.payload as Record<string, unknown>).project === 'proj-alpha')).toBe(true)
     })
   })
 
@@ -797,5 +809,133 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     expect(screen.getAllByTestId(/^dag-node-/).length).toBe(1)
     expect(screen.getByTestId('dag-edges').querySelectorAll('path').length).toBe(0)
     expect(screen.getByTestId('dag-node-S-1').textContent).toContain('执行中')
+  })
+})
+
+describe('t10 会话面板事件驱动刷新（ObservableSnapshot 订阅 + 活跃探测）', () => {
+  const moduleRequireOf = () => (id: string) => {
+    if (id === 'react') return React
+    if (id === 'react-dom') return ReactDOM
+    throw new Error(`unexpected client dependency: ${id}`)
+  }
+
+  const LIVE_DAG = {
+    dag_id: 'D1',
+    status: 'RUNNING',
+    tasks: [{ id: 'T-A', description: '根任务', status: 'RUNNING', dependencies: [], assigned_agent: 'coder', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }],
+    edges: [],
+  }
+  const STATUS_RUNNING = {
+    session_id: 'sess-ui',
+    team: { team_id: 'alpha', name: '阿尔法小队' },
+    members: [
+      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'running', task_id: 'T-A', subject: '根任务' },
+    ],
+  }
+  const STATUS_DONE = {
+    session_id: 'sess-ui',
+    team: { team_id: 'alpha', name: '阿尔法小队' },
+    members: [
+      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'idle', last_task_id: 'T-A', last_status: 'COMPLETED', last_subject: '根任务' },
+    ],
+  }
+  const LIST_RUNNING = { total: 1, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] }
+  const LIST_DONE = { total: 1, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'COMPLETED', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:01:00Z' }] }
+  const DAG_DONE = { ...LIVE_DAG, status: 'COMPLETED', tasks: [{ ...LIVE_DAG.tasks[0], status: 'COMPLETED' }] }
+
+  /** 模拟宿主 sessions.list ObservableSnapshot：subscribe/getSnapshot + 手动 push。 */
+  function makeSessionListSnapshot() {
+    const listeners = new Set<() => void>()
+    let version = 0
+    const snapshot = {
+      subscribe(listener: () => void) {
+        listeners.add(listener)
+        return () => {
+          listeners.delete(listener)
+        }
+      },
+      getSnapshot() {
+        return version
+      },
+    }
+    return {
+      snapshot,
+      push() {
+        version += 1
+        for (const listener of [...listeners]) listener()
+      },
+      listenerCount() {
+        return listeners.size
+      },
+    }
+  }
+
+  function panelOf(values: Record<string, unknown>, sessionsService?: unknown) {
+    const exported = getCapturedBundle().factory(moduleRequireOf())
+    const fixture = makeClientContext(values, sessionsService)
+    exported.apply(fixture.ctx as never)
+    const panel = fixture.registration('conversation.view')
+    if (!panel) throw new Error('conversation.view slot not registered')
+    return { fixture, panel }
+  }
+
+  it('宿主 sessions.list 推流即刷：快照变化触发自动重拉（task/get 仅刷新路径可达）', async () => {
+    const { snapshot, push, listenerCount } = makeSessionListSnapshot()
+    const { fixture, panel } = panelOf({
+      'session/status': STATUS_RUNNING,
+      'task/list': LIST_RUNNING,
+      'task/get': LIVE_DAG,
+    }, { list: snapshot })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    await screen.findByTestId('dag-panel')
+    // 面板挂载即订阅宿主快照（ActivityPanel 同款订阅模式）
+    expect(listenerCount()).toBe(1)
+    const detailCallsBefore = fixture.calls.filter((call) => call.endpoint === 'task/get').length
+
+    // 模拟宿主推流（成员子代理会话生成/退出）→ 无手动操作自动刷新
+    push()
+    await waitFor(() => {
+      expect(fixture.calls.filter((call) => call.endpoint === 'task/get').length).toBeGreaterThan(detailCallsBefore)
+    }, { timeout: 1500 })
+  })
+
+  it('活跃探测：成员/任务状态变化在一个心跳周期内自动反映（无需手动刷新）', async () => {
+    // endpoint 值按引用读取：翻转同一对象即可模拟服务端状态变更
+    const values: Record<string, unknown> = {
+      'session/status': STATUS_RUNNING,
+      'task/list': LIST_RUNNING,
+      'task/get': LIVE_DAG,
+    }
+    const { fixture, panel } = panelOf(values)
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+
+    const card = await screen.findByTestId('member-card-coder')
+    expect(card.textContent).toContain('执行中')
+
+    values['session/status'] = STATUS_DONE
+    values['task/list'] = LIST_DONE
+    values['task/get'] = DAG_DONE
+
+    // 心跳 1s + 防抖 150ms + 拉取：3s 预算内完成「改状态 → 面板反映」
+    await waitFor(() => {
+      expect(screen.getByTestId('member-card-coder').textContent).toContain('空闲')
+    }, { timeout: 3000 })
+    // 全量刷新确实发生过（task/get 只在 refreshAll 路径被调用）
+    expect(fixture.calls.some((call) => call.endpoint === 'task/get')).toBe(true)
+  })
+
+  it('空闲会话不探测：团队未绑定时心跳不发 session/status', async () => {
+    const { fixture, panel } = panelOf({
+      'session/status': { session_id: 'sess-ui', team: null, members: [] },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+    await screen.findByTestId('page-empty')
+
+    const statusCalls = () => fixture.calls.filter((call) => call.endpoint === 'session/status').length
+    expect(statusCalls()).toBeGreaterThanOrEqual(1)
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    // 挂载初拉之后不再增长（心跳被 teamBound 闸住）
+    expect(statusCalls()).toBe(1)
   })
 })

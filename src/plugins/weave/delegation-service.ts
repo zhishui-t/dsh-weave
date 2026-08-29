@@ -179,9 +179,6 @@ export interface KnowledgeEngineLike {
 export interface TaskContext {
   /** 委托父 Agent（DSH 必填；单元测试用占位）。 */
   parentAgent: unknown
-  projectName?: string
-  repoPath?: string
-  gitBranch?: string
   /** 上游任务产物（依赖注入）。 */
   upstreamOutputs?: Array<{ label: string; output: string }>
   outputRequirements?: string
@@ -189,6 +186,12 @@ export interface TaskContext {
   timeoutMs?: number
   /** 本次委托的运行时覆盖；优先于角色默认配置。 */
   runtime?: ExecutorRuntimeOptions
+  /**
+   * 槽位获得回调（假并行修复）：processLimiter.acquire/waitForProcessSlot 通过后、
+   * provider.start 前触发；调度器借此把「写 RUNNING + 开始通知」后移到真实执行时点，
+   * 排队期任务在面板保持 WAITING。可选：历史调用方无此字段时行为不变。
+   */
+  onAcquired?: () => void | Promise<void>
 }
 
 export interface StopReasonMapping {
@@ -266,12 +269,6 @@ export function formatKnowledgeSection(
 
 export type ExecutorRunEventType = 'status' | 'output' | 'reasoning' | 'tool_call' | 'tool_result'
 
-/** 派发任务时注入的 DSH memory 提示（本地优先/以实际输出为准等）。 */
-const DSH_MEMORY_HINTS = `- 先查本地源码、配置、文档，不随意联网搜索。
-- 改文件前先重读当前内容，不要凭旧快照改动。
-- 命令输出以真实结果为准，环境/工具失败先分类再定位根因。
-- 完成后沉淀可复用经验，避免重复踩坑。`
-
 /** 派发任务时注入的执行纪律。 */
 const EXECUTION_DISCIPLINE = `- 小步快跑：一次改一处，改完立即验证。
 - 失败即停：回到该步定位根因，不盲目换参数重试。
@@ -330,6 +327,9 @@ export interface ExecutorRunSnapshot {
 }
 
 export class DelegationService {
+  /** 槽位回调能力声明（假并行修复）：调度器据此把 RUNNING 写库后移到 context.onAcquired。 */
+  readonly supportsSlotAcquiredHook = true
+
   readonly #ctx: DelegationContext
   readonly #executorRegistry: ExecutorRegistry
   readonly #sessionTracker: SessionTracker
@@ -344,6 +344,12 @@ export class DelegationService {
   readonly #executorRuns = new Map<string, ExecutorRunSnapshot>()
   /** 运行中的空闲探针：runId → 收到新事件时的重置回调（await 等待期注册）。 */
   readonly #activitySinks = new Map<string, () => void>()
+  /**
+   * 已首派会话键（iso-1 sessionKey）。会话复用注入去重：键入 Set 后的后续派发
+   * 走精简 prompt（跳过角色人格/执行纪律两段静态块）。
+   * 仅内存态：宿主重启后 Set 清空，会话重建时重新全量注入（无持久化需求）。
+   */
+  readonly #dispatchedSessionKeys = new Set<string>()
 
   constructor(ctx: DelegationContext, options: DelegationServiceOptions) {
     this.#ctx = ctx
@@ -644,6 +650,10 @@ export class DelegationService {
     }
 
     try {
+      // 假并行修复：拿到执行器槽才算真正开跑（排队期任务保持 WAITING）；
+      // 调度器经此回调写 RUNNING + 发开始通知，无回调的历史调用方为 no-op。
+      await context.onAcquired?.()
+
       let knowledge: KnowledgeInjectionEntryLike[] = []
       try {
         knowledge = await this.#knowledgeEngine.searchForInjection({
@@ -660,14 +670,18 @@ export class DelegationService {
       }
 
       const revisionContext = await this.#sessionTracker.getRevisionContext(task.id)
-      const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection)
+      // iso-1 会话隔离键：团队+角色+项目+版本。角色维度不同 ⇒ 键不同；
+      // 同一角色重复执行同项目同版本任务 ⇒ 复用同一 ACP/zcode 会话。
+      const sessionKey = `${team.team_id}:${role.id}:${task.project_id}:${task.version}`
+      // 会话复用注入去重：同 sessionKey 首次派发全量注入（角色人格/执行纪律 +
+      // 任务专属段）；复用会话只注入任务专属段——静态段会话里已有，
+      // 重复注入纯耗 token 且稀释任务焦点。
+      const firstDispatch = !this.#dispatchedSessionKeys.has(sessionKey)
+      const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection, firstDispatch)
 
       const startedAt = this.#now()
       const runtime = this.#resolveRuntime(role, context)
       const provider = this.#executorProviders?.resolve(executor)
-      // iso-1 会话隔离键：团队+角色+项目+版本。角色维度不同 ⇒ 键不同；
-      // 同一角色重复执行同项目同版本任务 ⇒ 复用同一 ACP/zcode 会话。
-      const sessionKey = `${team.team_id}:${role.id}:${task.project_id}:${task.version}`
 
       let run: DelegationRunLike
       if (provider) {
@@ -701,6 +715,9 @@ export class DelegationService {
           ...(weave ? { sessionKey, weave } : {}),
         })
       }
+
+      // start 成功才记首派标记：启动失败不消费标记，下次派发仍按首派全量注入。
+      this.#dispatchedSessionKeys.add(sessionKey)
 
       const runSessionId = this.#eventSessionId(
         (run as DelegationRunLike).sessionId ?? ((run as { localAgent?: { id?: string } | undefined }).localAgent?.id),
@@ -829,6 +846,10 @@ export class DelegationService {
    * `prompt` 以 ContentBlock[] 包装后传入 `ctx.subagents.start`；
    * 修订（REVISION_RUNNING）由 `revisionContext`（SessionTracker.getRevisionContext）
    * 注入完整上下文（ephemeral 线程无跨任务记忆，ADR-031）。
+   *
+   * 会话复用注入去重：`firstDispatch=false`（复用同 sessionKey 会话）时跳过静态
+   * 两段（角色人格/执行纪律——会话里已有），只注入任务专属段，
+   * 并加防歧义行「本会话已含你的角色与纪律约定」；缺省 true=全量注入。
    */
   buildPrompt(
     task: TaskRecord,
@@ -837,26 +858,24 @@ export class DelegationService {
     knowledge: KnowledgeInjectionEntryLike[],
     revisionContext: string | null,
     limits: KnowledgeInjectionLimits,
+    firstDispatch = true,
   ): string {
     const lines: string[] = []
     lines.push(`你是 ${role.name}，负责完成以下任务。`)
+    if (!firstDispatch) {
+      lines.push('（本会话已含你的角色与纪律约定。）')
+    }
     lines.push('')
-    lines.push('## 角色人格')
-    lines.push(role.personality || '（无）')
-    lines.push('')
-    lines.push('## DSH Memory 提示')
-    lines.push(DSH_MEMORY_HINTS)
-    lines.push('')
-    lines.push('## 执行纪律')
-    lines.push(EXECUTION_DISCIPLINE)
-    lines.push('')
+    if (firstDispatch) {
+      lines.push('## 角色人格')
+      lines.push(role.personality || '（无）')
+      lines.push('')
+      lines.push('## 执行纪律')
+      lines.push(EXECUTION_DISCIPLINE)
+      lines.push('')
+    }
     lines.push('## 任务描述')
     lines.push(task.description)
-    lines.push('')
-    lines.push('## 项目上下文')
-    lines.push(`- 项目: ${task.project_id} - 版本: ${task.version}${context.projectName ? ` - ${context.projectName}` : ''}`)
-    lines.push(`- 工作目录: ${context.repoPath ?? '（由 DSH 从父会话自动解析）'}`)
-    lines.push(`- Git 分支: ${context.gitBranch ?? '（无）'}`)
     lines.push('')
     lines.push('## 上游任务产物')
     if (context.upstreamOutputs?.length) {

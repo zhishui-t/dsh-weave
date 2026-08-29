@@ -50,7 +50,17 @@ beforeEach(() => {
 
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-type CallRecord = { taskId: string; roleId: string; upstreamLabels: string[]; upstreamTexts: string[]; requirement?: string }
+type CallRecord = {
+  taskId: string
+  roleId: string
+  /** 角色执行器（备用重试必须与主调用同 executor，用户裁定锚定点）。 */
+  executor?: string
+  provider?: string
+  model?: string
+  upstreamLabels: string[]
+  upstreamTexts: string[]
+  requirement?: string
+}
 
 /** DelegationService 替身：按 taskId 脚本回放结果，记录上游注入。 */
 class FakeDelegation implements SchedulerDelegationLike {
@@ -59,7 +69,7 @@ class FakeDelegation implements SchedulerDelegationLike {
 
   async executeTask(
     task: { id: string; description: string },
-    role: { id: string; provider?: string; fallback_provider?: string; fallback_model?: string },
+    role: { id: string; executor?: string; provider?: string; model?: string; fallback_provider?: string; fallback_model?: string },
     _team: unknown,
     context: { upstreamOutputs?: Array<{ label: string; output: string }>; outputRequirements?: string },
     signal: AbortSignal,
@@ -67,6 +77,9 @@ class FakeDelegation implements SchedulerDelegationLike {
     this.calls.push({
       taskId: task.id,
       roleId: role.id,
+      executor: role.executor,
+      provider: role.provider,
+      model: role.model,
       upstreamLabels: (context.upstreamOutputs ?? []).map((item) => item.label),
       upstreamTexts: (context.upstreamOutputs ?? []).map((item) => item.output),
       requirement: context.outputRequirements,
@@ -262,6 +275,9 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
       delegation.calls.push({
         taskId: task.id,
         roleId: role.id,
+        executor: role.executor,
+        provider: role.provider,
+        model: role.model,
         upstreamLabels: (context.upstreamOutputs ?? []).map((item) => item.label),
         upstreamTexts: (context.upstreamOutputs ?? []).map((item) => item.output),
         requirement: context.outputRequirements,
@@ -285,7 +301,14 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
     await scheduler.start({ dagId: output.dag_id, sessionId: 'sess-fb' })
     await flush(10)
 
-    expect(delegation.calls.filter((call) => call.roleId === 'designer')).toHaveLength(2) // 主 + 备用
+    const designerCalls = delegation.calls.filter((call) => call.roleId === 'designer')
+    expect(designerCalls).toHaveLength(2) // 主 + 备用
+    // 同执行器锚定（用户裁定）：备用重试与主调用保持同一 executor，仅覆盖 provider/model
+    expect(designerCalls[0]!.executor).toBe('codex')
+    expect(designerCalls[1]!.executor).toBe(designerCalls[0]!.executor)
+    expect(designerCalls[0]!.provider).toBeUndefined()
+    expect(designerCalls[1]!.provider).toBe('fb')
+    expect(designerCalls[1]!.model).toBe('fb-model')
     expect(delegation.calls.at(-1)!.roleId).toBe('reviewer')
     expect(delegation.calls.at(-1)!.upstreamTexts).toEqual(['fb-recovered'])
     expect(notices.some((notice) => notice.text.includes('备用模型重试'))).toBe(true)
@@ -613,5 +636,167 @@ describe('WeaveScheduler run 冷启动重建（doc/05 §6.5 P1-G G-②）', () =
       notify: () => {},
     })
     await expect(scheduler.onExternalRetry('no-such-task')).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * 支持槽位回调的替身（假并行修复）：acquiredGate 模拟 ProcessLimiter 排队窗口——
+ * executeTask 先卡在「等槽」，releaseAcquired 放行后才触发 context.onAcquired，
+ * 再进入基类执行流。复刻真实 DelegationService 的时序契约。
+ */
+class HookedDelegation extends FakeDelegation {
+  readonly supportsSlotAcquiredHook = true
+  acquiredSequence: string[] = []
+  /** 进入 executeTask 即记派发（真实 DelegationService 语义：先入队等槽）。 */
+  dispatched: string[] = []
+  #acquiredGates = new Map<string, Promise<void>>()
+  #acquiredResolvers = new Map<string, () => void>()
+
+  gateAcquired(taskId: string): void {
+    if (this.#acquiredGates.has(taskId)) return
+    this.#acquiredGates.set(
+      taskId,
+      new Promise<void>((resolve) => {
+        this.#acquiredResolvers.set(taskId, resolve)
+      }),
+    )
+  }
+
+  releaseAcquired(taskId: string): void {
+    this.#acquiredResolvers.get(taskId)?.()
+  }
+
+  async executeTask(
+    task: { id: string; description: string },
+    role: { id: string; provider?: string; fallback_provider?: string; fallback_model?: string },
+    team: unknown,
+    context: {
+      onAcquired?: () => void | Promise<void>
+      upstreamOutputs?: Array<{ label: string; output: string }>
+      outputRequirements?: string
+    },
+    signal: AbortSignal,
+  ): Promise<SubagentTaskOutput> {
+    this.dispatched.push(task.id)
+    const gate = this.#acquiredGates.get(task.id)
+    if (gate) {
+      await new Promise<void>((resolve) => {
+        const onAbort = (): void => resolve()
+        signal.addEventListener('abort', onAbort, { once: true })
+        void gate.then(() => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        })
+      })
+    }
+    if (signal.aborted) return { id: task.id, output: [], stopReason: 'aborted', duration_ms: 0 }
+    if (context.onAcquired) {
+      this.acquiredSequence.push(task.id)
+      await context.onAcquired()
+    }
+    return super.executeTask(task, role, team, context, signal)
+  }
+}
+
+describe('WeaveScheduler 假并行修复（RUNNING 时点后移到槽位获得）', () => {
+  it('槽位回调路径：排队期任务保持 WAITING（memberRuntime=queued、无开始通知），onAcquired 后才 RUNNING', async () => {
+    await manager.bindTeam('sess-hook', 'alpha')
+    const delegation = new HookedDelegation()
+    const notices: Array<{ text: string }> = []
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: (_sessionId, text) => { notices.push({ text }) },
+    })
+    const plan = await planner.plan({
+      session_id: 'sess-hook',
+      tasks: [{ id: 'h1', description: '排队任务', assignee: 'coder' }],
+    })
+    const taskId = plan.tasks[0]!.id
+    // 模拟执行器槽被占：任务卡在排队窗口；再 gate 基类执行流，让 RUNNING 态可观察
+    delegation.gateAcquired(taskId)
+    delegation.gate(taskId)
+
+    await scheduler.start({ dagId: plan.dag_id, sessionId: 'sess-hook' })
+    await flush(4)
+
+    // 已派发（executeTask 已进入）但仍在排队：状态不得显示 RUNNING
+    expect(delegation.dispatched).toEqual([taskId])
+    expect(await taskStatusOf(taskId)).toBe('WAITING')
+    expect(scheduler.memberRuntime('sess-hook').map((info) => info.phase)).toEqual(['queued'])
+    expect(notices.some((notice) => notice.text.includes('「排队任务」开始'))).toBe(false)
+    expect(delegation.acquiredSequence).toEqual([])
+
+    // 拿到槽：onAcquired 触发 → RUNNING + 开始通知 + 阶段翻转
+    delegation.releaseAcquired(taskId)
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'RUNNING'))
+    expect(delegation.acquiredSequence).toEqual([taskId])
+    expect(scheduler.memberRuntime('sess-hook').map((info) => info.phase)).toEqual(['running'])
+    expect(notices.some((notice) => notice.text.includes('「排队任务」开始'))).toBe(true)
+
+    delegation.release(taskId)
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'COMPLETED'))
+    expect(scheduler.memberRuntime('sess-hook')).toHaveLength(0)
+  })
+
+  it('排队期被外部取消：onAcquired 不把终态覆写成 RUNNING', async () => {
+    await manager.bindTeam('sess-hook-cancel', 'alpha')
+    const delegation = new HookedDelegation()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: () => {},
+    })
+    const plan = await planner.plan({
+      session_id: 'sess-hook-cancel',
+      tasks: [{ id: 'hc1', description: '排队即取消任务', assignee: 'coder' }],
+    })
+    const taskId = plan.tasks[0]!.id
+    delegation.gateAcquired(taskId)
+    await scheduler.start({ dagId: plan.dag_id, sessionId: 'sess-hook-cancel' })
+    await flush(4)
+    expect(await taskStatusOf(taskId)).toBe('WAITING')
+
+    // 排队窗口内外部取消（与 mcp.taskCancel 对齐：先写 CANCELLED 再中止）
+    const now = new Date().toISOString()
+    await persistence.tasks.run((db) =>
+      db.prepare("UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(now, taskId),
+    )
+    await scheduler.onExternalCancel(taskId)
+    delegation.releaseAcquired(taskId)
+    await flush(6)
+
+    expect(delegation.acquiredSequence).toEqual([]) // signal 先行中止，onAcquired 未触发
+    expect(await taskStatusOf(taskId)).toBe('CANCELLED')
+  })
+
+  it('无槽位回调（历史委托实现）：派发点立即写 RUNNING + 开始通知，行为不变', async () => {
+    await manager.bindTeam('sess-legacy', 'alpha')
+    const delegation = new FakeDelegation()
+    const notices: Array<{ text: string }> = []
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: (_sessionId, text) => { notices.push({ text }) },
+    })
+    const plan = await planner.plan({
+      session_id: 'sess-legacy',
+      tasks: [{ id: 'l1', description: '历史行为任务', assignee: 'coder' }],
+    })
+    const taskId = plan.tasks[0]!.id
+    delegation.gate(taskId)
+
+    await scheduler.start({ dagId: plan.dag_id, sessionId: 'sess-legacy' })
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'RUNNING'))
+
+    expect(delegation.calls).toHaveLength(1)
+    expect(scheduler.memberRuntime('sess-legacy').map((info) => info.phase)).toEqual(['running'])
+    expect(notices.some((notice) => notice.text.includes('「历史行为任务」开始'))).toBe(true)
+
+    delegation.release(taskId)
+    await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'COMPLETED'))
   })
 })

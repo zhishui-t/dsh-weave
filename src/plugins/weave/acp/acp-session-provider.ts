@@ -145,6 +145,13 @@ interface AcpConnectionLike {
   initialize(params: unknown): Promise<unknown>
   newSession(params: { cwd: string; mcpServers: unknown[] }): Promise<{ sessionId: string }>
   loadSession?(params: { sessionId: string; cwd: string; mcpServers: unknown[] }): Promise<unknown>
+  /**
+   * ACP `session/resume`（SDK ClientSideConnection.resumeSession → JSONRPC session/resume）。
+   * 语义：续上下文但不回放历史（区别于 session/load）。zcode 桥声明
+   * sessionCapabilities.resume 并与 session/load 共用同一 lazy-alias 恢复链，
+   * 因此它是 load 失败后的第二级恢复手段。
+   */
+  resumeSession?(params: { sessionId: string; cwd: string; mcpServers?: unknown[] }): Promise<unknown>
   prompt(params: { sessionId: string; prompt: Array<{ type: 'text'; text: string }> }): Promise<{ stopReason: string }>
   cancel(params: { sessionId: string }): Promise<void>
   extMethod(method: string, params: Record<string, unknown>): Promise<unknown>
@@ -180,6 +187,7 @@ export interface AcpSessionFactoryConnection {
   initialize(params: unknown): Promise<unknown>
   newSession(params: { cwd: string; mcpServers: unknown[] }): Promise<{ sessionId: string }>
   loadSession?(params: { sessionId: string; cwd: string; mcpServers: unknown[] }): Promise<unknown>
+  resumeSession?(params: { sessionId: string; cwd: string; mcpServers?: unknown[] }): Promise<unknown>
   prompt(params: { sessionId: string; prompt: Array<{ type: 'text'; text: string }> }): Promise<{ stopReason: string }>
   cancel(params: { sessionId: string }): Promise<void>
   extMethod(method: string, params: Record<string, unknown>): Promise<unknown>
@@ -192,10 +200,25 @@ interface SessionRecord {
   connectionKey: string
 }
 
-/** sessionKey 维度持久索引单条记录。 */
+/**
+ * sessionKey 维度持久索引单条记录。
+ *
+ * resume 线索（宿主重启后沿用老会话的依据）：
+ * - acpSid 本身就是「可恢复句柄」——zcode 桥的 durable store
+ *   （~/.zcode/v2/acp-lazy-sessions.json）以 acp_sid→{cwd,zcodeSid} 持久化别名，
+ *   session/resume 与 session/load 都经 resolveResumeTarget→lookupLazySession
+ *   从上一代桥恢复占位会话（zcode-acp-server handlers/session.js resolveResumeTarget/
+ *   ensureRealSession：带 zcodeSid 的记录仅重注册别名，不带则物化新后端会话）。
+ * - cwd：会话创建时声明的工作区，作为 load/resume 形参的旧线索
+ *   （桥侧 resume/load 不信任客户端 cwd；对遵循 ACP 语义的 agent 是准确定位线索）。
+ * - zcodeSid：前向兼容字段。桥从不向客户端回传后端 sid，provider 通常拿不到；
+ *   一旦未来桥回传即可跳过别名解析直达后端会话。
+ */
 export interface SessionKeyIndexRecord {
   acpSid: string
   updatedAt: number
+  cwd?: string
+  zcodeSid?: string
 }
 
 /** 索引文件形态：version 兜底前向兼容；只增改不删，旧数据兼容不丢。 */
@@ -220,14 +243,27 @@ function readSessionIndexFile(file: string | undefined, sessionKey: string): Ses
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
     const record = raw?.keys?.[sessionKey]
-    return typeof record?.acpSid === 'string' && record.acpSid !== '' ? { acpSid: record.acpSid, updatedAt: Number(record.updatedAt) || 0 } : undefined
+    if (typeof record?.acpSid !== 'string' || record.acpSid === '') return undefined
+    const clue = (value: unknown): string | undefined =>
+      typeof value === 'string' && value !== '' ? value : undefined
+    return {
+      acpSid: record.acpSid,
+      updatedAt: Number(record.updatedAt) || 0,
+      ...(clue(record.cwd) !== undefined ? { cwd: clue(record.cwd) } : {}),
+      ...(clue(record.zcodeSid) !== undefined ? { zcodeSid: clue(record.zcodeSid) } : {}),
+    }
   } catch {
     return undefined
   }
 }
 
-/** 写持久索引（读改写合并；失败仅吞掉——别名库本身在桥接侧另有 durable 副本）。 */
-function writeSessionIndexFile(file: string | undefined, sessionKey: string, acpSid: string): void {
+/**
+ * 写持久索引（读改写合并；失败仅吞掉——别名库本身在桥接侧另有 durable 副本）。
+ * `cwd` 是本次会话的 resume 线索：仅在该 sid 首次入索引时生效——同 sid 复写
+ * 保留旧线索（会话真实创建工作区不随宿主 cwd 漂移），sid 变更（自愈新建）时
+ * 旧线索整体作废、不得迁移。
+ */
+function writeSessionIndexFile(file: string | undefined, sessionKey: string, acpSid: string, cwd?: string): void {
   if (!file) return
   try {
     mkdirSync(dirname(file), { recursive: true })
@@ -236,11 +272,17 @@ function writeSessionIndexFile(file: string | undefined, sessionKey: string, acp
       const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
       if (raw && typeof raw === 'object' && raw.keys && typeof raw.keys === 'object') {
         const cleaned: Record<string, SessionKeyIndexRecord> = {}
+        let dropped = 0
         for (const [key, value] of Object.entries(raw.keys as Record<string, SessionKeyIndexRecord>)) {
           const cleanKey = normalizeSessionKey(key)
           if (cleanKey && value && typeof value.acpSid === 'string' && value.acpSid !== '') {
             cleaned[cleanKey] = value
+          } else {
+            dropped += 1
           }
+        }
+        if (dropped > 0) {
+          console.warn(`[dsh-weave] acp-session-index: dropped ${dropped} invalid key(s) (legacy "undefined"/empty sessionKey) while rewriting`)
         }
         base = { version: 1, keys: cleaned }
       }
@@ -248,7 +290,17 @@ function writeSessionIndexFile(file: string | undefined, sessionKey: string, acp
       // 首次写或旧文件损坏：从空表起写。
     }
     base.version = 1
-    base.keys[sessionKey] = { acpSid, updatedAt: Date.now() }
+    const prior = base.keys[sessionKey]
+    const carried = prior?.acpSid === acpSid ? prior : undefined
+    // 同 sid：保留原创建 cwd（会话真实工作区不随宿主 cwd 漂移）；sid 变更/首次：
+    // 记录本次声明（新会话就是在当前 cwd 下创建的）。
+    const clueCwd = carried?.cwd ?? cwd
+    base.keys[sessionKey] = {
+      acpSid,
+      updatedAt: Date.now(),
+      ...(clueCwd !== undefined ? { cwd: clueCwd } : {}),
+      ...(carried?.zcodeSid !== undefined ? { zcodeSid: carried.zcodeSid } : {}),
+    }
     writeFileSync(file, `${JSON.stringify(base, null, 2)}\n`, 'utf8')
   } catch {
     // 索引写失败不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
@@ -390,21 +442,25 @@ export class AcpSessionProvider {
     // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
     // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，
     // 已带 zcodeSid 的记录直达同一后端会话），不同 sessionKey 天然各得独立会话。
+    const indexed = readSessionIndexFile(this.#sessionIndexFile, sessionKey)
     let sessionId =
       weave.resumeSessionId ??
       this.#sessions.get(sessionKey)?.sessionId ??
-      readSessionIndexFile(this.#sessionIndexFile, sessionKey)?.acpSid
+      indexed?.acpSid
     let sessionResponse: AcpSessionNewResponse | undefined
     const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
 
     if (sessionId === undefined || !knownInConnection) {
-      if (sessionId !== undefined && connection.conn.loadSession) {
-        try {
-          const loaded = await connection.conn.loadSession({ sessionId, cwd, mcpServers: this.#mcpServers })
-          sessionResponse = loaded as AcpSessionNewResponse
-        } catch {
-          // 索引指向的占位符已失效（30d TTL 清理/跨机迁移/记录损坏）：
-          // 自愈回退到新建会话，并让下方索引写入覆盖掉失效映射。
+      if (sessionId !== undefined) {
+        // 旧线索：索引记录里会话创建时声明的 cwd（resume 线索）；无记录时用当前 cwd。
+        const resumeCwd = sessionId === indexed?.acpSid ? indexed?.cwd ?? cwd : cwd
+        const recovered = await this.#tryRecoverSession(connection, sessionId, resumeCwd)
+        if (recovered !== undefined) {
+          sessionResponse = recovered
+        } else {
+          // 恢复链（load+resume）全部失败：占位符确实失效（30d TTL 清理/后端会话
+          // 已删/记录损坏）——自愈回退到新建会话，并让下方索引写入覆盖掉失效映射
+          // （sid 变更，旧线索不随迁，见 writeSessionIndexFile）。
           sessionId = undefined
           this.#sessions.delete(sessionKey)
         }
@@ -415,10 +471,10 @@ export class AcpSessionProvider {
         sessionResponse = created
       }
       this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
-      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId)
+      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
     } else {
-      // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键缺失）。
-      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId)
+      // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键/线索缺失）。
+      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
     }
 
     const runId = `acp-${sessionId}`
@@ -520,6 +576,56 @@ export class AcpSessionProvider {
         configOptions: sessionResponse.configOptions,
       } : undefined,
     }
+  }
+
+  /**
+   * 跨生命周期会话恢复链：session/load → session/resume，全部失败返回 undefined
+   * （调用方回落 newSession 自愈）。链上每一环的异常都必须在本方法内接住——
+   * 任何一处冒泡到 start() 都会被 delegation 层包装成 WeaveError('execution_failed')，
+   * 把一次本可自愈的会话恢复失败毒化成整次委托失败（实锚过的毒化场景）。
+   *
+   * 为什么 resume 可直达、无需 extMethod reattach（读 zcode-acp-server 0.11.9 源码实证）：
+   * - initialize 声明 agentCapabilities.loadSession=true 且
+   *   sessionCapabilities={list,resume,fork}（dist/server.js initialize）；
+   * - session/resume 与 session/load 共用 resolveResumeTarget：内存映射 → pending
+   *   物化 → lookupLazySession（~/.zcode/v2/acp-lazy-sessions.json 的
+   *   acp_sid→{cwd,zcodeSid} durable 别名，跨桥进程存活）→ ensureRealSession
+   *   重注册别名/物化后端会话（dist/handlers/session.js）；带 zcodeSid 的记录
+   *   仅重注册别名，即可对本代后端发起 resume RPC 恢复同一上下文。
+   * - 两级恢复的差别只在 load 额外做历史回放（fetchMessages+replay+plan+usage）：
+   *   回放环节失败（历史 slice 损坏等）时 resume 仍可续上下文——这正是第二级的价值。
+   * - 桥的 extMethod 面无 session_info/reattach 类方法（dist/handlers/extensions.js
+   *   仅 fork/goal/compact/setModel/setMode 等），不存在旁路 reattach 通道，亦不需要。
+   */
+  async #tryRecoverSession(
+    connection: AcpSessionConnection,
+    sessionId: string,
+    cwd: string,
+  ): Promise<AcpSessionNewResponse | undefined> {
+    const conn = connection.conn
+    if (typeof conn.loadSession === 'function') {
+      try {
+        const loaded = (await conn.loadSession({ sessionId, cwd, mcpServers: this.#mcpServers })) as
+          | Partial<AcpSessionNewResponse>
+          | undefined
+        connection.sessions.add(sessionId)
+        return { ...loaded, sessionId }
+      } catch {
+        // 落到下一级恢复手段，不在本层上报。
+      }
+    }
+    if (typeof conn.resumeSession === 'function') {
+      try {
+        const resumed = (await conn.resumeSession({ sessionId, cwd, mcpServers: this.#mcpServers })) as
+          | Partial<AcpSessionNewResponse>
+          | undefined
+        connection.sessions.add(sessionId)
+        return { ...resumed, sessionId }
+      } catch {
+        // 两级恢复都失败：由调用方自愈新建。
+      }
+    }
+    return undefined
   }
 
   /**

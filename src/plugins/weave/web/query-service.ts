@@ -337,7 +337,7 @@ export class WeaveQueryService {
     return this.mcp.knowledgeReject(id, reason)
   }
 
-  /** knowledge/graph：读取真实知识文件；轻量双链图，完整 Graphify 仍属 P1。 */
+  /** knowledge/graph：读取真实知识文件；轻量双链图，完整 Graphify 仍属 P1。project 按项目过滤（透传 buildKnowledgeGraph）。 */
   async knowledgeGraph(input: unknown = {}): Promise<ReturnType<typeof buildKnowledgeGraph>> {
     if (!this.knowledgeStore) {
       throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge/graph 需要 KnowledgeStore）')
@@ -348,10 +348,12 @@ export class WeaveQueryService {
     const status = statusValue !== undefined ? enumOrThrow(statusValue, KNOWLEDGE_STATUSES, '知识状态') as KnowledgeStatus : undefined
     const layer = layerValue !== undefined ? enumOrThrow(layerValue, KNOWLEDGE_LAYERS, '知识层级') as KnowledgeLayer : undefined
     const limitRaw = optionalPositiveInt(p, 'limit')
+    const project = optionalString(p, 'project')
     return await buildKnowledgeGraph(this.knowledgeStore, {
       ...(status ? { status } : {}),
       ...(layer ? { layer } : {}),
       ...(limitRaw ? { limit: limitRaw } : {}),
+      ...(project ? { project } : {}),
     })
   }
 
@@ -551,7 +553,8 @@ export class WeaveQueryService {
       const active = runtimeByRole.get(role.id)
       const last = lastByRole.get(role.id)
       let status: string = 'idle'
-      if (active) status = 'running'
+      // 假并行修复：排队（已派发未拿到执行器槽）与真正执行分开呈现。
+      if (active) status = active.phase === 'queued' ? 'queued' : 'running'
       else if (last) status = statusLabel(last.status)
       return {
         role_id: role.id,
@@ -559,7 +562,7 @@ export class WeaveQueryService {
         executor: role.executor,
         status,
         ...(active
-          ? { task_id: active.task_id, subject: active.subject, started_at: active.started_at }
+          ? { task_id: active.task_id, subject: active.subject, started_at: active.started_at, phase: active.phase }
           : {}),
         ...(last && !active
           ? { last_task_id: last.id, last_status: last.status, last_subject: subjectOf(last.description) }

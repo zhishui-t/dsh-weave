@@ -20,19 +20,35 @@ import type { AuditLog } from './audit/audit-log.js'
  *   fallback 重试一次；失败/取消终态经 TaskStateMachine.propagateFailure 向下游传播 SKIPPED。
  */
 
+/**
+ * 调度器 → 委托执行的上下文（DelegationService.TaskContext 的调度侧视面）。
+ */
+export interface SchedulerDelegationContext {
+  parentAgent?: unknown
+  /** 宿主会话 id（doc/05 §6.2 P1-B）：执行器事件回灌按它路由，避免发进子代理会话。 */
+  sessionId?: string
+  upstreamOutputs?: Array<{ label: string; output: string }>
+  outputRequirements?: string
+  /**
+   * 槽位获得回调（假并行修复）：DelegationService 在 processLimiter 拿到槽后、
+   * provider.start 前触发；调度器在此写 RUNNING + 发开始通知（真·RUNNING 时点）。
+   */
+  onAcquired?: () => void | Promise<void>
+}
+
 /** DelegationService 的最小视面（测试可注入替身）。 */
 export interface SchedulerDelegationLike {
+  /**
+   * 槽位回调能力声明（假并行修复）：true 时调度器把「写 RUNNING + 开始通知」
+   * 后移到 context.onAcquired（排队期任务保持 WAITING）；未声明的历史实现
+   * 保持派发点直写 RUNNING 的现状（向后兼容）。
+   */
+  readonly supportsSlotAcquiredHook?: boolean
   executeTask(
     task: TaskRecord,
     role: RoleConfig,
     team: TeamConfig,
-    context: {
-      parentAgent?: unknown
-      /** 宿主会话 id（doc/05 §6.2 P1-B）：执行器事件回灌按它路由，避免发进子代理会话。 */
-      sessionId?: string
-      upstreamOutputs?: Array<{ label: string; output: string }>
-      outputRequirements?: string
-    },
+    context: SchedulerDelegationContext,
     cancelSignal: AbortSignal,
   ): Promise<SubagentTaskOutput>
 }
@@ -77,6 +93,11 @@ export interface MemberRuntimeInfo {
   task_id: string
   subject: string
   started_at: string
+  /**
+   * 执行阶段（假并行修复）：queued=已派发但仍在执行器槽排队；running=已拿到槽
+   * 真正执行（onAcquired 后翻转）。未声明槽位回调的委托实现恒为 running。
+   */
+  phase: 'queued' | 'running'
 }
 
 const SUCCESS_TERMINALS: ReadonlySet<TaskStatus> = new Set(['COMPLETED', 'CLOSED'])
@@ -429,27 +450,29 @@ export class WeaveScheduler {
       }
       if (roleBusy) continue
 
-      // 状态机无 BLOCKED→RUNNING 直达：先升 WAITING 再 RUNNING（TDD §2.1.5）
+      // 状态机无 BLOCKED→RUNNING 直达：先升 WAITING 再 RUNNING（TDD §2.1.5）。
+      // 假并行修复：委托方声明支持槽位回调时，排队期任务保持 WAITING——
+      // 真正拿到执行器槽后经 context.onAcquired 才写 RUNNING；未声明（历史
+      // 委托实现/测试替身）保持派发点直写 RUNNING 的现状。
+      const acquiredHook = this.#opts.delegation.supportsSlotAcquiredHook === true
       if (!TaskStateMachine.canTransition(task.status, 'RUNNING')) continue
-      await this.#updateTask(task.id, { status: 'RUNNING' })
+      if (!acquiredHook) {
+        await this.#updateTask(task.id, { status: 'RUNNING' })
+      }
 
       this.#activeByRole.set(key, {
         role_id: role.id,
         task_id: task.id,
         subject: subjectLabel(task),
         started_at: new Date().toISOString(),
+        phase: acquiredHook ? 'queued' : 'running',
       })
       // 执行完无论成败都释放占用并重泵；异常在 #executeTaskSafely 内收敛为终态。
       // 角色释放是会话全局事件（doc/05 §6.5 P1-G G-①）：互斥额度跨 DAG 共占，
       // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
       // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
       // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
-      // 执行完无论成败都释放占用并重泵；异常在 #executeTaskSafely 内收敛为终态。
-      // 角色释放是会话全局事件（doc/05 §6.5 P1-G G-①）：互斥额度跨 DAG 共占，
-      // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
-      // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
-      // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
-      void this.#executeReady(run, task, role).finally(() => {
+      void this.#executeReady(run, task, role, acquiredHook).finally(() => {
         this.#activeByRole.delete(key)
         for (const activeDagId of this.#runs.keys()) {
           this.#enqueue(activeDagId)
@@ -458,11 +481,31 @@ export class WeaveScheduler {
     }
   }
 
-  /** 执行单个就绪任务：fallback 重试一次；按映射写终态并广播通知。 */
-  async #executeReady(run: DagRunContext, task: TaskRecord, role: RoleConfig): Promise<void> {
-    this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
+  /**
+   * 执行单个就绪任务：fallback 重试一次；按映射写终态并广播通知。
+   * `deferRunning`（假并行修复）：true 时「写 RUNNING + 开始通知」后移到
+   * context.onAcquired（DelegationService 拿到执行器槽后触发）；false 保持
+   * 派发点立即通知的历史行为。
+   */
+  async #executeReady(run: DagRunContext, task: TaskRecord, role: RoleConfig, deferRunning: boolean): Promise<void> {
+    if (!deferRunning) {
+      this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
+    }
     const controller = new AbortController()
     this.#controllers.set(task.id, controller)
+
+    // 真·RUNNING 时点（槽位回调）：排队期被外部取消/治理（终态）时不覆写；
+    // memberRuntime 阶段同点翻转 queued → running。
+    const onAcquired = deferRunning
+      ? async (): Promise<void> => {
+          const current = (await this.#currentStatus(task.id)) ?? task.status
+          if (current !== 'WAITING' && current !== 'RUNNING') return
+          await this.#updateTask(task.id, { status: 'RUNNING' })
+          const info = this.#activeByRole.get(activeKey(run.sessionId, role.id, task.id))
+          if (info) info.phase = 'running'
+          this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
+        }
+      : undefined
 
     const upstreamOutputs = await this.#collectUpstream(run, task)
     const requirement =
@@ -475,7 +518,7 @@ export class WeaveScheduler {
           task,
           role,
           run.team,
-          { parentAgent: run.parentAgent, sessionId: run.sessionId, upstreamOutputs, outputRequirements: requirement },
+          { parentAgent: run.parentAgent, sessionId: run.sessionId, upstreamOutputs, outputRequirements: requirement, onAcquired },
           controller.signal,
         )
       } catch (error) {
@@ -492,6 +535,7 @@ export class WeaveScheduler {
             sessionId: run.sessionId,
             upstreamOutputs,
             outputRequirements: `${requirement}（备用模型重试）`,
+            onAcquired,
           },
           controller.signal,
         )

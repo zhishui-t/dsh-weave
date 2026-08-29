@@ -63,9 +63,6 @@ const BASE_TEAM: TeamConfigLike = {
 
 const BASE_CONTEXT: TaskContext = {
   parentAgent: { id: 'parent-session-1' },
-  projectName: 'weave',
-  repoPath: '/work/weave',
-  gitBranch: 'main',
   upstreamOutputs: [{ label: '设计文档: 02-SDD', output: 'SDD 核心章节摘要…' }],
   outputRequirements: '输出实现文件路径与测试命令。',
 }
@@ -207,6 +204,66 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(requests[0]!.sessionKey).not.toBe(requests[2]!.sessionKey)
   })
 
+  it('会话复用注入去重：同 sessionKey 首派全量、复用精简（跳静态三段），不同角色会话仍全量', async () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    const zcodeTask = { ...BASE_TASK, executor: 'zcode' }
+    const devRole = { ...BASE_ROLE, id: 'developer-1', executor: 'zcode' }
+    const feRole = { ...BASE_ROLE, id: 'frontend-1', executor: 'zcode' }
+
+    await service.executeTask(zcodeTask, devRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    await service.executeTask({ ...zcodeTask, id: 'task-2' }, devRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+    await service.executeTask({ ...zcodeTask, id: 'task-3' }, feRole, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
+
+    const prompts = ctx.started.map((record) => (record.request.prompt as { text: string }[])[0]!.text)
+    // 首派（developer-1）：全量注入——静态两段 + 任务段，无防歧义行
+    expect(prompts[0]).toContain('## 角色人格')
+    expect(prompts[0]).toContain('## 执行纪律')
+    expect(prompts[0]).not.toContain('本会话已含你的角色与纪律约定')
+    // 用户裁定整删的两段在任何 prompt 中都不再出现
+    expect(prompts[0]).not.toContain('## DSH Memory 提示')
+    expect(prompts[0]).not.toContain('## 项目上下文')
+    // 复用同会话（developer-1 第二次）：跳过静态两段，任务专属段齐全，含防歧义行
+    expect(prompts[1]).not.toContain('## 角色人格')
+    expect(prompts[1]).not.toContain('## 执行纪律')
+    expect(prompts[1]).toContain('本会话已含你的角色与纪律约定')
+    expect(prompts[1]).toContain('## 任务描述')
+    expect(prompts[1]).toContain('## 上游任务产物')
+    expect(prompts[1]).toContain('## 相关知识（来自知识库）')
+    expect(prompts[1]).toContain('## 知识沉淀要求')
+    expect(prompts[1]).toContain('## 输出要求')
+    expect(prompts[1]).toContain('## 可用命令（执行中可调用）')
+    // 不同角色 ⇒ 不同 sessionKey ⇒ 新会话重新全量注入
+    expect(prompts[2]).toContain('## 角色人格')
+    expect(prompts[2]).not.toContain('本会话已含你的角色与纪律约定')
+  })
+
+  it('buildPrompt firstDispatch 参数：缺省/true 全量；false 精简且无静态段残留', () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    const full = service.buildPrompt(BASE_TASK, BASE_ROLE, BASE_CONTEXT, [], null, BASE_TEAM.knowledge_injection)
+    const explicitFull = service.buildPrompt(BASE_TASK, BASE_ROLE, BASE_CONTEXT, [], null, BASE_TEAM.knowledge_injection, true)
+    const slim = service.buildPrompt(BASE_TASK, BASE_ROLE, BASE_CONTEXT, [], null, BASE_TEAM.knowledge_injection, false)
+
+    for (const snippet of ['## 角色人格', '## 执行纪律']) {
+      expect(full).toContain(snippet)
+      expect(explicitFull).toContain(snippet)
+      expect(slim).not.toContain(snippet)
+    }
+    // 精简模式任务专属段一项不缺，且带防歧义行
+    for (const snippet of [
+      '## 任务描述',
+      '## 上游任务产物',
+      '## 相关知识（来自知识库）',
+      '## 知识沉淀要求',
+      '## 输出要求',
+    ]) {
+      expect(slim).toContain(snippet)
+    }
+    expect(slim).toContain('本会话已含你的角色与纪律约定')
+    expect(full).not.toContain('本会话已含你的角色与纪律约定')
+  })
+
   it('buildPrompt 模板：角色/任务/项目/上游/知识/可用命令/沉淀要求/输出要求齐全', async () => {
     const ctx = new MockSubagentsContext()
     const { service: s2 } = makeService({ mock: ctx })
@@ -222,16 +279,10 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       '你是 编码工程师，负责完成以下任务。',
       '## 角色人格',
       '你是一名追求最小可用、先验证再交付的工程师。',
-      '## DSH Memory 提示',
-      '先查本地源码、配置、文档，不随意联网搜索。',
       '## 执行纪律',
       '小步快跑：一次改一处，改完立即验证。',
       '## 任务描述',
       '实现 ExecutorRegistry 并补单元测试',
-      '## 项目上下文',
-      '- 项目: proj-weave - 版本: v0.2.0 - weave',
-      '- 工作目录: /work/weave',
-      '- Git 分支: main',
       '## 上游任务产物',
       '### 设计文档: 02-SDD',
       'SDD 核心章节摘要…',
@@ -247,6 +298,10 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
       '输出实现文件路径与测试命令。',
     ]) {
       expect(text).toContain(snippet)
+    }
+    // 用户裁定整删：「DSH Memory 提示」与「项目上下文」两段不得再出现
+    for (const gone of ['## DSH Memory 提示', '先查本地源码', '## 项目上下文', '- 项目: proj-weave', '- 工作目录', '- Git 分支']) {
+      expect(text).not.toContain(gone)
     }
   })
 
@@ -315,6 +370,55 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     })
     const output = await service.executeTask(BASE_TASK, BASE_ROLE, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
     expect(output.stopReason).toBe('completed')
+  })
+
+  it('onAcquired 时序（假并行修复）：槽满排队时不触发；拿到槽后、start 前触发', async () => {
+    const ctx = new MockSubagentsContext()
+    const limiter = new ProcessLimiter({ limits: { spawn: { maxConcurrent: 1, maxPerHour: 100 } } })
+    const { service } = makeService({ mock: ctx, limiter })
+    expect(service.supportsSlotAcquiredHook).toBe(true)
+
+    const sequence: string[] = []
+    // 先占满 spawn 槽，模拟执行器繁忙：executeTask 应在 waitForProcessSlot 排队
+    expect(limiter.acquire('spawn')).toBe(true)
+    const pending = service.executeTask(
+      BASE_TASK,
+      BASE_ROLE,
+      BASE_TEAM,
+      {
+        ...BASE_CONTEXT,
+        onAcquired: () => {
+          // 记录触发瞬间 start 是否已发起（0 = 尚未，证明在 provider.start 之前）
+          sequence.push(`acquired@started=${ctx.started.length}`)
+        },
+      },
+      new AbortController().signal,
+    )
+    // 越过 limiter 轮询周期（100ms）数拍：仍在排队
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(sequence).toEqual([])
+    expect(ctx.started).toHaveLength(0)
+
+    limiter.release('spawn')
+    await pending
+    expect(sequence).toEqual(['acquired@started=0'])
+    expect(ctx.started).toHaveLength(1)
+  })
+
+  it('onAcquired 时序：槽空闲时同步获得槽位，同样在 start 前触发', async () => {
+    const ctx = new MockSubagentsContext()
+    const { service } = makeService({ mock: ctx })
+    const sequence: string[] = []
+    const output = await service.executeTask(
+      BASE_TASK,
+      BASE_ROLE,
+      BASE_TEAM,
+      { ...BASE_CONTEXT, onAcquired: () => { sequence.push(`acquired@started=${ctx.started.length}`) } },
+      new AbortController().signal,
+    )
+    expect(output.stopReason).toBe('completed')
+    expect(sequence).toEqual(['acquired@started=0'])
+    expect(ctx.started).toHaveLength(1)
   })
 
   it('执行器未注册 → WeaveError(executor_unavailable)，不发起 start', async () => {

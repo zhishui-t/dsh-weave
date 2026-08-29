@@ -168,8 +168,7 @@ test.describe(HARNESS_DESCRIBE, () => {
     const dialog = page.getByTestId('session-revise-dialog')
     await expect(dialog).toBeVisible()
     // 反馈输入为空时确认按钮禁用（PromptDialog 按 value.trim() 禁用）
-    // 注：PromptDialog 按钮暂无独立 testid（测试性缺口），此处按弹窗内动作区末位按钮定位
-    const confirmBtn = dialog.locator('.weave-dialog-actions button').last()
+    const confirmBtn = page.getByTestId('session-revise-confirm')
     await expect(confirmBtn).toBeDisabled()
     await dialog.locator('textarea').fill('把登录校验改成邮箱验证码')
     await confirmBtn.click()

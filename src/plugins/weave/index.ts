@@ -163,14 +163,31 @@ export function apply(ctx: Context): void {
           // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
           executorProviders: service.executorProviders,
           sessionTracker: new SessionTracker(deps.persistence.feedback),
-          processLimiter: new ProcessLimiter(),
+          processLimiter: new ProcessLimiter({
+            // 团队 executor_limits 接线（曾缺失：空参导致硬编码默认 2/10 生效，yaml 改了也不管）。
+            // 合并全部团队同执行器取最大，避免多团队共宿主时被单团队低值卡死。
+            limits: (() => {
+              const merged: Record<string, { maxConcurrent: number; maxPerHour: number }> = {}
+              try {
+                for (const team of deps.teamManager.listTeams()) {
+                  for (const [executor, lim] of Object.entries(team.executor_limits ?? {})) {
+                    const prev = merged[executor]
+                    if (!prev || (lim.max_concurrent ?? 0) > (prev.maxConcurrent ?? 0)) {
+                      merged[executor] = { maxConcurrent: lim.max_concurrent ?? prev?.maxConcurrent ?? 0, maxPerHour: Math.max(lim.max_per_hour ?? 0, prev?.maxPerHour ?? 0) }
+                    }
+                  }
+                }
+              } catch { /* 团队列举失败回落默认 */ }
+              return merged
+            })(),
+          }),
           knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
           // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
           // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至
           // 20 分钟（settings.execution_idle_timeout_ms 可覆盖）；绝对墙钟 60min 仍是
           // 挂死兜底，长任务仍可被队长人工取消。
           idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
-          delegationMaxWallClockMs: 3_600_000,
+          delegationMaxWallClockMs: 0,
           // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
           // notifyWeaveSession/resolveNoticeSession 在下方定义，事件只在其任务执行期
           // 异步到达，闭包引用安全。

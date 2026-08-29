@@ -36,12 +36,20 @@ interface ConnectionHandle {
   rpc: ConnectionRpc
 }
 
+/** dsh-client-runtime ObservableSnapshot 的最小结构视图（参照 ActivityPanel 订阅模式）。 */
+interface ObservableSnapshotLike {
+  subscribe(listener: () => void): () => void
+  getSnapshot(): unknown
+}
+
 /** DSH sessions 服务的窄接口：用于打开 DSH 子代理会话。 */
 interface SessionNavigator {
   open(id: string): void
   openSubagent?(address: { parentSessionId: string; childSessionId: string; mode?: string }): void
   refreshSubagents?(parentSessionId: string): Promise<void>
   subagentAddress?(id: string): { parentSessionId?: string; childSessionId?: string; mode?: string } | undefined
+  /** 宿主会话列表快照（ObservableSnapshot）：成员子代理会话生成/退出即推。旧宿主可能缺失。 */
+  list?: ObservableSnapshotLike
 }
 
 interface ClientContext {
@@ -51,6 +59,10 @@ interface ClientContext {
 }
 
 type RpcCaller = (endpoint: string, payload?: unknown) => Promise<unknown>
+
+/** 宿主快照缺失时的 useSyncExternalStore 兜底（模块级稳定引用，避免重订阅风暴）。 */
+const noopSnapshotSubscribe = (): (() => void) => () => undefined
+const noopSnapshotGet = (): unknown => 0
 
 const PLUGIN_ID = '@deepseek-ai/dsh-plugin-weave'
 const STYLE_ID = 'dsh-weave-client-style'
@@ -75,6 +87,13 @@ const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
 ]
 
 /* ------------------------------- 领域常量 ------------------------------- */
+
+/** 会话面板活跃探测心跳间隔（ms）：与成员输出流轮询同频；探测极轻（两条小查询），
+ * 指纹无变化不发刷新——保证状态变更 2 秒内反映且空闲零数据拉取。 */
+const SESSION_HEARTBEAT_MS = 1000
+/** 事件合并防抖（ms）：宿主推流/探测命中统一经此合并，避免连发风暴。 */
+const SESSION_REFRESH_DEBOUNCE_MS = 150
+
 
 /** 各状态下提供哪些快捷动作入口；最终合法性由服务端 14 态矩阵裁决，非法转移会被拒绝并展示错误。 */
 const TASK_ACTIONS_BY_STATUS: Record<string, Array<{ action: string; label: string; confirm?: boolean }>> = {
@@ -283,6 +302,8 @@ interface SessionStatusMember {
   task_id?: string
   subject?: string
   started_at?: string
+  /** queued=已派发等待执行器槽；running=真正执行（假并行修复）。 */
+  phase?: string
   last_task_id?: string
   last_status?: string
   last_subject?: string
@@ -308,6 +329,7 @@ interface KnowledgeGraphNode {
 interface KnowledgeGraphData {
   nodes?: KnowledgeGraphNode[]
   edges?: Array<{ source: string; target: string }>
+  projects?: string[]
   counts?: { knowledge: number; missing: number; edges: number; unresolved: number; skipped: number }
 }
 interface SettingsInfo {
@@ -556,7 +578,7 @@ body.weave-session-active [class*="uV2eYG"]{display:none !important}
 /* ------------------------------- 应用工厂 ------------------------------- */
 
 function createApp(React: any, createPortal?: (node: any, container: Element) => any, callRpc?: RpcCaller, sessionNavigator?: SessionNavigator): any {
-  const { useState, useCallback, useEffect, useRef } = React
+  const { useState, useCallback, useEffect, useRef, useSyncExternalStore } = React
 
   /* ----------------------------- 基础工具 ----------------------------- */
 
@@ -763,12 +785,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   /** 通用输入弹窗：替代原生 window.prompt（如任务返工反馈）。 */
-  const PromptDialog = ({ open, title, placeholder = '', initialValue = '', testId = 'prompt-dialog', onConfirm, onCancel }: {
+  const PromptDialog = ({ open, title, placeholder = '', initialValue = '', testId = 'prompt-dialog', confirmTestId, onConfirm, onCancel }: {
     open: boolean
     title: string
     placeholder?: string
     initialValue?: string
     testId?: string
+    confirmTestId?: string
     onConfirm: (value: string) => void
     onCancel: () => void
   }) => {
@@ -807,12 +830,12 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           { className: 'weave-dialog-actions' },
           React.createElement(
             'button',
-            { className: 'weave-button weave-button-secondary', type: 'button', onClick: onCancel },
+            { className: 'weave-button weave-button-secondary', type: 'button', onClick: onCancel, 'data-testid': `${testId}-cancel` },
             '取消',
           ),
           React.createElement(
             'button',
-            { className: 'weave-button', type: 'button', disabled: value.trim() === '', onClick: () => onConfirm(value.trim()) },
+            { className: 'weave-button', type: 'button', disabled: value.trim() === '', onClick: () => onConfirm(value.trim()), 'data-testid': confirmTestId ?? `${testId}-confirm` },
             '提交反馈',
           ),
         ),
@@ -3108,6 +3131,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [copiedPath, setCopiedPath] = useState(false)
     const [graphStatus, setGraphStatus] = useState('')
     const [graphLayer, setGraphLayer] = useState('')
+    const [graphProject, setGraphProject] = useState('')
 
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
     const vaultPath = String(info.data?.obsidian_dir ?? '')
@@ -3124,9 +3148,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         const payload: Json = { limit: 200 }
         if (graphStatus !== '') payload.status = graphStatus
         if (graphLayer !== '') payload.layer = graphLayer
+        if (graphProject !== '') payload.project = graphProject
         return (await rpc('knowledge/graph', payload)) as KnowledgeGraphData
       },
-      [graphStatus, graphLayer],
+      [graphStatus, graphLayer, graphProject],
     )
     const graphNodes = graph.data?.nodes ?? []
 
@@ -3242,6 +3267,17 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     { key: value, value },
                     labelOf(KNOWLEDGE_LAYER_LABELS, value),
                   )),
+                ),
+                React.createElement(
+                  'select',
+                  {
+                    className: 'weave-control',
+                    'data-testid': 'knowledge-graph-project-filter',
+                    value: graphProject,
+                    onChange: (event: { target: { value: string } }) => setGraphProject(event.target.value),
+                  },
+                  React.createElement('option', { value: '' }, '全部项目'),
+                  ...(graph.data?.projects ?? []).map((value: string) => React.createElement('option', { key: value, value }, value)),
                 ),
               ),
               React.createElement(KnowledgeGraphView, {
@@ -3611,7 +3647,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           React.createElement('option', { value: 'desc' }, '最新优先'),
           React.createElement('option', { value: 'asc' }, '最旧优先'),
         ),
-        React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'submit' }, '查询'),
+        React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'submit', 'data-testid': 'audit-query-btn' }, '查询'),
         React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => void list.refresh() }, '刷新'),
       ),
       list.error
@@ -4150,9 +4186,36 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   const memberStatusLabel = (status: string): string => {
     const lower = String(status ?? '').toLowerCase()
     if (lower === 'running') return '执行中'
+    if (lower === 'queued') return '排队中'
     if (lower === 'interrupted' || lower === 'idle_timeout') return '中断'
     return '空闲'
   }
+
+  /**
+   * 会话面板活跃探测指纹（纯函数）：团队 + 成员占用 + 最近任务。
+   * 探测取回与已加载资源共用同一结构，保证基线与探测可比；
+   * 全部任务状态写点都会刷新 updated_at，指纹可覆盖任务域全部迁移。
+   */
+  const sessionFingerprint = (
+    next: SessionStatusData | undefined,
+    listed: { tasks?: TaskRow[] } | undefined,
+  ): unknown[] => [
+    String(next?.team?.team_id ?? ''),
+    (next?.members ?? []).map((member) => [
+      String(member.role_id ?? ''),
+      String(member.status ?? ''),
+      String(member.task_id ?? ''),
+      String(member.phase ?? ''),
+      String(member.started_at ?? ''),
+      String(member.last_task_id ?? ''),
+      String(member.last_status ?? ''),
+    ]),
+    ...((listed?.tasks ?? []).slice(0, 1).map((task) => [
+      String(task.id ?? ''),
+      String(task.status ?? ''),
+      String(task.updated_at ?? ''),
+    ])),
+  ]
 
   /**
    * 会话即团队面板：挂在 conversation.view 槽位，宿主注入框架标准 kit
@@ -4244,7 +4307,79 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       if (latestDagId !== '') void detail.refresh()
     }, [status.refresh, list.refresh, detail.refresh, latestDagId])
 
-    // 不做定时轮询：状态变更由通信/手动刷新驱动（Phase 3 消息机制已具备）。
+    /* ---- 事件驱动刷新（参照 dsh-agent-teams ActivityPanel 的 ObservableSnapshot 订阅模式） ----
+     * ① 宿主推流：订阅 ctx.sessions.list（ObservableSnapshot）——成员子代理会话生成/退出即推，
+     *    状态一变即刷（零轮询主路径）；旧宿主无此面时静默降级。
+     * ② 活跃探测：团队已绑定时按 SESSION_HEARTBEAT_MS 心跳拉轻量指纹（成员占用 + 最近任务
+     *    updated_at，全部状态写点都会刷新 updated_at），指纹变化才全量刷新——变更检测与数据
+     *    获取分离（细粒度订阅），覆盖 zcode ACP 等不产生宿主会话 churn 的执行器；页签隐藏时暂停。
+     * ③ 手动「刷新」按钮保留为兜底路径，同样走防抖合并。 */
+    const sessionsList = sessionNavigator?.list
+    const subscribeSessions =
+      typeof sessionsList?.subscribe === 'function' ? sessionsList.subscribe : noopSnapshotSubscribe
+    const getSessionsSnapshot =
+      typeof sessionsList?.getSnapshot === 'function' ? sessionsList.getSnapshot : noopSnapshotGet
+    const sessionVersion = useSyncExternalStore(subscribeSessions, getSessionsSnapshot)
+
+    const refreshTimer = useRef(null as null | number)
+    const scheduleRefresh = useCallback(() => {
+      if (refreshTimer.current !== null) return
+      refreshTimer.current = window.setTimeout(() => {
+        refreshTimer.current = null
+        refreshAll()
+      }, SESSION_REFRESH_DEBOUNCE_MS)
+    }, [refreshAll])
+    useEffect(
+      () => () => {
+        if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current)
+      },
+      [],
+    )
+
+    // 宿主推流 → 版本变化 → 防抖刷新（挂载首帧同值不触发）。
+    const seenSessionVersion = useRef(sessionVersion)
+    useEffect(() => {
+      if (seenSessionVersion.current === sessionVersion) return
+      seenSessionVersion.current = sessionVersion
+      scheduleRefresh()
+    }, [sessionVersion, scheduleRefresh])
+
+    // 活跃探测：成员占用 + 最近任务的轻量指纹；探测自带的 inFlight 闸防重叠。
+    // 基线从已加载资源同步（而非首拍置空）——挂载后首个心跳前发生的变更不被吞。
+    const probeBusy = useRef(false)
+    const seenFingerprint = useRef('')
+    const loadedFingerprint = status.data
+      ? JSON.stringify(sessionFingerprint(status.data, list.data))
+      : ''
+    useEffect(() => {
+      if (loadedFingerprint !== '') seenFingerprint.current = loadedFingerprint
+    }, [loadedFingerprint])
+    const probe = useCallback(async () => {
+      if (sid === '' || !statusKnown || !teamBound || probeBusy.current) return
+      probeBusy.current = true
+      try {
+        const [next, listed] = await Promise.all([
+          rpc('session/status', { sessionId: sid }) as Promise<SessionStatusData>,
+          rpc('task/list', { sessionId: sid, limit: 1 }) as Promise<{ tasks?: TaskRow[] }>,
+        ])
+        const fingerprint = JSON.stringify(sessionFingerprint(next, listed))
+        if (seenFingerprint.current !== '' && seenFingerprint.current !== fingerprint) scheduleRefresh()
+        seenFingerprint.current = fingerprint
+      } catch {
+        // 探测失败（连接抖动）静默：下个心跳再试，不打扰用户。
+      } finally {
+        probeBusy.current = false
+      }
+    }, [sid, statusKnown, teamBound, scheduleRefresh])
+    useEffect(() => {
+      if (sid === '' || !statusKnown || !teamBound) return
+      const timer = window.setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return
+        void probe()
+      }, SESSION_HEARTBEAT_MS)
+      return () => window.clearInterval(timer)
+    }, [sid, statusKnown, teamBound, probe])
+
     const members = status.data?.members ?? []
     /* ---- 底部 Tab 组：固定「任务依赖图」+ 队员输出 Tab（可关闭） ---- */
     const [outputTabs, setOutputTabs] = useState([] as Array<{ roleId: string; name: string; taskId: string; executor?: string }>)
@@ -4371,7 +4506,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
         React.createElement(
           'button',
-          { className: 'weave-button weave-button-secondary weave-button-small', type: 'button', 'data-testid': 'weave-session-refresh', onClick: refreshAll },
+          { className: 'weave-button weave-button-secondary weave-button-small', type: 'button', 'data-testid': 'weave-session-refresh', onClick: scheduleRefresh },
           '刷新',
         ),
         React.createElement('span', { className: 'weave-muted', style: { marginLeft: 'auto' } }, `会话 ${sid.slice(0, 18)}${sid.length > 18 ? '…' : ''}`),
@@ -4730,6 +4865,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             title: `返工反馈 · ${shortTaskId(reviseTask.taskId)}`,
             placeholder: '例如：把登录校验改成邮箱验证码',
             testId: 'session-revise-dialog',
+            confirmTestId: 'session-revise-confirm',
             onConfirm: (value: string) => {
               const target = reviseTask
               setReviseTask(null)

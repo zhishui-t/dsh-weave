@@ -15,7 +15,8 @@ export interface ProcessLimiterOptions {
   now?: () => number
 }
 
-export const DEFAULT_EXECUTOR_LIMITS: ExecutorLimits = { maxConcurrent: 2, maxPerHour: 10 }
+/** 缺省安全网：团队 executor_limits 未覆盖时使用（曾为 2/10，误伤多角色并行与小时配额，实测调高）。 */
+export const DEFAULT_EXECUTOR_LIMITS: ExecutorLimits = { maxConcurrent: 20, maxPerHour: 1000 }
 
 const HOUR_MS = 3600_000
 
