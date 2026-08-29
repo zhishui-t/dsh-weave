@@ -1,7 +1,7 @@
 export interface ExecutorLimits {
   /** 并发槽位上限 */
   maxConcurrent: number
-  /** 滚动 1 小时内的执行次数上限 */
+  /** 滚动 1 小时内的执行次数（保留为诊断字段；不再参与限流拒绝） */
   maxPerHour: number
 }
 
@@ -15,8 +15,8 @@ export interface ProcessLimiterOptions {
   now?: () => number
 }
 
-/** 缺省安全网：团队 executor_limits 未覆盖时使用（曾为 2/10，误伤多角色并行与小时配额，实测调高）。 */
-export const DEFAULT_EXECUTOR_LIMITS: ExecutorLimits = { maxConcurrent: 20, maxPerHour: 1000 }
+/** 缺省安全网：团队 executor_limits 未覆盖时使用。maxPerHour 仅诊断，不再限流。 */
+export const DEFAULT_EXECUTOR_LIMITS: ExecutorLimits = { maxConcurrent: 20, maxPerHour: 0 }
 
 const HOUR_MS = 3600_000
 
@@ -67,7 +67,7 @@ export class ProcessLimiter {
     // 滑动窗口：清理 1 小时前的记录
     st.acquiredAt = st.acquiredAt.filter((t) => now - t < HOUR_MS)
     if (st.active >= limits.maxConcurrent) return false
-    if (st.acquiredAt.length >= limits.maxPerHour) return false
+    // 用户裁定：小时频率限制已移除。maxPerHour 仅保留为诊断/兼容字段，不再参与拒绝。
     st.active++
     st.acquiredAt.push(now)
     return true

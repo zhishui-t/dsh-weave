@@ -167,7 +167,7 @@ describe('ProcessLimiter：per-executor 并发 + 小时频率，超限排队不�
     expect(pl.acquire('claude_code')).toBe(false)
   })
 
-  it('小时频率：窗口内超限拒绝，窗口滑移后恢复', () => {
+  it('小时频率限制已移除：超过 maxPerHour 后仍可继续获取（仅并发生效）', () => {
     let t = 0
     const pl = new ProcessLimiter({
       defaultLimits: { maxConcurrent: 10, maxPerHour: 3 },
@@ -176,9 +176,9 @@ describe('ProcessLimiter：per-executor 并发 + 小时频率，超限排队不�
     expect(pl.acquire('a')).toBe(true)
     expect(pl.acquire('a')).toBe(true)
     expect(pl.acquire('a')).toBe(true)
-    expect(pl.acquire('a')).toBe(false) // 3 次/小时已满
+    expect(pl.acquire('a')).toBe(true) // 不再因小时频率拒绝
     t += HOUR_MS + 1
-    expect(pl.acquire('a')).toBe(true) // 窗口滑移
+    expect(pl.acquire('a')).toBe(true)
   })
 
   it('waitForProcessSlot 排队等待，释放后自动继续（AC-EXEC-005，不熔断）', async () => {

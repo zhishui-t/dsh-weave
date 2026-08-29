@@ -68,7 +68,7 @@ feedback:
 executor_limits:                      # ME-6：执行器级硬限制（键 = role.executor provider 名）
   codex:
     max_concurrent: 2
-    max_per_hour: 20
+    max_per_hour: 0
   zcode:
     max_concurrent: 2
-    max_per_hour: 20
+    max_per_hour: 0
