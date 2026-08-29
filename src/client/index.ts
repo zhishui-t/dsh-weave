@@ -71,6 +71,9 @@ type Route =
   | 'overview'
   | 'teams'
   | 'knowledge'
+  | 'code'
+  | 'convert'
+  | 'obsidian'
   | 'executors'
   | 'audit'
   | 'settings'
@@ -80,6 +83,9 @@ const ROUTES: Array<{ key: Route; label: string; desc: string }> = [
   { key: 'overview', label: '总览', desc: '任务、知识与执行器的整体运行状态，含修订记录。' },
   { key: 'teams', label: '团队', desc: '查看团队并创建新的协作团队。' },
   { key: 'knowledge', label: '知识库', desc: '知识导入、候选审核与注入管理。' },
+  { key: 'code', label: '代码图谱', desc: 'Graphify 项目结构、语义查询与影响面。' },
+  { key: 'convert', label: '文档转换', desc: 'AnyDoc 独立文档转 Markdown 与预览。' },
+  { key: 'obsidian', label: 'Obsidian', desc: 'Vault 生成、打开、回索引与冲突保护。' },
   { key: 'executors', label: '执行器', desc: '实际注册的执行器与其能力。' },
   { key: 'audit', label: '审计日志', desc: '核心事件与恢复操作审计。' },
   { key: 'settings', label: '设置', desc: 'Weave 本地配置与运行参数。' },
@@ -333,6 +339,112 @@ interface KnowledgeGraphData {
   projects?: string[]
   counts?: { knowledge: number; missing: number; edges: number; unresolved: number; skipped: number }
 }
+/** code/graph 图谱摘要（Graphify 返回；字段以真实 RPC 为准）。 */
+interface CodeGraphSummary {
+  graphPath?: string
+  flowsPath?: string
+  nodeCount?: number
+  edgeCount?: number
+  communityCount?: number
+  builtFromCommit?: string
+  hasFlows?: boolean
+}
+/** code/flows 执行流列表项（与后端 GraphFlow 对齐的精简结构）。 */
+interface GraphFlowLike {
+  id: string
+  name: string
+  entryPoint?: string
+  entryPointId?: string
+  path?: string[]
+  qualifiedPath?: string[]
+  depth?: number
+  nodeCount?: number
+  fileCount?: number
+  files?: string[]
+  criticality?: number
+  warnings?: string[]
+  steps?: Array<{ nodeId?: string; name?: string; kind?: string; file?: string; lineStart?: number; lineEnd?: number; qualifiedName?: string }>
+}
+interface AffectedFlowsLike {
+  changedFiles?: string[]
+  matchedNodeIds?: string[]
+  unmatchedFiles?: string[]
+  affectedFlows?: GraphFlowLike[]
+}
+/** document/convert 提交结果。 */
+interface DocumentConvertResultLike {
+  jobId?: string
+  status?: 'queued' | 'converting' | 'done' | 'failed' | string
+  filename?: string
+}
+/** document/status 轮询结果。 */
+interface DocumentStatusLike {
+  jobId?: string
+  status?: 'queued' | 'converting' | 'done' | 'failed' | string
+  filename?: string
+  progress?: number
+  title?: string
+  warnings?: string[]
+  error?: string
+  markdown_path?: string
+  created_at?: string
+  updated_at?: string
+}
+/** document/preview 结果。 */
+interface DocumentPreviewLike {
+  jobId?: string
+  status?: string
+  markdown?: string
+  title?: string
+  warnings?: string[]
+}
+/** document/history 单条记录。 */
+interface ObsidianConflictLike {
+  path: string
+  kind: string
+  detectedAt: string
+  externalHash: string
+  weaveHash: string
+  backupPath?: string
+}
+
+interface ObsidianStatusLike {
+  exists: boolean
+  vaultPath: string
+  lastGeneratedAt: string | null
+  conflictCount: number
+  fileCount?: number
+  knowledgeCount?: number
+  conflicts?: ObsidianConflictLike[]
+}
+
+interface ObsidianGenerateResultLike {
+  generated: number
+  updated: number
+  vaultPath: string
+  conflictCount: number
+  existingSkipped?: number
+  conflicts?: ObsidianConflictLike[]
+  tombstones?: Array<{ path: string; detectedAt: string }>
+  aliases?: Array<{ from: string; to: string; detectedAt: string }>
+}
+
+interface ObsidianReindexResultLike {
+  reindexed: boolean
+  entries: number
+  vaultPath: string
+  conflictCount: number
+}
+
+interface DocumentHistoryLike {
+  jobId?: string
+  filename?: string
+  status?: 'queued' | 'converting' | 'done' | 'failed' | string
+  title?: string
+  error?: string
+  created_at?: string
+  updated_at?: string
+}
 interface SettingsInfo {
   obsidian_dir?: string
   version?: string
@@ -572,6 +684,18 @@ body.weave-session-active [class*="uV2eYG"]{display:none !important}
 .weave-assignment-chip[data-state="awaiting"]{border-color:#faad14;background:rgba(250,173,20,.10)}
 .weave-assignment-chip[data-state="completed"]{border-color:#52c41a;background:rgba(82,196,26,.10)}
 .weave-assignment-chip[data-state="failed"]{border-color:#f5222d;background:rgba(245,34,45,.08)}
+.weave-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.weave-tab-pill{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:5px 12px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer}
+.weave-tab-pill:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-tertiary)}
+.weave-tab-pill[data-active="true"]{background:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));border-color:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));color:var(--dsw-specific-menu);font-weight:550}
+.weave-metric{display:grid;gap:2px}
+.weave-metric b{font-size:16px;font-weight:600}
+.weave-metric span{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.weave-progress{height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.weave-progress i{display:block;height:100%;background:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));border-radius:999px;transition:width .2s}
+.weave-text-result{max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:12px;background:var(--dsw-specific-menu)}
+.weave-build-hint{display:flex;flex-direction:column;gap:6px;align-items:flex-start;text-align:left}
+.weave-file-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 `
   document.head.appendChild(style)
 }
@@ -597,6 +721,17 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   const fmtTime = (value: unknown): string => {
     if (typeof value !== 'string' || value === '') return '—'
     return value.replace('T', ' ').slice(0, 19)
+  }
+
+  /** 复制文本到剪贴板；环境不支持时回退 prompt（与 KnowledgePage 的复制路径一致）。 */
+  const copyText = async (value: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      window.prompt('复制文本', value)
+      return false
+    }
   }
 
   /** 展示用短任务 ID：dag-...-t1 → t1，便于成员卡/DAG 节点一眼区分。 */
@@ -1867,7 +2002,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                     typeof team.description === 'string' && team.description.trim() !== ''
                       ? React.createElement(
                           'span',
-                          { className: 'weave-muted', 'data-testid': `team-description-${id}` },
+                          { className: 'weave-muted', style: { whiteSpace: 'pre-line' }, 'data-testid': `team-description-${id}` },
                           team.description,
                         )
                       : null,
@@ -1976,7 +2111,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               typeof detailRows.description === 'string' && detailRows.description.trim() !== ''
                 ? React.createElement(
                     'p',
-                    { 'data-testid': `team-detail-description-${String(detailRows.team_id ?? '')}` },
+                    { style: { whiteSpace: 'pre-line' }, 'data-testid': `team-detail-description-${String(detailRows.team_id ?? '')}` },
                     detailRows.description,
                   )
                 : null,
@@ -3145,21 +3280,16 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
-  function KnowledgePage() {
+  function KnowledgePage({ onOpenObsidian }: { onOpenObsidian?: () => void } = {}) {
     const [status, setStatus] = useState('candidate')
     const [layer, setLayer] = useState('')
     const [reasonFor, setReasonFor] = useState('')
     const [reasonDraft, setReasonDraft] = useState('')
     const [rejectTarget, setRejectTarget] = useState(null as null | string)
     const [selectedNodeId, setSelectedNodeId] = useState('')
-    const [copiedPath, setCopiedPath] = useState(false)
     const [graphStatus, setGraphStatus] = useState('')
     const [graphLayer, setGraphLayer] = useState('')
     const [graphProject, setGraphProject] = useState('')
-
-    const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
-    const vaultPath = String(info.data?.obsidian_dir ?? '')
-    const obsidianHref = vaultPath === '' ? undefined : `obsidian://open?path=${encodeURIComponent(vaultPath)}`
 
     const list = useResource<{ candidates?: KnowledgeItem[] }>(async () => {
       const payload: Json = { status, limit: 50 }
@@ -3206,16 +3336,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       })
     }
 
-    const copyVaultPath = async () => {
-      try {
-        await navigator.clipboard.writeText(vaultPath)
-        setCopiedPath(true)
-        window.setTimeout(() => setCopiedPath(false), 1800)
-      } catch {
-        window.prompt('复制 Obsidian Vault 路径：', vaultPath)
-      }
-    }
-
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-knowledge' },
@@ -3230,7 +3350,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           React.createElement('span', { className: 'weave-muted' }, '① 执行器在任务输出中写 `WEAVE_KNOWLEDGE` 块 → 自动生成候选知识；'),
           React.createElement('span', { className: 'weave-muted' }, '② 在这里审核：通过（approve）进入可注入知识，驳回（reject）归档；'),
           React.createElement('span', { className: 'weave-muted' }, '③ 后续任务派发时按团队 `knowledge_injection` 限额自动注入相关知识；'),
-          React.createElement('span', { className: 'weave-muted' }, '④ 知识按 项目 / 角色 / 实例 / 全局 分层，下方双链图谱可查看关联与缺失目标。'),
+          React.createElement('span', { className: 'weave-muted' }, '④ 知识按 项目 / 角色 / 实例 / 全局 分层，下方 Graphify 知识图谱可查看关联与缺失目标。'),
         ),
       ),
       Note({
@@ -3243,26 +3363,23 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       React.createElement(KnowledgeImportPanel, null),
       React.createElement(
         'div',
-        { className: 'weave-panel', 'data-testid': 'obsidian-panel' },
-        React.createElement('b', { className: 'weave-subh' }, 'Obsidian Vault'),
+        { className: 'weave-panel', 'data-testid': 'knowledge-obsidian-entry' },
+        React.createElement('b', { className: 'weave-subh' }, 'Obsidian 控制台'),
         React.createElement(
           'div',
-          { className: 'weave-actions', style: { alignItems: 'center' } },
-          vaultPath ? React.createElement('span', { className: 'weave-code weave-muted', 'data-testid': 'obsidian-path' }, vaultPath) : null,
-          obsidianHref
-            ? React.createElement(
-                'a',
-                { className: 'weave-button weave-button-secondary', href: obsidianHref, target: '_blank', rel: 'noreferrer', 'data-testid': 'obsidian-open' },
-                '打开 Obsidian',
-              )
-            : React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', disabled: true }, '路径不可用'),
+          { className: 'weave-actions' },
           React.createElement(
             'button',
-            { className: 'weave-button weave-button-secondary', type: 'button', disabled: vaultPath === '', 'data-testid': 'obsidian-copy', onClick: () => void copyVaultPath() },
-            copiedPath ? '已复制' : '复制路径',
+            {
+              className: 'weave-button weave-button-secondary',
+              type: 'button',
+              'data-testid': 'knowledge-obsidian-entry-button',
+              onClick: () => { if (typeof onOpenObsidian === 'function') onOpenObsidian() },
+            },
+            '前往 Obsidian 页',
           ),
         ),
-        React.createElement('span', { className: 'weave-muted' }, '知识主存储仍是 Markdown + frontmatter；P0 只提供入口，不做双向同步。'),
+        React.createElement('span', { className: 'weave-muted' }, '知识镜像、Vault 生成、回索引与冲突保护已独立到 Obsidian 页管理。'),
       ),
       graph.loading
         ? React.createElement(Note, { text: '正在加载知识图谱...' })
@@ -3271,7 +3388,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           : React.createElement(
               'div',
               { className: 'weave-panel' },
-              React.createElement('b', { className: 'weave-subh' }, '知识图谱（双链预览）'),
+              React.createElement('b', { className: 'weave-subh' }, '知识图谱（Graphify）'),
+              React.createElement('span', { className: 'weave-actions', style: { float: 'right' }, 'data-testid': 'knowledge-graph-source-badge' }, React.createElement(Pill, { label: 'Graphify', title: 'Graphify 数据源' })),
               React.createElement(
                 'div',
                 { className: 'weave-toolbar' },
@@ -3325,7 +3443,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
               React.createElement(
                 'span',
                 { className: 'weave-muted' },
-                `共 ${graphNodes.filter((node: KnowledgeGraphNode) => node.kind === 'knowledge').length} 条 · ${graph.data?.counts?.missing ?? 0} 个缺失目标 · ${graph.data?.counts?.edges ?? 0} 条关联；完整 Graphify 查询属于后续版本。`,
+                `共 ${graphNodes.filter((node: KnowledgeGraphNode) => node.kind === 'knowledge').length} 条 · ${graph.data?.counts?.missing ?? 0} 个缺失目标 · ${graph.data?.counts?.edges ?? 0} 条关联 · Graphify 数据源。`,
               ),
             ),
       React.createElement(
@@ -3449,7 +3567,1006 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
+  /* ============================== 代码图谱 ============================== */
+
+  type CodeTab = 'overview' | 'query' | 'path' | 'explain' | 'affected' | 'flows'
+
+  const CODE_TAB_ITEMS: Array<{ key: CodeTab; label: string }> = [
+    { key: 'overview', label: '概览' },
+    { key: 'query', label: '语义查询' },
+    { key: 'path', label: '路径' },
+    { key: 'explain', label: '解释' },
+    { key: 'affected', label: '影响面' },
+    { key: 'flows', label: '执行流' },
+  ]
+
+  function GraphQueryTool() {
+    const [question, setQuestion] = useState('')
+    const [budget, setBudget] = useState('20')
+    const [dfs, setDfs] = useState(false)
+    const [result, setResult] = useState('')
+    const action = useAction()
+    const submit = async (): Promise<void> => {
+      if (question.trim() === '') return
+      const ok = await action.run(async () => {
+        const res = (await rpc('code/query', {
+          question: question.trim(),
+          ...(/^\d+$/.test(budget) ? { budget: Number(budget) } : {}),
+          dfs,
+        })) as { text?: string; path?: string }
+        setResult(String(res.text ?? res.path ?? ''))
+        return result === '' ? '查询无命中文本。' : '查询完成。'
+      })
+      if (!ok) setResult('')
+    }
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-query-panel' },
+      React.createElement('b', { className: 'weave-subh' }, '语义查询'),
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement('input', {
+          className: 'weave-control',
+          style: { flex: 1, minWidth: 240 },
+          placeholder: '例如：入口如何调用 query-service？',
+          value: question,
+          'data-testid': 'code-query-input',
+          onChange: (event: { target: { value: string } }) => setQuestion(event.target.value),
+        }),
+        React.createElement('input', {
+          className: 'weave-control',
+          style: { width: 90 },
+          value: budget,
+          'data-testid': 'code-query-budget',
+          onChange: (event: { target: { value: string } }) => setBudget(event.target.value),
+        }),
+        React.createElement(
+          'label',
+          { className: 'weave-checkrow' },
+          React.createElement('input', { type: 'checkbox', checked: dfs, onChange: (event: { target: { checked: boolean } }) => setDfs(event.target.checked) }),
+          'DFS',
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button',
+            type: 'button',
+            disabled: action.busy || question.trim() === '',
+            'data-testid': 'code-query-submit',
+            onClick: () => void submit(),
+          },
+          action.busy ? '查询中...' : '查询',
+        ),
+      ),
+      action.note ? Note({ text: action.note, kind: action.ok ? undefined : 'error' }) : null,
+      result !== ''
+        ? React.createElement('div', { className: 'weave-text-result', 'data-testid': 'code-query-result' }, result)
+        : EmptyState({ title: '暂无查询结果', reason: '输入问题后点击「查询」，结果将在此处展示。' }),
+    )
+  }
+
+  function GraphPathTool() {
+    const [source, setSource] = useState('')
+    const [target, setTarget] = useState('')
+    const [result, setResult] = useState('')
+    const action = useAction()
+    const submit = async (): Promise<void> => {
+      if (source.trim() === '' || target.trim() === '') return
+      const ok = await action.run(async () => {
+        const res = (await rpc('code/path', { source: source.trim(), target: target.trim() })) as { text?: string; path?: string }
+        setResult(String(res.text ?? res.path ?? ''))
+        return '路径查询完成。'
+      })
+      if (!ok) setResult('')
+    }
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-path-panel' },
+      React.createElement('b', { className: 'weave-subh' }, '最短路径'),
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement('input', {
+          className: 'weave-control',
+          placeholder: '起点 node id',
+          value: source,
+          'data-testid': 'code-path-source',
+          onChange: (event: { target: { value: string } }) => setSource(event.target.value),
+        }),
+        React.createElement('input', {
+          className: 'weave-control',
+          placeholder: '终点 node id',
+          value: target,
+          'data-testid': 'code-path-target',
+          onChange: (event: { target: { value: string } }) => setTarget(event.target.value),
+        }),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button',
+            type: 'button',
+            disabled: action.busy || source.trim() === '' || target.trim() === '',
+            'data-testid': 'code-path-submit',
+            onClick: () => void submit(),
+          },
+          action.busy ? '查询中...' : '查询路径',
+        ),
+      ),
+      action.note ? Note({ text: action.note, kind: action.ok ? undefined : 'error' }) : null,
+      result !== ''
+        ? React.createElement('div', { className: 'weave-text-result', 'data-testid': 'code-path-result' }, result)
+        : EmptyState({ title: '暂无路径结果', reason: '输入起点与终点 node id 后查询。' }),
+    )
+  }
+
+  function GraphExplainTool() {
+    const [node, setNode] = useState('')
+    const [result, setResult] = useState('')
+    const action = useAction()
+    const submit = async (): Promise<void> => {
+      if (node.trim() === '') return
+      const ok = await action.run(async () => {
+        const res = (await rpc('code/explain', { node: node.trim() })) as { text?: string; explain?: string }
+        setResult(String(res.text ?? res.explain ?? ''))
+        return '解释完成。'
+      })
+      if (!ok) setResult('')
+    }
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-explain-panel' },
+      React.createElement('b', { className: 'weave-subh' }, '节点解释'),
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement('input', {
+          className: 'weave-control',
+          style: { flex: 1, minWidth: 240 },
+          placeholder: '节点 id，如 graph_graph_service',
+          value: node,
+          'data-testid': 'code-explain-input',
+          onChange: (event: { target: { value: string } }) => setNode(event.target.value),
+        }),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button',
+            type: 'button',
+            disabled: action.busy || node.trim() === '',
+            'data-testid': 'code-explain-submit',
+            onClick: () => void submit(),
+          },
+          action.busy ? '查询中...' : '解释',
+        ),
+      ),
+      action.note ? Note({ text: action.note, kind: action.ok ? undefined : 'error' }) : null,
+      result !== ''
+        ? React.createElement('div', { className: 'weave-text-result', 'data-testid': 'code-explain-result' }, result)
+        : EmptyState({ title: '暂无解释', reason: '输入节点 id 后查看 Graphify 解释。' }),
+    )
+  }
+
+  function GraphAffectedTool() {
+    const [filesText, setFilesText] = useState('')
+    const [result, setResult] = useState(undefined as AffectedFlowsLike | undefined)
+    const action = useAction()
+    const submit = async (): Promise<void> => {
+      const files = filesText.split('\n').map((entry: string) => entry.trim()).filter((entry: string) => entry !== '')
+      if (files.length === 0) {
+        action.run(async () => '请先填写至少一个文件路径。')
+        return
+      }
+      const ok = await action.run(async () => {
+        const res = (await rpc('code/affected', { files })) as AffectedFlowsLike
+        setResult(res)
+        return `影响面分析完成：命中 ${res.matchedNodeIds?.length ?? 0} 节点、影响 ${res.affectedFlows?.length ?? 0} 个执行流。`
+      })
+      if (!ok) setResult(undefined)
+    }
+    return React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-affected-panel' },
+      React.createElement('b', { className: 'weave-subh' }, '影响面分析'),
+      React.createElement(
+        'div',
+        { className: 'weave-field' },
+        React.createElement('span', null, '改动的文件路径（每行一个）'),
+        React.createElement('textarea', {
+          className: 'weave-control',
+          style: { minHeight: 110, width: '100%' },
+          placeholder: 'src/plugins/weave/query-service.ts\nsrc/client/index.ts',
+          value: filesText,
+          'data-testid': 'code-affected-files',
+          onChange: (event: { target: { value: string } }) => setFilesText(event.target.value),
+        }),
+      ),
+      React.createElement(
+        'button',
+        {
+          className: 'weave-button',
+          type: 'button',
+          disabled: action.busy || filesText.trim() === '',
+          'data-testid': 'code-affected-submit',
+          onClick: () => void submit(),
+        },
+        action.busy ? '分析中...' : '分析影响面',
+      ),
+      action.note ? Note({ text: action.note, kind: action.ok ? undefined : 'error' }) : null,
+      result ? React.createElement(
+        'div',
+        { className: 'weave-panel', style: { marginTop: 0 }, 'data-testid': 'code-affected-result' },
+        React.createElement('div', { className: 'weave-kv' },
+          React.createElement('span', null, '变更文件'),
+          React.createElement('b', null, (result.changedFiles ?? []).join('、') || '—'),
+          React.createElement('span', null, '命中节点'),
+          React.createElement('b', null, (result.matchedNodeIds ?? []).join('、') || '—'),
+        ),
+        (result.unmatchedFiles ?? []).length > 0
+          ? React.createElement('div', { className: 'weave-note' }, `未匹配：${result.unmatchedFiles!.join('、')}`)
+          : null,
+        (result.affectedFlows ?? []).length === 0
+          ? EmptyState({ title: '没有匹配文件', reason: '当前文件未命中任何执行流。' })
+          : React.createElement(
+              'div',
+              { className: 'weave-list', style: { marginTop: 10 } },
+              ...(result.affectedFlows ?? []).map((flow: GraphFlowLike) =>
+                React.createElement(
+                  'article',
+                  { className: 'weave-list-item', key: flow.id, 'data-testid': `affected-flow-${flow.id}` },
+                  React.createElement('div', { className: 'weave-list-head' },
+                    React.createElement('b', null, flow.name),
+                    React.createElement(Pill, { label: `关键性 ${safeNum(flow.criticality) ?? 0}` }),
+                  ),
+                  React.createElement('span', { className: 'weave-muted' }, `入口 ${flow.entryPoint ?? '—'} · 节点 ${safeNum(flow.nodeCount) ?? 0} · 文件 ${safeNum(flow.fileCount) ?? 0}`),
+                ),
+              ),
+            ),
+      )
+      : EmptyState({ title: '暂无影响面结果', reason: '输入改动文件后点击「分析影响面」。' }),
+    )
+  }
+
+  function GraphFlowsTool() {
+    const flows = useResource<{ flows?: GraphFlowLike[] }>(() => rpc('code/flows', { limit: 50 }) as Promise<{ flows?: GraphFlowLike[] }>, [])
+    const [search, setSearch] = useState('')
+    const [expanded, setExpanded] = useState('')
+    const list = (flows.data?.flows ?? []).filter((flow: GraphFlowLike) => {
+      if (search === '') return true
+      const needle = search.toLowerCase()
+      return String(flow.name ?? '').toLowerCase().includes(needle)
+        || String(flow.entryPoint ?? '').toLowerCase().includes(needle)
+        || (flow.files ?? []).some((file) => String(file ?? '').toLowerCase().includes(needle))
+    })
+    return React.createElement(
+      'div',
+      null,
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement('input', {
+          className: 'weave-control',
+          placeholder: '搜索流名称 / 入口 / 文件',
+          value: search,
+          'data-testid': 'code-flows-search',
+          onChange: (event: { target: { value: string } }) => setSearch(event.target.value),
+        }),
+        React.createElement(
+          'button',
+          { className: 'weave-button weave-button-secondary', type: 'button', disabled: flows.loading, onClick: () => flows.refresh(), 'data-testid': 'code-flows-refresh' },
+          '刷新',
+        ),
+      ),
+      flows.loading
+        ? React.createElement(Note, { text: '正在加载执行流...' })
+        : flows.error
+          ? React.createElement(Note, { text: flows.error, kind: 'error' })
+          : list.length === 0
+            ? EmptyState({ title: '暂无执行流', reason: '请先构建图谱并执行 graphify flows build。' })
+            : React.createElement(
+                'div',
+                { className: 'weave-list' },
+                ...list.map((flow: GraphFlowLike) =>
+                  React.createElement(
+                    'article',
+                    { className: 'weave-list-item', key: flow.id, 'data-testid': `code-flow-${flow.id}` },
+                    React.createElement('div', { className: 'weave-list-head' },
+                      React.createElement('b', null, flow.name),
+                      React.createElement(Pill, { label: `关键性 ${safeNum(flow.criticality) ?? 0}` }),
+                      safeNum(flow.nodeCount) !== undefined
+                        ? React.createElement(Pill, { label: `节点 ${safeNum(flow.nodeCount)}` })
+                        : null,
+                    ),
+                    React.createElement('span', { className: 'weave-muted' }, `入口 ${flow.entryPoint ?? '—'} · 文件 ${safeNum(flow.fileCount) ?? 0}`),
+                    React.createElement(
+                      'button',
+                      {
+                        className: 'weave-button weave-button-secondary weave-button-small',
+                        type: 'button',
+                        onClick: () => setExpanded(expanded === flow.id ? '' : flow.id),
+                        'data-testid': `code-flow-toggle-${flow.id}`,
+                      },
+                      expanded === flow.id ? '收起详情' : '查看详情',
+                    ),
+                    expanded === flow.id
+                      ? React.createElement(
+                          'div',
+                          { className: 'weave-collapse', 'data-testid': `code-flow-detail-${flow.id}` },
+                          React.createElement('div', { className: 'weave-kv' },
+                            React.createElement('span', null, '路径'),
+                            React.createElement('b', null, (flow.qualifiedPath ?? flow.path ?? []).join(' → ') || '—'),
+                            React.createElement('span', null, '文件'),
+                            React.createElement('b', null, (flow.files ?? []).join('、') || '—'),
+                          ),
+                          (flow.warnings ?? []).length > 0
+                            ? React.createElement('span', { className: 'weave-muted' }, `警告：${flow.warnings!.join('；')}`)
+                            : null,
+                        )
+                      : null,
+                  ),
+                ),
+              ),
+    )
+  }
+
+  function CodeGraphPage() {
+    const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', {}) as Promise<CodeGraphSummary>, [])
+    const [tab, setTab] = useState('overview' as CodeTab)
+    const [copied, setCopied] = useState(false)
+    const build = useAction()
+
+    const copyCommand = async (): Promise<void> => {
+      await copyText('pnpm code:scan')
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    }
+
+    const runBuild = async (): Promise<void> => {
+      await build.run(async () => {
+        try {
+          const result = (await rpc('code/build', {})) as { graphPath?: string; flowsPath?: string }
+          graph.refresh()
+          return `图谱已更新：${result.graphPath ?? '未知路径'}`
+        } catch (cause) {
+          return `未能通过 RPC 构建（${errText(cause)}）。请在项目根目录执行 pnpm code:scan 后点击刷新。`
+        }
+      })
+    }
+
+    // 宿主未重启或旧插件未加载最新 RPC 时，connection 层会返回一坨 union 校验 JSON；
+    // 这里归一为可读的“未接入”提示，避免把协议噪音铺到用户面前。
+    const graphErrorText = /invalid_union|No matching discriminator|code\/\* 尚未接入|graphService 未注入/.test(graph.error)
+      ? 'code/* RPC 尚未接入当前宿主（请确认 Weave 插件已重启并加载最新 RPC），或项目尚未构建 Graphify 图谱。'
+      : graph.error
+
+    const buildEntry = React.createElement(
+      'div',
+      { className: 'weave-build-hint' },
+      React.createElement(
+        'div',
+        { className: 'weave-actions' },
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button',
+            type: 'button',
+            disabled: build.busy,
+            'data-testid': 'code-build',
+            onClick: () => void runBuild(),
+          },
+          build.busy ? '构建中...' : '构建 / 刷新图谱',
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button weave-button-secondary',
+            type: 'button',
+            'data-testid': 'code-copy-command',
+            onClick: () => void copyCommand(),
+          },
+          copied ? '已复制命令' : '复制构建命令',
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button weave-button-secondary',
+            type: 'button',
+            disabled: graph.loading,
+            onClick: () => graph.refresh(),
+            'data-testid': 'code-refresh',
+          },
+          '刷新摘要',
+        ),
+      ),
+      React.createElement('span', { className: 'weave-muted' }, '构建命令：pnpm code:scan（生成 .graphify/graph.json 与 flows.json）'),
+      build.note ? Note({ text: build.note, kind: build.ok ? undefined : 'error' }) : null,
+    )
+
+    if (graph.loading) {
+      return React.createElement(
+        'section',
+        { className: 'weave-page', 'data-testid': 'page-code' },
+        React.createElement('h1', null, '代码图谱'),
+        Note({ text: '正在加载图谱摘要...' }),
+      )
+    }
+
+    if (graph.error) {
+      return React.createElement(
+        'section',
+        { className: 'weave-page', 'data-testid': 'page-code' },
+        React.createElement('h1', null, '代码图谱'),
+        Note({ text: graphErrorText, kind: 'error' }),
+        React.createElement(
+          'div',
+          { className: 'weave-panel', 'data-testid': 'code-empty' },
+          EmptyState({
+            title: '尚未生成代码图谱',
+            reason: '当前项目尚未构建 Graphify 图谱，或 code/* RPC 尚未接入。请在项目根目录执行 pnpm code:scan，或使用下方构建入口。',
+          }),
+          buildEntry,
+        ),
+      )
+    }
+
+    const data = graph.data as CodeGraphSummary | undefined
+    const kv = (label: string, value: string) =>
+      React.createElement(React.Fragment, { key: label },
+        React.createElement('span', null, label),
+        React.createElement('b', null, value),
+      )
+
+    return React.createElement(
+      'section',
+      { className: 'weave-page', 'data-testid': 'page-code' },
+      React.createElement('h1', null, '代码图谱'),
+      Note({ text: 'Graphify 项目结构、语义查询与影响面分析。' }),
+      React.createElement(
+        'div',
+        { className: 'weave-toolbar' },
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button',
+            type: 'button',
+            disabled: build.busy,
+            'data-testid': 'code-build',
+            onClick: () => void runBuild(),
+          },
+          build.busy ? '构建中...' : '构建 / 刷新图谱',
+        ),
+        React.createElement(
+          'button',
+          { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => void copyCommand(), 'data-testid': 'code-copy-command' },
+          copied ? '已复制命令' : '复制构建命令',
+        ),
+        React.createElement(
+          'button',
+          { className: 'weave-button weave-button-secondary', type: 'button', disabled: graph.loading, onClick: () => graph.refresh(), 'data-testid': 'code-refresh' },
+          '刷新摘要',
+        ),
+      ),
+      build.note ? Note({ text: build.note, kind: build.ok ? undefined : 'error' }) : null,
+      React.createElement(
+        'div',
+        { className: 'weave-grid' },
+        React.createElement(Card, { title: '节点', meta: React.createElement('div', { className: 'weave-metric' }, React.createElement('b', { 'data-testid': 'code-summary-nodes' }, String(data?.nodeCount ?? 0)), React.createElement('span', null, 'nodes')), testId: 'code-summary-nodes-card' }),
+        React.createElement(Card, { title: '边', meta: React.createElement('div', { className: 'weave-metric' }, React.createElement('b', { 'data-testid': 'code-summary-edges' }, String(data?.edgeCount ?? 0)), React.createElement('span', null, 'edges')), testId: 'code-summary-edges-card' }),
+        React.createElement(Card, { title: '社区', meta: React.createElement('div', { className: 'weave-metric' }, React.createElement('b', { 'data-testid': 'code-summary-communities' }, String(data?.communityCount ?? 0)), React.createElement('span', null, 'communities')), testId: 'code-summary-communities-card' }),
+        React.createElement(Card, { title: '执行流', meta: React.createElement('div', { className: 'weave-metric' }, React.createElement('b', { 'data-testid': 'code-summary-flows' }, String(data?.hasFlows ? '已构建' : '未构建')), React.createElement('span', null, data?.hasFlows ? 'flows' : 'flows')), testId: 'code-summary-flows-card' }),
+      ),
+      React.createElement(
+        'div',
+        { className: 'weave-tabs', role: 'tablist' },
+        ...CODE_TAB_ITEMS.map((item: { key: CodeTab; label: string }) =>
+          React.createElement(
+            'button',
+            {
+              className: 'weave-tab-pill',
+              type: 'button',
+              role: 'tab',
+              'aria-selected': tab === item.key ? 'true' : 'false',
+              'data-testid': `code-tab-${item.key}`,
+              'data-active': tab === item.key ? 'true' : 'false',
+              onClick: () => setTab(item.key),
+            },
+            item.label,
+          ),
+        ),
+      ),
+      tab === 'overview' ? React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'code-overview-panel' },
+        React.createElement(
+          'div',
+          { className: 'weave-kv' },
+          kv('图谱文件', String(data?.graphPath ?? '—')),
+          kv('执行流文件', String(data?.flowsPath ?? '—')),
+          kv('构建 Commit', String(data?.builtFromCommit ?? '—')),
+          kv('执行流状态', data?.hasFlows ? '已构建' : '未构建'),
+        ),
+      )
+      : tab === 'query' ? React.createElement(GraphQueryTool)
+      : tab === 'path' ? React.createElement(GraphPathTool)
+      : tab === 'explain' ? React.createElement(GraphExplainTool)
+      : tab === 'affected' ? React.createElement(GraphAffectedTool)
+      : React.createElement(GraphFlowsTool),
+    )
+  }
+
+  /* ============================== 文档转换 ============================== */
+
+  const DOCUMENT_ACCEPT = '.doc,.docx,.pdf,.ppt,.pptx,.xls,.xlsx,.epub,.csv,.rtf,.odt,.md,.txt'
+
+  function DocumentConvertPage() {
+    const [selected, setSelected] = useState(undefined as File | undefined)
+    const [fileName, setFileName] = useState('')
+    const [fileSize, setFileSize] = useState(0)
+    const [jobId, setJobId] = useState('')
+    const [status, setStatus] = useState('')
+    const [progress, setProgress] = useState(undefined as number | undefined)
+    const [jobTitle, setJobTitle] = useState('')
+    const [warnings, setWarnings] = useState([] as string[])
+    const [jobError, setJobError] = useState('')
+    const [preview, setPreview] = useState('')
+    const [previewTitle, setPreviewTitle] = useState('')
+    const [busy, setBusy] = useState(false)
+    const [copied, setCopied] = useState(false)
+    const history = useResource<{ jobs?: DocumentHistoryLike[] }>(
+      () => rpc('document/history', { limit: 20 }) as Promise<{ jobs?: DocumentHistoryLike[] }>,
+      [],
+    )
+
+    const readFileAsBase64 = (file: File): Promise<string> =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const text = String(reader.result ?? '')
+          resolve(text.includes(',') ? text.split(',').slice(1).join(',') : text)
+        }
+        reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
+        reader.readAsDataURL(file)
+      })
+
+    const onFileChange = (event: { target: { files?: ArrayLike<File> } }): void => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      setSelected(file)
+      setFileName(file.name)
+      setFileSize(file.size)
+      setJobId('')
+      setStatus('')
+      setProgress(undefined)
+      setJobTitle('')
+      setWarnings([])
+      setJobError('')
+      setPreview('')
+      setPreviewTitle('')
+    }
+
+    const clearAll = (): void => {
+      setSelected(undefined)
+      setFileName('')
+      setFileSize(0)
+      setJobId('')
+      setStatus('')
+      setProgress(undefined)
+      setJobTitle('')
+      setWarnings([])
+      setJobError('')
+      setPreview('')
+      setPreviewTitle('')
+    }
+
+    const submit = async (): Promise<void> => {
+      if (!selected) return
+      setBusy(true)
+      setJobError('')
+      setPreview('')
+      setPreviewTitle('')
+      try {
+        const b64 = await readFileAsBase64(selected)
+        const res = (await rpc('document/convert', { filename: selected.name, data: b64 })) as DocumentConvertResultLike
+        setJobId(String(res.jobId ?? ''))
+        setStatus(String(res.status ?? 'queued'))
+        setProgress(undefined)
+        setJobTitle('')
+      } catch (cause) {
+        setJobError(errText(cause))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    const copyPreview = async (): Promise<void> => {
+      await copyText(preview)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    }
+
+    // 转换中轮询：1.5s 一次；连续 3 次失败停止并提示。
+    useEffect(() => {
+      if (jobId === '' || (status !== 'queued' && status !== 'converting')) return
+      let alive = true
+      let failures = 0
+      const poll = async (): Promise<void> => {
+        try {
+          const res = (await rpc('document/status', { jobId })) as DocumentStatusLike
+          if (!alive) return
+          setStatus(String(res.status ?? ''))
+          setProgress(safeNum(res.progress))
+          setJobTitle(String(res.title ?? ''))
+          setWarnings(Array.isArray(res.warnings) ? res.warnings : [])
+          if (res.error) setJobError(String(res.error))
+          if (res.status === 'done') {
+            const previewRes = (await rpc('document/preview', { jobId })) as DocumentPreviewLike
+            if (!alive) return
+            setPreview(String(previewRes.markdown ?? ''))
+            setPreviewTitle(String(previewRes.title ?? ''))
+            setWarnings(Array.isArray(previewRes.warnings) ? previewRes.warnings : [])
+            return
+          }
+          if (res.status === 'failed') return
+          failures = 0
+        } catch (cause) {
+          failures += 1
+          if (failures >= 3) {
+            setJobError('轮询文档状态失败：' + errText(cause))
+          }
+        }
+      }
+      void poll()
+      const timer = window.setInterval(() => void poll(), 1500)
+      return () => {
+        alive = false
+        window.clearInterval(timer)
+      }
+    }, [jobId, status])
+
+    const openHistory = async (item: DocumentHistoryLike): Promise<void> => {
+      const id = String(item.jobId ?? '')
+      if (id === '') return
+      setJobError('')
+      try {
+        const res = (await rpc('document/status', { jobId: id })) as DocumentStatusLike
+        setJobId(id)
+        setStatus(String(res.status ?? 'queued'))
+        setProgress(safeNum(res.progress))
+        setJobTitle(String(res.title ?? ''))
+        setWarnings(Array.isArray(res.warnings) ? res.warnings : [])
+        if (res.error) setJobError(String(res.error))
+        if (res.status === 'done') {
+          const previewRes = (await rpc('document/preview', { jobId: id })) as DocumentPreviewLike
+          setPreview(String(previewRes.markdown ?? ''))
+          setPreviewTitle(String(previewRes.title ?? ''))
+          setWarnings(Array.isArray(previewRes.warnings) ? previewRes.warnings : [])
+        }
+      } catch (cause) {
+        setJobError('加载历史任务失败：' + errText(cause))
+      }
+    }
+
+    const statusLabel = (value: unknown): string => {
+      const current = String(value ?? '')
+      if (current === 'queued') return '排队中'
+      if (current === 'converting') return '转换中'
+      if (current === 'done') return '已完成'
+      if (current === 'failed') return '失败'
+      return current === '' ? '—' : current
+    }
+
+    const formatSize = (bytes: number): string => {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '—'
+      if (bytes < 1024) return `${bytes} B`
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    }
+
+    return React.createElement(
+      'section',
+      { className: 'weave-page', 'data-testid': 'page-convert' },
+      React.createElement('h1', null, '文档转换'),
+      Note({ text: '将任意文档转换为 Markdown，转换任务与知识导入解耦。' }),
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'convert-file-panel' },
+        React.createElement('b', { className: 'weave-subh' }, '选择文档'),
+        React.createElement('input', {
+          className: 'weave-control',
+          type: 'file',
+          accept: DOCUMENT_ACCEPT,
+          disabled: busy,
+          'data-testid': 'convert-file',
+          onChange: (event: { target: { files?: ArrayLike<File> } }) => onFileChange(event),
+        }),
+        selected
+          ? React.createElement(
+              'div',
+              { className: 'weave-file-meta', 'data-testid': 'convert-file-meta' },
+              React.createElement('span', null, fileName),
+              React.createElement('span', null, formatSize(fileSize)),
+            )
+          : EmptyState({ title: '选择文档开始转换', reason: '支持 PDF、Office、Markdown 等格式；本地文件仅本次会话处理，不会写入知识库。' }),
+        React.createElement(
+          'div',
+          { className: 'weave-actions' },
+          React.createElement(
+            'button',
+            {
+              className: 'weave-button',
+              type: 'button',
+              disabled: busy || !selected,
+              'data-testid': 'convert-submit',
+              onClick: () => void submit(),
+            },
+            busy ? '上传中...' : '开始转换',
+          ),
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', disabled: busy, 'data-testid': 'convert-clear', onClick: clearAll },
+            '清空',
+          ),
+        ),
+      ),
+      jobError !== ''
+        ? React.createElement(Note, { text: jobError, kind: 'error' })
+        : null,
+      jobId !== ''
+        ? React.createElement(
+            'div',
+            { className: 'weave-panel', 'data-testid': 'convert-status' },
+            React.createElement('div', { className: 'weave-list-head' },
+              React.createElement('b', null, fileName !== '' ? fileName : String(jobId)),
+              React.createElement(Pill, { label: statusLabel(status), title: status }),
+            ),
+            safeNum(progress) !== undefined && (status === 'queued' || status === 'converting')
+              ? React.createElement(
+                  'div',
+                  { className: 'weave-progress', style: { marginTop: 8 } },
+                  React.createElement('i', { style: { width: `${Math.max(4, Math.min(100, Math.round((safeNum(progress) ?? 0) * 100)))}%` } }),
+                )
+              : null,
+            jobTitle !== '' ? React.createElement('span', { className: 'weave-muted' }, `标题：${jobTitle}`) : null,
+            warnings.length > 0 ? React.createElement('span', { className: 'weave-muted' }, `警告：${warnings.join('；')}`) : null,
+          )
+        : null,
+      preview !== ''
+        ? React.createElement(
+            'div',
+            { className: 'weave-panel', 'data-testid': 'convert-preview' },
+            React.createElement('div', { className: 'weave-list-head' },
+              React.createElement('b', null, `Markdown 预览${previewTitle !== '' ? ` · ${previewTitle}` : ''}`),
+              React.createElement(
+                'button',
+                { className: 'weave-button weave-button-secondary weave-button-small', type: 'button', onClick: () => void copyPreview(), 'data-testid': 'convert-copy' },
+                copied ? '已复制' : '复制 Markdown',
+              ),
+            ),
+            React.createElement('pre', { className: 'weave-text-result', style: { maxHeight: 480 } }, preview),
+          )
+        : null,
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'convert-history' },
+        React.createElement('b', { className: 'weave-subh' }, '最近转换记录'),
+        history.loading
+          ? Note({ text: '正在加载历史记录...' })
+          : history.error
+            ? Note({ text: history.error, kind: 'error' })
+            : (history.data?.jobs ?? []).length === 0
+              ? EmptyState({ title: '暂无转换记录', reason: '完成一次转换后，任务记录会显示在这里。' })
+              : React.createElement(
+                  'div',
+                  { className: 'weave-list' },
+                  ...(history.data?.jobs ?? []).map((item: DocumentHistoryLike) =>
+                    React.createElement(
+                      'article',
+                      {
+                        className: 'weave-list-item',
+                        key: String(item.jobId ?? ''),
+                        'data-testid': `convert-history-item-${String(item.jobId ?? '')}`,
+                        onClick: () => void openHistory(item),
+                      },
+                      React.createElement('div', { className: 'weave-list-head' },
+                        React.createElement('b', null, item.filename ?? '—'),
+                        React.createElement(Pill, { label: statusLabel(item.status), title: item.status }),
+                      ),
+                      React.createElement('span', { className: 'weave-muted' }, `${fmtTime(item.created_at)} · ${item.title ?? ''}${item.error ? ` · ${item.error}` : ''}`),
+                    ),
+                  ),
+                ),
+      ),
+    )
+  }
+
   /* ============================== 执行器 ============================== */
+
+  /* ============================== Obsidian ============================== */
+
+  function ObsidianPage() {
+    const [copied, setCopied] = useState(false)
+    const [forceConfirm, setForceConfirm] = useState(false)
+    const [generateConfirm, setGenerateConfirm] = useState(false)
+    const status = useResource<ObsidianStatusLike>(
+      () => rpc('obsidian/status', {}) as Promise<ObsidianStatusLike>,
+      [],
+    )
+    const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
+    const action = useAction()
+
+    const vaultPath = String(status.data?.vaultPath ?? info.data?.obsidian_dir ?? '')
+    const obsidianHref = vaultPath === '' ? undefined : `obsidian://open?path=${encodeURIComponent(vaultPath)}`
+
+    const copyPath = async (): Promise<void> => {
+      if (vaultPath === '') return
+      try {
+        await navigator.clipboard.writeText(vaultPath)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1800)
+      } catch {
+        window.prompt('复制 Obsidian Vault 路径：', vaultPath)
+      }
+    }
+
+    const refreshAll = (): void => {
+      status.refresh()
+    }
+
+    const generate = async (force: boolean): Promise<void> => {
+      await action.run(async () => {
+        const result = (await rpc('obsidian/generate', force ? { force: true } : {})) as ObsidianGenerateResultLike
+        refreshAll()
+        let text = `已生成/刷新 Vault：${result.generated} 个新文件，${result.updated} 个更新`
+        if (result.conflictCount > 0) text += `，${result.conflictCount} 个冲突`
+        return text
+      })
+    }
+
+    const reindex = async (): Promise<void> => {
+      if (status.data?.exists !== true) return
+      await action.run(async () => {
+        const result = (await rpc('obsidian/reindex', {})) as ObsidianReindexResultLike
+        refreshAll()
+        let text = `回索引完成：${result.entries} 个 Markdown 文件`
+        if (result.conflictCount > 0) text += `，${result.conflictCount} 个冲突`
+        return text
+      })
+    }
+
+    const errorText = status.error
+      ? /invalid_union|configuration_error|obsidianService 未注入|obsidian\/\*/.test(status.error)
+        ? 'obsidian/* RPC 尚未接入当前宿主，或 Vault 尚未初始化。'
+        : status.error
+      : ''
+
+    const conflicts = status.data?.conflicts ?? []
+
+    return React.createElement(
+      'section',
+      { className: 'weave-page', 'data-testid': 'page-obsidian' },
+      React.createElement('h1', null, 'Obsidian'),
+      status.loading ? React.createElement(Note, { text: '正在读取 Vault 状态...' }) : null,
+      errorText !== '' ? React.createElement(Note, { text: errorText, kind: 'error' }) : null,
+      action.note ? React.createElement(Note, { text: action.note, kind: action.ok ? undefined : 'error' }) : null,
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'obsidian-status' },
+        React.createElement('b', { className: 'weave-subh' }, 'Vault 信息'),
+        React.createElement(
+          'div',
+          { className: 'weave-kv' },
+          React.createElement('span', null, '路径'),
+          React.createElement('b', { 'data-testid': 'obsidian-vault-path' }, vaultPath === '' ? '未配置' : vaultPath),
+          React.createElement('span', null, '状态'),
+          React.createElement('b', { 'data-testid': 'obsidian-state' }, status.data?.exists === false ? '未初始化' : status.data?.exists === true ? '已连接' : '未知'),
+          React.createElement('span', null, 'Markdown 文件'),
+          React.createElement('b', { 'data-testid': 'obsidian-file-count' }, String(status.data?.fileCount ?? 0)),
+          React.createElement('span', null, '知识条目'),
+          React.createElement('b', { 'data-testid': 'obsidian-knowledge-count' }, String(status.data?.knowledgeCount ?? 0)),
+          React.createElement('span', null, '最近生成'),
+          React.createElement('b', { 'data-testid': 'obsidian-last-generated' }, status.data?.lastGeneratedAt ? fmtTime(status.data.lastGeneratedAt) : '—'),
+          React.createElement('span', null, '冲突'),
+          React.createElement('b', { 'data-testid': 'obsidian-conflict-count' }, String(status.data?.conflictCount ?? 0)),
+        ),
+        React.createElement(
+          'div',
+          { className: 'weave-actions', style: { alignItems: 'center' } },
+          obsidianHref
+            ? React.createElement('a', { className: 'weave-button weave-button-secondary', href: obsidianHref, target: '_blank', rel: 'noreferrer', 'data-testid': 'obsidian-open' }, '打开 Obsidian')
+            : React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', disabled: true, 'data-testid': 'obsidian-open' }, '路径不可用'),
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', disabled: vaultPath === '', 'data-testid': 'obsidian-copy', onClick: () => void copyPath() },
+            copied ? '已复制' : '复制路径',
+          ),
+          React.createElement(
+            'button',
+            {
+              className: 'weave-button',
+              type: 'button',
+              disabled: action.busy,
+              'data-testid': 'obsidian-generate',
+              onClick: () => { if (status.data?.exists === false) setGenerateConfirm(true); else void generate(false) },
+            },
+            action.busy ? '生成中...' : '生成 / 刷新 Vault',
+          ),
+          React.createElement(
+            'button',
+            {
+              className: 'weave-button weave-button-secondary',
+              type: 'button',
+              disabled: action.busy,
+              'data-testid': 'obsidian-force-generate',
+              onClick: () => setForceConfirm(true),
+            },
+            '强制重建',
+          ),
+          React.createElement(
+            'button',
+            { className: 'weave-button weave-button-secondary', type: 'button', disabled: action.busy || status.data?.exists !== true, 'data-testid': 'obsidian-reindex', onClick: () => void reindex() },
+            action.busy ? '回索引中...' : '重新索引',
+          ),
+        ),
+        React.createElement('span', { className: 'weave-muted' }, '默认增量更新；生成不会覆盖用户已修改的文件，冲突会保留外部修改并记录。'),
+      ),
+      React.createElement(
+        'div',
+        { className: 'weave-panel', 'data-testid': 'obsidian-conflicts' },
+        React.createElement('b', { className: 'weave-subh' }, '冲突保护'),
+        conflicts.length === 0
+          ? EmptyState({ title: '暂无冲突', reason: 'Obsidian 与 Weave 知识暂未出现需要人工处置的冲突。' })
+          : React.createElement(
+              'div',
+              { className: 'weave-list' },
+              ...conflicts.map((conflict: ObsidianConflictLike) =>
+                React.createElement(
+                  'article',
+                  { className: 'weave-list-item', key: conflict.path, 'data-testid': `obsidian-conflict-${conflict.path}` },
+                  React.createElement('div', { className: 'weave-list-head' },
+                    React.createElement('b', null, conflict.path),
+                    React.createElement(Pill, { label: conflict.kind === 'both_modified' ? '双方修改' : '外部修改', title: conflict.kind }),
+                  ),
+                  React.createElement('span', { className: 'weave-muted' }, `检测于 ${fmtTime(conflict.detectedAt)}${conflict.backupPath ? ` · 备份 ${conflict.backupPath}` : ''}`),
+                  React.createElement('span', { className: 'weave-muted' }, '默认保留外部修改，不自动覆盖。'),
+                ),
+              ),
+            ),
+      ),
+      generateConfirm
+        ? React.createElement(ConfirmDialog, {
+            open: true,
+            title: '确认生成 Obsidian Vault？',
+            body: '将首次在目标路径生成 Vault 并同步知识文件；不会覆盖已有用户文件。',
+            confirmText: '生成 Vault',
+            cancelText: '取消',
+            busy: action.busy,
+            testId: 'obsidian-generate-confirm',
+            onConfirm: () => {
+              setGenerateConfirm(false)
+              void generate(false)
+            },
+            onCancel: () => setGenerateConfirm(false),
+          } as never)
+        : null,
+      forceConfirm
+        ? React.createElement(ConfirmDialog, {
+            open: true,
+            title: '确认强制重建 Obsidian Vault？',
+            body: '强制模式会尝试覆盖未被用户修改的文件；若文件已被用户修改将抛错并保留外部内容。',
+            confirmText: '强制重建',
+            cancelText: '取消',
+            danger: true,
+            busy: action.busy,
+            testId: 'obsidian-generate-confirm',
+            onConfirm: () => {
+              setForceConfirm(false)
+              void generate(true)
+            },
+            onCancel: () => setForceConfirm(false),
+          } as never)
+        : null,
+    )
+  }
 
   function ExecutorsPage() {
     const snapshot = useResource<SnapshotData>(() => rpc('snapshot') as Promise<SnapshotData>, [])
@@ -3909,7 +5026,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const pages: Record<Route, any> = {
       overview: React.createElement(OverviewPage, { navigate: go }),
       teams: React.createElement(TeamsPage),
-      knowledge: React.createElement(KnowledgePage),
+      knowledge: React.createElement(KnowledgePage, { onOpenObsidian: () => go('obsidian') }),
+      code: React.createElement(CodeGraphPage),
+      convert: React.createElement(DocumentConvertPage),
+      obsidian: React.createElement(ObsidianPage),
       executors: React.createElement(ExecutorsPage),
       audit: React.createElement(AuditPage),
       settings: React.createElement(SettingsPage),
@@ -4519,7 +5639,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         status.data?.team && typeof status.data.team.description === 'string' && status.data.team.description.trim() !== ''
           ? React.createElement(
               'div',
-              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px' }, 'data-testid': 'weave-session-team-description' },
+              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px', whiteSpace: 'pre-line' }, 'data-testid': 'weave-session-team-description' },
               status.data.team.description,
             )
           : null,

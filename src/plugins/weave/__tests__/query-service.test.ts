@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { AuditLog } from '../audit/audit-log.js'
-import { WeaveMcp } from '../cli-mcp.js'
+import { WeaveMcp, type CliMcpDeps } from '../cli-mcp.js'
 import { DagRepository } from '../dag/repository.js'
 import { ExecutorRegistry } from '../executor-registry.js'
 import { FeedbackRouter } from '../feedback-router.js'
@@ -24,7 +24,8 @@ import { openPersistence, type WeavePersistence } from '../persistence/index.js'
 import { SessionTracker } from '../session-tracker.js'
 import { TeamManager } from '../team-manager.js'
 import { WeaveError } from '../state/weave-error.js'
-import { WeaveQueryService } from '../web/query-service.js'
+import { createWeaveRpcHandler } from '../rpc.js'
+import { createWeaveQueryServiceFromCliDeps, WeaveQueryService } from '../web/query-service.js'
 import { MockSubagentsContext } from './fixtures/mock-subagents.js'
 
 const GOOD_TEAM = `schema_version: "1"
@@ -729,6 +730,130 @@ describe('WeaveQueryService dispatch 与依赖降级', () => {
       expect(((await bare.sessionBindings()) as { bindings: unknown[] }).bindings).toEqual([])
       const listed = await bare.taskList({})
       expect(listed.total).toBe(0)
+    } finally {
+      p.close()
+    }
+  })
+})
+
+/* ------------------------------- 图谱/Obsidian/Document 服务组装 ------------------------------- */
+
+describe('createWeaveQueryServiceFromCliDeps 服务组装', () => {
+  it('从 CliMcpDeps 自组装 graph/obsidian/document 服务并可经 dispatch 路由', async () => {
+    const p = openPersistence({ inMemory: true })
+    try {
+      const fakeGraph = {
+        hasGraph: () => true,
+        hasFlows: () => true,
+        graphSummary: async () => ({
+          graphPath: '/repo/.graphify/graph.json',
+          flowsPath: '/repo/.graphify/flows.json',
+          nodeCount: 0,
+          edgeCount: 0,
+          communityCount: 0,
+          hasFlows: true,
+        }),
+        path: async (source: string, target: string) => `path ${source} -> ${target}`,
+        explain: async (node: string) => `explain ${node}`,
+        affectedFlows: async (files: string[]) => ({
+          changedFiles: files,
+          matchedNodeIds: [],
+          unmatchedFiles: [],
+          affectedFlows: [],
+        }),
+        listFlows: async () => [],
+        getFlow: async (id: string) => ({
+          id,
+          name: id,
+          entryPoint: `src/${id}.ts`,
+          entryPointId: id,
+          path: [id],
+          qualifiedPath: [`src/${id}.ts`],
+          depth: 1,
+          nodeCount: 0,
+          fileCount: 0,
+          files: [],
+          criticality: 0,
+          warnings: [],
+        }),
+      } as unknown as import('../graph/graph-service.js').GraphService
+
+      const fakeObsidian = {
+        generate: async () => ({ generated: 0, updated: 0, vaultPath: '/tmp/vault', conflictCount: 0 }),
+        open: async () => ({ opened: true as const, vaultPath: '/tmp/vault', uri: 'obsidian://open?path=' }),
+        reindex: async () => ({ reindexed: true as const, entries: 0, vaultPath: '/tmp/vault', conflictCount: 0 }),
+        status: async () => ({ exists: true, vaultPath: '/tmp/vault', lastGeneratedAt: null, conflictCount: 0 }),
+        conflicts: async () => ({ vaultPath: '/tmp/vault', conflicts: [] }),
+      } as unknown as import('../obsidian/obsidian-service.js').ObsidianService
+
+      const fakeDocument = {
+        convert: async () => ({ jobId: 'doc_1', status: 'queued' as const, filename: 'x.pdf' }),
+        status: async () => ({
+          jobId: 'doc_1',
+          status: 'queued' as const,
+          filename: 'x.pdf',
+          warnings: [],
+          created_at: '',
+          updated_at: '',
+        }),
+        preview: async () => ({ jobId: 'doc_1', status: 'done' as const, markdown: '# x', warnings: [] }),
+        history: async () => [],
+      } as unknown as import('../convert/document-converter.js').DocumentConverter
+
+      const svc = createWeaveQueryServiceFromCliDeps({
+        persistence: p,
+        graphService: fakeGraph,
+        obsidianService: fakeObsidian,
+        documentConverter: fakeDocument,
+      } as unknown as CliMcpDeps)
+
+      await expect(svc.dispatch('code/graph', {})).resolves.toMatchObject({ nodeCount: 0 })
+      await expect(svc.dispatch('obsidian/status', {})).resolves.toMatchObject({ exists: true })
+      await expect(svc.dispatch('document/convert', { file: 'x.pdf' })).resolves.toMatchObject({ status: 'queued' })
+
+      // RPC 层前缀路由：code/、obsidian/、document/ 均透传到 WeaveQueryService.dispatch。
+      const call = createWeaveRpcHandler({ queryService: svc } as never)
+      await expect(call('code/graph', {})).resolves.toMatchObject({ ok: true, value: { nodeCount: 0 } })
+      await expect(call('obsidian/status', {})).resolves.toMatchObject({ ok: true, value: { exists: true } })
+      await expect(call('document/convert', { file: 'x.pdf' })).resolves.toMatchObject({ ok: true, value: { status: 'queued' } })
+    } finally {
+      p.close()
+    }
+  })
+
+  it('extras 可覆盖 deps 图谱实例', async () => {
+    const p = openPersistence({ inMemory: true })
+    try {
+      const depsGraph = {
+        hasGraph: () => true,
+        hasFlows: () => true,
+        graphSummary: async () => ({
+          graphPath: '/from-deps',
+          flowsPath: '/from-deps-flows',
+          nodeCount: 1,
+          edgeCount: 0,
+          communityCount: 0,
+          hasFlows: true,
+        }),
+      } as unknown as import('../graph/graph-service.js').GraphService
+      const extraGraph = {
+        hasGraph: () => true,
+        hasFlows: () => true,
+        graphSummary: async () => ({
+          graphPath: '/from-extras',
+          flowsPath: '/from-extras-flows',
+          nodeCount: 2,
+          edgeCount: 0,
+          communityCount: 0,
+          hasFlows: true,
+        }),
+      } as unknown as import('../graph/graph-service.js').GraphService
+      const svc = createWeaveQueryServiceFromCliDeps(
+        { persistence: p, graphService: depsGraph } as unknown as CliMcpDeps,
+        { graphService: extraGraph },
+      )
+      const result = await svc.codeGraph({}) as { graphPath: string }
+      expect(result.graphPath).toBe('/from-extras')
     } finally {
       p.close()
     }

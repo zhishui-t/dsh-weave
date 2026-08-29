@@ -165,9 +165,21 @@ export class TeamPlanner {
 
     // 追加模式解析（doc/05 §6.1 P1-A）：目标 DAG 必须存在且属于当前会话团队；
     // 语义域（project/version）继承目标 DAG——追加语义是"往这个计划里加任务"。
-    const appendTo = typeof input.append_to === 'string' && input.append_to.trim() !== ''
+    // 用户裁定：同一 会话+项目+版本 不允许新建不同任务组；未显式 append_to 时自动沿用既有 DAG。
+    let appendTo = typeof input.append_to === 'string' && input.append_to.trim() !== ''
       ? input.append_to.trim()
       : null
+    if (appendTo === null) {
+      const existing = await this.#persistence.tasks.run((db) =>
+        db.prepare(
+          `SELECT DISTINCT d.dag_id, d.team_id, d.project_id, d.version, d.status
+           FROM dags d JOIN tasks t ON t.dag_id = d.dag_id
+           WHERE t.session_id = ? AND d.team_id = ? AND d.project_id = ? AND d.version = ?
+           ORDER BY d.created_at DESC LIMIT 1`,
+        ).get(sessionId, team.team_id, projectId, version),
+      ) as { dag_id: string; team_id: string; project_id: string; version: string; status: string } | undefined
+      if (existing) appendTo = existing.dag_id
+    }
     let target: { dagId: string; status: string; projectId: string; version: string } | null = null
     const existingRefIds: string[] = []
     const existingEdges: Array<{ from: string; to: string }> = []

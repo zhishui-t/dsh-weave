@@ -494,8 +494,9 @@ export function createWeaveRpcHandler(
         return success({ providers })
       }
 
-      // 四域端点统一路由到 WeaveQueryService.dispatch（t4）；错误由外层 catch 映射为 RpcResult 信封。
-      if (['task/', 'knowledge/', 'audit/', 'session/'].some((prefix) => endpoint.startsWith(prefix))) {
+      // 多域端点统一路由到 WeaveQueryService.dispatch（t4）；错误由外层 catch 映射为 RpcResult 信封。
+      // code/* 为 Graphify 代码图谱端点（T1），document/* 为 AnyDoc 独立转换（T6），obsidian/* 为 Obsidian Vault（T3），同样走 queryService 分发。
+      if (['task/', 'knowledge/', 'audit/', 'session/', 'code/', 'document/', 'obsidian/'].some((prefix) => endpoint.startsWith(prefix))) {
         const resolved = resolvedDeps.queryService
         const queryService = typeof resolved === 'function' ? resolved() : resolved
         if (!queryService) {

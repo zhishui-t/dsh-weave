@@ -1,5 +1,6 @@
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun } from './executor-provider.js'
+import { foldConsumedWork, installModelSelection } from '@deepseek-ai/dsh-agent'
+import { finalAssistantOutput } from '@deepseek-ai/dsh-subagent'
+import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun, ExecutorRuntimeOptions } from './executor-provider.js'
 
 interface DshSubagentsContext {
   list(): string[]
@@ -17,11 +18,88 @@ interface DshSubagentsContext {
     result: Promise<{ output: Array<{ type: string; text?: string }>; stopReason: string }>
     dispose(): Promise<void>
   }>
+  startContinuable?(spec: {
+    provider: string
+    label?: string
+    request: {
+      prompt: Array<{ type: 'text'; text: string }>
+      parent?: unknown
+      signal: AbortSignal
+      agentOptions?: { provider?: string; model?: string }
+    }
+    signal: AbortSignal
+  }): Promise<{ childId: string }>
+  followup?(
+    parent: unknown,
+    childId: string,
+    content: Array<{ type: 'text'; text: string }>,
+    options: { source: Record<string, unknown>; signal: AbortSignal },
+  ): Promise<unknown>
+  listChildren?(
+    parentSessionId: string,
+    signal?: AbortSignal,
+  ): Promise<Array<{ kind: 'child'; id: string; mode: 'one-shot' | 'continuable'; label?: string }>>
+  agents?: {
+    get(id: string): unknown
+  }
+}
+
+interface ChildAgentLike {
+  id?: string
+  whenIdle?(): Promise<void>
+  session?: { events?: Array<{ type: string; data?: { reason?: { kind?: string } } }> }
+  ctx?: { on?: (event: string, listener: unknown) => unknown }
+  options?: { provider?: string; model?: string }
 }
 
 export interface DshSubagentExecutorProviderOptions {
   /** 可支持的 DSH provider 名；缺省使用构造时的 list() 快照。 */
   executors?: string[]
+  /** 可选的活 Agent 注册表，用于 continuable 子代理复用；缺失时自动退化为 one-shot。 */
+  agents?: { get(id: string): unknown }
+}
+
+function toStopReason(reason: { kind?: string } | undefined): string {
+  switch (reason?.kind) {
+    case 'completed': return 'completed'
+    case 'max-tokens': return 'max-tokens'
+    case 'aborted': return 'aborted'
+    case 'blocked': return 'refusal'
+    default: return 'error'
+  }
+}
+
+function parentIdOf(parent: unknown): string {
+  if (typeof parent === 'object' && parent !== null && 'id' in parent) {
+    const id = (parent as { id?: unknown }).id
+    if (typeof id === 'string') return id
+  }
+  return ''
+}
+
+function buildAgentOptions(request: ExecutorStartRequest): { provider?: string; model?: string; maxTokens: number } | undefined {
+  const model = request.runtime?.model
+  if (!model && !request.runtime?.thoughtLevel) return { maxTokens: NO_MAX_TOKEN_LIMIT }
+  return {
+    ...(model?.provider !== undefined ? { provider: model.provider } : {}),
+    ...(model?.id !== undefined ? { model: model.id } : {}),
+    maxTokens: NO_MAX_TOKEN_LIMIT,
+  }
+}
+
+/** 用户裁定：DSH 子代理不设 max token 限制。 */
+const NO_MAX_TOKEN_LIMIT = 1_000_000
+
+function readChildResult(child: ChildAgentLike, boundary: number, cancelled: boolean): {
+  output: Array<{ type: string; text?: string }>
+  stopReason: string
+} {
+  const own = (child.session?.events?.slice(boundary) ?? []) as unknown as Parameters<typeof foldConsumedWork>[0]
+  const lastEnd = foldConsumedWork(own).end
+  const output = (finalAssistantOutput(own) ?? []) as Array<{ type: string; text?: string }>
+  const recorded = toStopReason((lastEnd?.data as { reason?: { kind?: string } } | undefined)?.reason)
+  const stopReason = cancelled && recorded !== 'completed' ? 'aborted' : recorded
+  return { output, stopReason }
 }
 
 export class DshSubagentExecutorProvider implements ExecutorProvider {
@@ -31,8 +109,8 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
 
   readonly capabilities: ExecutorCapabilities = {
     liveOutput: true,
-    sessionReuse: false,
-    sessionResume: false,
+    sessionReuse: true,
+    sessionResume: true,
     modelSelection: true,
     providerSelection: true,
     thoughtControl: true,
@@ -48,9 +126,13 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
 
   readonly #subagents: DshSubagentsContext
   readonly #explicitExecutors?: Set<string>
+  readonly #children = new Map<string, string>()
+  readonly #boundaries = new Map<string, number>()
 
   constructor(subagents: DshSubagentsContext, options: DshSubagentExecutorProviderOptions = {}) {
-    this.#subagents = subagents
+    this.#subagents = options.agents
+      ? { ...subagents, agents: options.agents }
+      : subagents
     this.#explicitExecutors = options.executors ? new Set(options.executors) : undefined
   }
 
@@ -71,68 +153,166 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       throw new Error(`dsh-subagent: executor "${request.executor}" does not support mode`)
     }
 
+    const sessionKey = request.sessionKey
+    if (sessionKey && this.#subagents.startContinuable && this.#subagents.followup && this.#subagents.agents?.get) {
+      try {
+        return await this.#startContinuable(request, sessionKey)
+      } catch (error) {
+        console.warn('[dsh-weave] dsh-subagent continuable reuse failed, falling back to one-shot:', error)
+      }
+    }
+    return this.#startOneShot(request)
+  }
+
+  async #startOneShot(request: ExecutorStartRequest): Promise<ExecutorRun> {
     const run = await this.#subagents.start(request.executor, {
       prompt: [{ type: 'text', text: request.prompt.map((block) => block.text).join('\n\n') }],
       parent: request.parent,
       signal: request.signal,
-      ...(request.runtime?.model ? {
-        agentOptions: {
-          ...(request.runtime.model.provider !== undefined ? { provider: request.runtime.model.provider } : {}),
-          ...(request.runtime.model.id !== undefined ? { model: request.runtime.model.id } : {}),
-        },
-      } : {}),
+      agentOptions: buildAgentOptions(request),
     })
 
-    // DSH 子代理的 AgentOptions 本身不接收 reasoningEffort；
-    // 但子代理以 localAgent 暴露时，可把 thought_level 安装到其 scope 的模型选择上。
-    if (request.runtime?.thoughtLevel) {
-      const child = run.localAgent as {
-        ctx?: { on?: (event: string, listener: unknown) => unknown }
-        options?: { provider?: string; model?: string }
-      } | undefined
-      if (!child?.ctx?.on || typeof child.ctx.on !== 'function') {
-        throw new Error(`dsh-subagent: executor "${request.executor}" cannot apply thoughtLevel without an in-process localAgent`)
-      }
-      const provider = request.runtime.model?.provider ?? child.options?.provider
-      const model = request.runtime.model?.id ?? child.options?.model
-      if (!provider || !model) {
-        throw new Error(`dsh-subagent: executor "${request.executor}" needs provider/model when applying thoughtLevel`)
-      }
-      installModelSelection(child.ctx as Parameters<typeof installModelSelection>[0], {
-        current: {
-          provider,
-          model,
-          reasoningEffort: request.runtime.thoughtLevel as never,
-        },
-        assembled: undefined,
-      })
-    }
+    this.#applyThoughtLevel(run.localAgent as ChildAgentLike | undefined, request.runtime)
 
     return {
       ...run,
       providerId: this.id,
       sessionId: typeof run.id === 'string' ? run.id : undefined,
-      applied: {
-        model: {
-          requested: request.runtime?.model,
-          effective: request.runtime?.model,
-          supported: true,
+      applied: this.#applied(request),
+    }
+  }
+
+  async #startContinuable(request: ExecutorStartRequest, sessionKey: string): Promise<ExecutorRun> {
+    const prompt = [{ type: 'text' as const, text: request.prompt.map((block) => block.text).join('\n\n') }]
+    const agentOptions = buildAgentOptions(request)
+
+    let childId = this.#children.get(sessionKey)
+    if (childId === undefined && this.#subagents.listChildren) {
+      try {
+        const parentId = parentIdOf(request.parent)
+        if (parentId) {
+          const children = await this.#subagents.listChildren(parentId, request.signal)
+          const existing = children.find((c) => c.kind === 'child' && c.mode === 'continuable' && c.label === sessionKey) as
+            | { kind: 'child'; id: string; mode: 'continuable'; label?: string }
+            | undefined
+          if (existing?.id) {
+            childId = existing.id
+            this.#children.set(sessionKey, childId)
+          }
+        }
+      } catch {
+        // 会话树不可用时退回内存/新建路径；不阻断。
+      }
+    }
+    if (childId === undefined) {
+      const started = await this.#subagents.startContinuable!({
+        provider: request.executor,
+        label: sessionKey,
+        request: {
+          prompt,
+          parent: request.parent,
+          signal: request.signal,
+          ...(agentOptions ? { agentOptions } : {}),
         },
-        thinking: {
-          requested: request.runtime?.thoughtLevel,
-          effective: request.runtime?.thoughtLevel ?? null,
-          supported: request.runtime?.thoughtLevel ? true : false,
+        signal: request.signal,
+      })
+      childId = started.childId
+      this.#children.set(sessionKey, childId)
+    } else {
+      await this.#subagents.followup!(request.parent, childId, prompt, {
+        source: {
+          kind: 'coordinator',
+          form: 'relay',
+          senderSessionId: parentIdOf(request.parent) || sessionKey,
         },
-        mode: {
-          requested: request.runtime?.mode,
-          effective: null,
-          supported: false,
-        },
-        tools: {
-          requested: request.runtime?.tools,
-          effective: { management: 'dsh', filtering: 'full' },
-          supported: true,
-        },
+        signal: request.signal,
+      })
+    }
+
+    const child = this.#subagents.agents!.get(childId) as ChildAgentLike | undefined
+    if (!child || typeof child.whenIdle !== 'function') {
+      throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
+    }
+
+    this.#applyThoughtLevel(child, request.runtime)
+
+    const boundary = child.session?.events?.length ?? 0
+    this.#boundaries.set(childId, boundary)
+
+    let cancelled = false
+    const onAbort = (): void => {
+      cancelled = true
+      const agent = child as unknown as { cancel?: (cause: unknown, options?: unknown) => void }
+      agent.cancel?.({ kind: 'parent' })
+    }
+    request.signal.addEventListener('abort', onAbort, { once: true })
+
+    const result = (async () => {
+      try {
+        await child.whenIdle?.()
+        return readChildResult(child, boundary, cancelled)
+      } finally {
+        request.signal.removeEventListener('abort', onAbort)
+      }
+    })()
+
+    return {
+      id: childId,
+      sessionId: childId,
+      localAgent: child,
+      result,
+      dispose: async () => {
+        // Continuable children are intentionally kept for later reuse; no-op dispose.
+      },
+      providerId: this.id,
+      applied: this.#applied(request),
+    }
+  }
+
+  #applyThoughtLevel(child: ChildAgentLike | undefined, runtime: ExecutorRuntimeOptions | undefined): void {
+    if (!runtime?.thoughtLevel) return
+    if (!child) {
+      throw new Error(`dsh-subagent: executor cannot apply thoughtLevel without an in-process localAgent`)
+    }
+    if (!child.ctx?.on || typeof child.ctx.on !== 'function') {
+      throw new Error(`dsh-subagent: executor cannot apply thoughtLevel without an in-process localAgent`)
+    }
+    const provider = runtime.model?.provider ?? child.options?.provider
+    const model = runtime.model?.id ?? child.options?.model
+    if (!provider || !model) {
+      throw new Error(`dsh-subagent: executor needs provider/model when applying thoughtLevel`)
+    }
+    installModelSelection(child.ctx as Parameters<typeof installModelSelection>[0], {
+      current: {
+        provider,
+        model,
+        reasoningEffort: runtime.thoughtLevel as never,
+      },
+      assembled: undefined,
+    })
+  }
+
+  #applied(request: ExecutorStartRequest): ExecutorRun['applied'] {
+    return {
+      model: {
+        requested: request.runtime?.model,
+        effective: request.runtime?.model,
+        supported: true,
+      },
+      thinking: {
+        requested: request.runtime?.thoughtLevel,
+        effective: request.runtime?.thoughtLevel ?? null,
+        supported: request.runtime?.thoughtLevel ? true : false,
+      },
+      mode: {
+        requested: request.runtime?.mode,
+        effective: null,
+        supported: false,
+      },
+      tools: {
+        requested: request.runtime?.tools,
+        effective: { management: 'dsh', filtering: 'full' },
+        supported: true,
       },
     }
   }

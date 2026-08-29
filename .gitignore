@@ -6,4 +6,5 @@ coverage/
 .agent-teams/
 
 .artifacts/
+.graphify/
 test-results/

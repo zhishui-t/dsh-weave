@@ -135,6 +135,8 @@ export class WeaveScheduler {
   readonly #runs = new Map<string, DagRunContext>()
   /** taskId → AbortController（运行中任务；UI/MCP 取消联动）。 */
   readonly #controllers = new Map<string, AbortController>()
+  /** taskId → 活动心跳定时器：避免子代理活跃但任务 updated_at 不更新导致误判卡死。 */
+  readonly #heartbeats = new Map<string, ReturnType<typeof setInterval>>()
   /** `${sessionId}\u0000${roleId}` → 运行时占用（并发上限仲裁 + 成员状态展示）。 */
   readonly #activeByRole = new Map<string, MemberRuntimeInfo>()
   /** dagId → 泵序列化链（避免同一 DAG 并发泵）。 */
@@ -303,6 +305,8 @@ export class WeaveScheduler {
   dispose(): void {
     for (const controller of this.#controllers.values()) controller.abort()
     this.#controllers.clear()
+    for (const timer of this.#heartbeats.values()) clearInterval(timer)
+    this.#heartbeats.clear()
     this.#runs.clear()
     this.#activeByRole.clear()
   }
@@ -493,6 +497,7 @@ export class WeaveScheduler {
     }
     const controller = new AbortController()
     this.#controllers.set(task.id, controller)
+    if (!deferRunning) this.#startHeartbeat(task.id)
 
     // 真·RUNNING 时点（槽位回调）：排队期被外部取消/治理（终态）时不覆写；
     // memberRuntime 阶段同点翻转 queued → running。
@@ -501,6 +506,7 @@ export class WeaveScheduler {
           const current = (await this.#currentStatus(task.id)) ?? task.status
           if (current !== 'WAITING' && current !== 'RUNNING') return
           await this.#updateTask(task.id, { status: 'RUNNING' })
+          this.#startHeartbeat(task.id)
           const info = this.#activeByRole.get(activeKey(run.sessionId, role.id, task.id))
           if (info) info.phase = 'running'
           this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
@@ -659,6 +665,39 @@ export class WeaveScheduler {
       outputs.push({ label, output: text === '' ? '（无文本输出）' : text })
     }
     return outputs
+  }
+
+  /**
+   * 任务活动心跳：运行中的任务即使没有状态转移，也定期刷新 updated_at，
+   * 避免“子代理正在工作但任务表看起来卡死”导致队长误判取消。
+   */
+  #startHeartbeat(taskId: string): void {
+    if (this.#heartbeats.has(taskId)) return
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const current = await this.#currentStatus(taskId)
+          if (!current || TERMINAL_STATUSES.has(current)) {
+            this.#stopHeartbeat(taskId)
+            return
+          }
+          await this.#persistence.tasks.run((db) =>
+            db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), taskId),
+          )
+        } catch {
+          // 心跳失败不阻断主链路。
+        }
+      })()
+    }, 15_000)
+    this.#heartbeats.set(taskId, timer)
+  }
+
+  #stopHeartbeat(taskId: string): void {
+    const timer = this.#heartbeats.get(taskId)
+    if (timer) {
+      clearInterval(timer)
+      this.#heartbeats.delete(taskId)
+    }
   }
 
   async #currentStatus(taskId: string): Promise<TaskStatus | null> {

@@ -46,11 +46,12 @@ pnpm install
 
 | 类型 | 主要依赖 | 说明 |
 | --- | --- | --- |
-| 运行时依赖 | `@deepseek-ai/cordis`、`yaml`、`zcode-acp-server`、`@firecrawl/anydoc` | `pnpm install` 自动安装 |
+| 运行时依赖 | `@deepseek-ai/cordis`、`yaml`、`zcode-acp-server`、`@firecrawl/anydoc`、`@sentropic/graphify`（代码图谱引擎） | `pnpm install` 自动安装 |
 | 开发/测试依赖 | `typescript`、`vitest`、`eslint`、`@playwright/test`、`react`、`jsdom` 等 | 仅开发/测试用，不进入生产运行 |
 | DSH 相关 | `@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-commands` | 已作为 dev/peer 依赖声明，由 pnpm 安装 |
 | 外部宿主 | DeepSeek Harness（DSH）本体 | **需要单独安装/配置**；本仓库是 DSH 插件 |
 | 外部执行器 | ZCode CLI | 可通过 `WEAVE_ZCODE_BIN` 指定已安装的 ZCode；未指定时尝试自动探测 |
+| 代码图谱 | `@sentropic/graphify` | 已作为项目依赖安装，`node_modules/.bin/graphify` 可直接使用 |
 
 ## 3. 常用命令
 

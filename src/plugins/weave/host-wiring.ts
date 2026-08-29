@@ -4,6 +4,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { WeaveCli, WeaveMcp, type CliMcpDeps } from './cli-mcp.js'
 import type { GetStatusInput } from './cli-mcp.js'
+import { GraphService } from './graph/graph-service.js'
+import { DocumentConverter } from './convert/document-converter.js'
+import { ObsidianService } from './obsidian/obsidian-service.js'
+import { ObsidianCli } from './obsidian/cli.js'
 import type { PlanTasksOutput, ToolExecLike } from './planner.js'
 import { CircuitBreaker } from './safety/circuit-breaker.js'
 import { DagRepository } from './dag/repository.js'
@@ -339,6 +343,121 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: () => mcp.banList(),
     },
+    // ---------- doc/09 §2.4：weave_graph_*（T2，DSH 子代理可调用） ----------
+    {
+      name: `${prefix}graph_build`,
+      description: '构建/更新项目代码图谱与执行流（Graphify extract + flows build）',
+      parameters: {},
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: () => mcp.graphBuild(),
+    },
+    {
+      name: `${prefix}graph_query`,
+      description: '代码图谱语义查询：输入自然语言/符号问题，返回 Graphify 查询结果',
+      parameters: {
+        question: { type: 'string', required: true, description: '查询问题（自然语言或符号描述）' },
+        budget: { type: 'number', description: '搜索预算（节点数量上限，缺省由 Graphify 决定）' },
+        dfs: { type: 'boolean', description: '是否使用 DFS 遍历（缺省 BFS）' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.graphQuery(args as unknown as { question: string; budget?: number; dfs?: boolean }),
+    },
+    {
+      name: `${prefix}graph_path`,
+      description: '查询两个代码节点之间的最短路径',
+      parameters: {
+        source: { type: 'string', required: true, description: '起始节点 id/名称' },
+        target: { type: 'string', required: true, description: '目标节点 id/名称' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.graphPath(args as unknown as { source: string; target: string }),
+    },
+    {
+      name: `${prefix}graph_explain`,
+      description: '解释单个代码图谱节点（邻居/上下游详情）',
+      parameters: { node: { type: 'string', required: true, description: '节点 id/名称' } },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.graphExplain(args as unknown as { node: string }),
+    },
+    {
+      name: `${prefix}graph_affected`,
+      description: '根据改动文件列表计算影响面（执行流）',
+      parameters: {
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          required: true,
+          description: '改动文件路径列表（相对项目根）',
+        },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.graphAffected(args as unknown as { files: string[] }),
+    },
+    // ---------- doc/08 §7 / doc/09 §2.4：weave_document_convert（T6，AnyDoc 独立转换） ----------
+    {
+      name: `${prefix}document_convert`,
+      description:
+        '独立文档转换（AnyDoc）：把 doc/docx/odt/rtf/epub/pdf/ppt/pptx/xls/xlsx/csv 转为 GFM Markdown，' +
+        '返回 jobId/标题/警告与 Markdown 内容；不依赖知识导入流程。服务端路径模式传 file，' +
+        'base64 上传模式传 filename+data。',
+      parameters: {
+        file: { type: 'string', description: '服务端本地文件路径（CLI/服务端模式）' },
+        filename: { type: 'string', description: '原始文件名（base64 上传模式必填）' },
+        data: { type: 'string', description: 'base64 文件内容（控制台浏览器上传模式）' },
+        format: { type: 'string', description: '可选格式提示（AnyDoc 默认按扩展名/内容识别）' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.documentConvert(args as unknown as { file?: string; filename?: string; data?: string; format?: string }),
+    },
+    // ---------- doc/09 §2.4：weave_obsidian_*（T3，DSH 子代理可调用） ----------
+    {
+      name: `${prefix}obsidian_generate`,
+      description:
+        '生成/刷新 Obsidian Vault：把 Weave active/candidate 知识同步为 Markdown，' +
+        '保留用户修改并记录冲突；force=true 遇到用户修改将抛 conflict_detected。',
+      parameters: {
+        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
+        force: { type: 'boolean', description: '是否强制刷新；遇用户修改将报 conflict_detected' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.obsidianGenerate(args as unknown as { vaultPath?: string; force?: boolean }),
+    },
+    {
+      name: `${prefix}obsidian_open`,
+      description: '返回 Obsidian 打开协议 URI（obsidian://open?path=...）',
+      parameters: {
+        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.obsidianOpen(args as unknown as { vaultPath?: string }),
+    },
+    {
+      name: `${prefix}obsidian_reindex`,
+      description: '手动回索引 Obsidian Vault：扫描 Markdown 并重建用户侧指纹',
+      parameters: {
+        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.obsidianReindex(args as unknown as { vaultPath?: string }),
+    },
+    {
+      name: `${prefix}obsidian_status`,
+      description: 'Obsidian Vault 状态摘要：存在性、最近生成时间、冲突计数',
+      parameters: {
+        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.obsidianStatus(args as unknown as { vaultPath?: string }),
+    },
+    {
+      name: `${prefix}obsidian_conflicts`,
+      description: '列出 Obsidian Vault 当前冲突记录',
+      parameters: {
+        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.obsidianConflicts(args as unknown as { vaultPath?: string }),
+    },
   ]
   return defs
 }
@@ -396,7 +515,8 @@ export function registerWeaveHost(
   options: WeaveHostOptionsCommand = {},
 ): WeaveHostBundle {
   const mcp = new WeaveMcp(deps)
-  const cli = new WeaveCli(mcp, options.providerCommand)
+  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
+  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -559,7 +679,8 @@ export function registerWeaveCommand(
     return { registered: false, name: SLASH_COMMAND_NAME, unregister: () => undefined }
   }
   const mcp = new WeaveMcp(deps)
-  const cli = new WeaveCli(mcp, options.providerCommand)
+  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
+  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -568,9 +689,11 @@ export function registerWeaveCommand(
   const disposer = commands.register({
     name: SLASH_COMMAND_NAME,
     description:
-      'Weave 协作框架命令：团队/任务/知识/执行器/熔断管理。子命令：team list|switch、' +
+      'Weave 协作框架命令：团队/任务/知识/执行器/熔断/图谱/文档转换管理。子命令：team list|switch、' +
       'task status|revise|accept|retry|skip|cancel|reopen、dag <dag_id>、' +
-      'executor list、knowledge review|approve|reject、ban list',
+      'executor list、knowledge review|approve|reject、ban list、' +
+      'graph build|query|path|explain|affected、document convert|status|preview|history、' +
+      'obsidian generate|open|reindex|status|conflicts',
     input: {
       hint: 'weave <子命令> [参数...]　例：weave team list / weave task status --dag <dag_id>',
     },
@@ -604,6 +727,7 @@ export interface DefaultCliDepsOptions {
   teamsDir?: string
   auditDir?: string
   knowledgeDir?: string
+  obsidianDir?: string
 }
 
 export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOptions = {}): CliMcpDeps {
@@ -639,11 +763,13 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   const knowledgeRoot = options.knowledgeDir ?? join(homedir(), '.dsh', 'knowledge')
   const kstore = new KnowledgeStore({ rootDir: knowledgeRoot, metaDb: persistence.knowledgeMeta })
   const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: auditDir }) })
+  const importsDir = join(homedir(), '.dsh', 'imports')
   const importPipeline = new ImportPipeline({
     importsDb: persistence.imports,
-    importsDir: join(homedir(), '.dsh', 'imports'),
+    importsDir,
     knowledgeStore: kstore,
   })
+  const obsidianRoot = options.obsidianDir ?? join(homedir(), '.dsh', 'obsidian')
   return {
     persistence,
     teamManager: new TeamManager(registry, { teamsDir, persistence }),
@@ -653,6 +779,9 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     knowledgeReview: kreview,
     knowledgeStore: kstore,
     importPipeline,
+    graphService: new GraphService(),
+    documentConverter: new DocumentConverter({ outputDir: importsDir }),
+    obsidianService: new ObsidianService({ defaultVaultPath: obsidianRoot, knowledgeStore: kstore }),
     circuitBreaker: new CircuitBreaker(),
     statusNotifier,
     audit,
@@ -709,7 +838,10 @@ export function createDefaultExecutorProviderRegistry(
   }
 
   if (options.includeDsh !== false && subagents) {
-    registry.register(new DshSubagentExecutorProvider(subagents as unknown as ConstructorParameters<typeof DshSubagentExecutorProvider>[0]))
+    const agents = (ctx as Context & { reflect?: { get(name: string, fallback?: boolean): unknown } }).reflect?.get?.('agents', false) as
+      | { get(id: string): unknown }
+      | undefined
+    registry.register(new DshSubagentExecutorProvider(subagents as unknown as ConstructorParameters<typeof DshSubagentExecutorProvider>[0], { agents }))
   }
 
   return registry
@@ -719,5 +851,6 @@ export function createDefaultExecutorProviderRegistry(
 export function buildDefaultWeaveCli(ctx: Context): { mcp: WeaveMcp; cli: WeaveCli; deps: CliMcpDeps } {
   const deps = createDefaultCliDeps(ctx)
   const mcp = new WeaveMcp(deps)
-  return { mcp, cli: new WeaveCli(mcp), deps }
+  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
+  return { mcp, cli: new WeaveCli(mcp, undefined, obsidianCli), deps }
 }

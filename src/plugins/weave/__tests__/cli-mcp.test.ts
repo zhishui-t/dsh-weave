@@ -15,6 +15,7 @@ import { KnowledgeStore } from '../knowledge-model'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
 import { TaskStatusNotifier } from '../task-status-notifier'
+import type { GraphService } from '../graph/graph-service'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 
 const GOOD_TEAM = `schema_version: "1"
@@ -540,6 +541,108 @@ describe('WeaveCli 补充命令（t36）', () => {
     expect(listed.text).toContain('BANNED')
     const parsed = JSON.parse(await env.cli.run(['ban', 'list']).then((r) => r.json)) as { ok: boolean; data: { bans: unknown[] } }
     expect(parsed.data.bans).toHaveLength(1)
+  })
+})
+
+describe('WeaveMcp/WeaveCli：图谱工具（doc/09 §2.4）', () => {
+  function fakeGraphService(): GraphService {
+    return {
+      build: async () => ({ graphPath: '/tmp/.graphify/graph.json', flowsPath: '/tmp/.graphify/flows.json' }),
+      query: async (question: string) => `查询结果:${question}`,
+      path: async (source: string, target: string) => `路径:${source} -> ${target}`,
+      explain: async (node: string) => `解释:${node}`,
+      affectedFlows: async (files: string[]) => ({
+        changedFiles: files,
+        matchedNodeIds: files.length === 0 ? [] : ['src/login.ts'],
+        unmatchedFiles: [],
+        affectedFlows: files.length === 0 ? [] : [{
+          id: 'flow-1',
+          name: '登录',
+          entryPoint: 'src/login.ts',
+          entryPointId: 'n1',
+          path: ['n1'],
+          qualifiedPath: ['Q.n1'],
+          depth: 1,
+          nodeCount: 1,
+          fileCount: 1,
+          files: ['src/login.ts'],
+          criticality: 1,
+          warnings: [],
+        }],
+      }),
+      hasGraph: () => true,
+      listFlows: async () => [],
+      getFlow: async () => ({} as never),
+    } as unknown as GraphService
+  }
+
+  function graphMcp(): WeaveMcp {
+    return new WeaveMcp({ graphService: fakeGraphService() } as never)
+  }
+
+  it('WeaveMcp graph* 正常路径与入参校验', async () => {
+    const mcp = graphMcp()
+    expect(await mcp.graphBuild()).toEqual({ graphPath: '/tmp/.graphify/graph.json', flowsPath: '/tmp/.graphify/flows.json' })
+    expect(await mcp.graphQuery({ question: '登录调用链' })).toMatchObject({
+      question: '登录调用链',
+      result: '查询结果:登录调用链',
+    })
+    expect(await mcp.graphPath({ source: 'a', target: 'b' })).toMatchObject({
+      source: 'a',
+      target: 'b',
+      path: '路径:a -> b',
+    })
+    expect(await mcp.graphExplain({ node: 'n1' })).toMatchObject({
+      node: 'n1',
+      explain: '解释:n1',
+    })
+    const affected = await mcp.graphAffected({ files: ['src/login.ts'] })
+    expect(affected.changedFiles).toEqual(['src/login.ts'])
+    expect(affected.affectedFlows).toHaveLength(1)
+
+    await expect(mcp.graphQuery({ question: '  ' })).rejects.toMatchObject({ code: 'invalid_argument' })
+    await expect(mcp.graphPath({ source: '', target: 'b' })).rejects.toMatchObject({ code: 'invalid_argument' })
+    await expect(mcp.graphExplain({ node: '' })).rejects.toMatchObject({ code: 'invalid_argument' })
+    await expect(mcp.graphAffected({ files: [1 as unknown as string] })).rejects.toMatchObject({ code: 'invalid_argument' })
+    await expect(mcp.graphAffected({ files: [''] })).rejects.toMatchObject({ code: 'invalid_argument' })
+    expect(await mcp.graphAffected({ files: [] })).toMatchObject({ changedFiles: [], affectedFlows: [] })
+  })
+
+  it('WeaveMcp 未注入 graphService 时返回 configuration_error', async () => {
+    const mcp = new WeaveMcp({} as never)
+    await expect(mcp.graphBuild()).rejects.toMatchObject({ code: 'configuration_error' })
+    await expect(mcp.graphQuery({ question: 'x' })).rejects.toMatchObject({ code: 'configuration_error' })
+    await expect(mcp.graphPath({ source: 'a', target: 'b' })).rejects.toMatchObject({ code: 'configuration_error' })
+    await expect(mcp.graphExplain({ node: 'n' })).rejects.toMatchObject({ code: 'configuration_error' })
+    await expect(mcp.graphAffected({ files: ['a'] })).rejects.toMatchObject({ code: 'configuration_error' })
+  })
+
+  it('WeaveCli graph 子命令：build/query/path/explain/affected 与 --json', async () => {
+    const cli = new WeaveCli(graphMcp())
+    const build = await cli.run(['graph', 'build'])
+    expect(build.exitCode).toBe(0)
+    expect(build.text).toContain('图谱已构建')
+    expect(build.text).toContain('flows.json')
+
+    const query = await cli.run(['graph', 'query', '登录', '链路', '--dfs'])
+    expect(query.exitCode).toBe(0)
+    expect(query.text).toContain('查询结果:登录 链路')
+    const parsedQuery = JSON.parse(query.json) as { ok: boolean; data: { question: string; result: string } }
+    expect(parsedQuery.data.question).toBe('登录 链路')
+
+    const path = await cli.run(['graph', 'path', 'a', 'b'])
+    expect(path.text).toContain('路径:a -> b')
+    const explain = await cli.run(['graph', 'explain', 'n1'])
+    expect(explain.text).toContain('解释:n1')
+
+    const affected = await cli.run(['graph', 'affected', 'src/login.ts'])
+    expect(affected.exitCode).toBe(0)
+    expect(affected.text).toContain('影响执行流 1 条')
+    expect(affected.text).toContain('flow-1')
+
+    const bad = await cli.run(['graph', 'path', 'only-source'])
+    expect(bad.exitCode).toBe(1)
+    expect(bad.text).toContain('invalid_argument')
   })
 })
 

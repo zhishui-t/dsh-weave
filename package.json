@@ -36,6 +36,7 @@
     "test:persistence": "vitest run src/plugins/weave/__tests__/persistence.test.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
+    "code:scan": "graphify extract src --out . --no-description --no-label && graphify flows build --graph .graphify/graph.json",
     "typecheck": "tsc --noEmit",
     "test:client-ui": "pnpm build && pnpm vitest run src/plugins/weave/__tests__/client-bundle.ui.test.tsx",
     "test:ui": "pnpm vitest run src/plugins/weave/__tests__/dashboard.test.tsx src/plugins/weave/__tests__/dag-panel.test.tsx src/plugins/weave/__tests__/import-ui.test.tsx src/plugins/weave/__tests__/client-bundle.ui.test.tsx",
@@ -46,11 +47,13 @@
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@firecrawl/anydoc": "0.2.3",
+    "@sentropic/graphify": "^0.17.1",
     "yaml": "^2.9.0",
     "zcode-acp-server": "0.11.9"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "0.25.1",
+    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-commands": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-subagent": "0.1.1-rc.2",
     "@eslint/js": "^9.39.5",
@@ -67,13 +70,12 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.67.0",
-    "vitest": "^3.2.0",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2"
+    "vitest": "^3.2.0"
   },
   "peerDependencies": {
     "@agentclientprotocol/sdk": ">=0.25.1 <2",
-    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2"
+    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2"
   },
   "dsh": {
     "bundle": {

@@ -13,7 +13,18 @@ import { join } from 'node:path'
 import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../import-pipeline.js'
 import type { TeamManager } from '../team-manager.js'
 import type { WeaveScheduler } from '../scheduler.js'
-import { buildKnowledgeGraph } from './knowledge-graph.js'
+import type { AffectedFlowsResult, GraphFlow, GraphService, GraphSummary } from '../graph/graph-service.js'
+import { KnowledgeGraphService, type KnowledgeGraphBuildResult } from '../graph/knowledge-graph.js'
+import type { DocumentConverter, DocumentConvertInput } from '../convert/document-converter.js'
+import type {
+  ObsidianConflict,
+  ObsidianGenerateResult,
+  ObsidianOpenResult,
+  ObsidianReindexResult,
+  ObsidianService,
+  ObsidianStatusResult,
+} from '../obsidian/obsidian-service.js'
+import { buildKnowledgeGraph, type KnowledgeGraphResult } from './knowledge-graph.js'
 
 /**
  * Web 真实数据查询/操作服务（t2）——供 RPC 层（rpc.ts 由 weave-dev-api 接线）调用的
@@ -123,8 +134,16 @@ export interface QueryServiceDeps {
   scheduler?: WeaveScheduler
   /** 知识仓库：knowledge/graph 只读真实知识文件与 [[双链]]。 */
   knowledgeStore?: KnowledgeStore
+  /** 知识图谱 Graphify 后端：knowledge/build|query|path|explain 用。未注入时相应端点 configuration_error。 */
+  knowledgeGraphService?: KnowledgeGraphService
   /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
   importPipeline?: ImportPipeline
+  /** Graphify 代码图谱服务：code/* RPC 用；未注入时相应端点 configuration_error。 */
+  graphService?: GraphService
+  /** AnyDoc 独立文档转换服务：document/* RPC 用；未注入时相应端点 configuration_error。 */
+  documentConverter?: DocumentConverter
+  /** Obsidian 真实 Vault 集成服务：obsidian/* RPC 用；未注入时相应端点 configuration_error。 */
+  obsidianService?: ObsidianService
 }
 
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
@@ -139,7 +158,11 @@ export class WeaveQueryService {
   private readonly teamManager?: TeamManager
   private readonly scheduler?: WeaveScheduler
   private readonly knowledgeStore?: KnowledgeStore
+  private readonly knowledgeGraphService?: KnowledgeGraphService
   private readonly importPipeline?: ImportPipeline
+  private readonly graphService?: GraphService
+  private readonly documentConverter?: DocumentConverter
+  private readonly obsidianService?: ObsidianService
   private readonly dagRepository: DagRepository
 
   constructor(deps: QueryServiceDeps) {
@@ -150,7 +173,11 @@ export class WeaveQueryService {
     this.teamManager = deps.teamManager
     this.scheduler = deps.scheduler
     this.knowledgeStore = deps.knowledgeStore
+    this.knowledgeGraphService = deps.knowledgeGraphService
     this.importPipeline = deps.importPipeline
+    this.graphService = deps.graphService
+    this.documentConverter = deps.documentConverter
+    this.obsidianService = deps.obsidianService
     this.dagRepository = new DagRepository(deps.persistence)
   }
 
@@ -337,8 +364,24 @@ export class WeaveQueryService {
     return this.mcp.knowledgeReject(id, reason)
   }
 
-  /** knowledge/graph：读取真实知识文件；轻量双链图，完整 Graphify 仍属 P1。project 按项目过滤（透传 buildKnowledgeGraph）。 */
-  async knowledgeGraph(input: unknown = {}): Promise<ReturnType<typeof buildKnowledgeGraph>> {
+  private requireKnowledgeGraphService(): KnowledgeGraphService {
+    if (!this.knowledgeGraphService) {
+      throw new WeaveError('configuration_error', 'knowledgeGraphService 未注入（knowledge/build|query|path|explain 需要 KnowledgeGraphService）')
+    }
+    return this.knowledgeGraphService
+  }
+
+  /** knowledge/build：用 Graphify semantic extraction 构建/刷新知识图谱。 */
+  async knowledgeBuild(input: unknown = {}): Promise<KnowledgeGraphBuildResult> {
+    asPayload(input)
+    return this.requireKnowledgeGraphService().build()
+  }
+
+  /**
+   * knowledge/graph：优先使用 Graphify graph.json（保留 status/layer/project 过滤）；
+   * 未构建时回退轻量 [[双链]] 预览，满足 K1 空/未构建可提示。
+   */
+  async knowledgeGraph(input: unknown = {}): Promise<KnowledgeGraphResult> {
     if (!this.knowledgeStore) {
       throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge/graph 需要 KnowledgeStore）')
     }
@@ -349,12 +392,46 @@ export class WeaveQueryService {
     const layer = layerValue !== undefined ? enumOrThrow(layerValue, KNOWLEDGE_LAYERS, '知识层级') as KnowledgeLayer : undefined
     const limitRaw = optionalPositiveInt(p, 'limit')
     const project = optionalString(p, 'project')
-    return await buildKnowledgeGraph(this.knowledgeStore, {
+    const graphInput = {
       ...(status ? { status } : {}),
       ...(layer ? { layer } : {}),
       ...(limitRaw ? { limit: limitRaw } : {}),
       ...(project ? { project } : {}),
+    }
+    if (this.knowledgeGraphService) {
+      return this.knowledgeGraphService.graph(graphInput)
+    }
+    return await buildKnowledgeGraph(this.knowledgeStore, graphInput)
+  }
+
+  /** knowledge/query：知识图谱语义查询（无命中返回空文本，不崩溃）。 */
+  async knowledgeQuery(input: unknown): Promise<{ text: string }> {
+    const p = asPayload(input)
+    const question = requireString(p, 'question')
+    const budget = optionalPositiveInt(p, 'budget')
+    const dfs = p['dfs'] === true
+    const text = await this.requireKnowledgeGraphService().query(question, {
+      ...(budget ? { budget } : {}),
+      ...(dfs ? { dfs: true } : {}),
     })
+    return { text }
+  }
+
+  /** knowledge/path：两个知识节点间最短路径。 */
+  async knowledgePath(input: unknown): Promise<{ source: string; target: string; path: string; text: string }> {
+    const p = asPayload(input)
+    const source = requireString(p, 'source')
+    const target = requireString(p, 'target')
+    const text = (await this.requireKnowledgeGraphService().path(source, target)).trim()
+    return { source, target, path: text, text }
+  }
+
+  /** knowledge/explain：单知识节点解释。 */
+  async knowledgeExplain(input: unknown): Promise<{ node: string; explain: string; text: string }> {
+    const p = asPayload(input)
+    const node = requireString(p, 'node')
+    const text = (await this.requireKnowledgeGraphService().explain(node)).trim()
+    return { node, explain: text, text }
   }
 
   /** knowledge/import/upload：浏览器 base64 上传到服务端临时目录。 */
@@ -399,6 +476,188 @@ export class WeaveQueryService {
     if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
     await this.importPipeline.cancel(requireString(asPayload(input), 'jobId', 'job_id'))
     return { cancelled: true }
+  }
+
+  /* --------------------------------- 代码图谱域 --------------------------------- */
+
+  private requireGraphService(): GraphService {
+    if (!this.graphService) {
+      throw new WeaveError('configuration_error', 'graphService 未注入（code/* 端点不可用）')
+    }
+    return this.graphService
+  }
+
+  private ensureGraphBuilt(service: GraphService): void {
+    if (!service.hasGraph()) {
+      throw new WeaveError('configuration_error', '代码图谱尚未构建，请先执行 pnpm code:scan', { graphPath: service.graphPath })
+    }
+  }
+
+  private ensureFlowsBuilt(service: GraphService): void {
+    this.ensureGraphBuilt(service)
+    if (!service.hasFlows()) {
+      throw new WeaveError('configuration_error', '执行流尚未构建，请先执行 graphify flows build', { flowsPath: service.flowsPath })
+    }
+  }
+
+  /** code/build：构建/刷新代码图谱与执行流。 */
+  async codeBuild(input: unknown = {}): Promise<{ graphPath: string; flowsPath: string }> {
+    asPayload(input)
+    const service = this.requireGraphService()
+    return service.build()
+  }
+
+  /** code/graph：图谱摘要（节点/边/社区/路径）。 */
+  async codeGraph(input: unknown = {}): Promise<GraphSummary> {
+    asPayload(input)
+    const service = this.requireGraphService()
+    this.ensureGraphBuilt(service)
+    return service.graphSummary()
+  }
+
+  /** code/path：两个节点间最短路径文本。 */
+  async codePath(input: unknown): Promise<{ source: string; target: string; path: string; text: string }> {
+    const p = asPayload(input)
+    const source = requireString(p, 'source')
+    const target = requireString(p, 'target')
+    const service = this.requireGraphService()
+    this.ensureGraphBuilt(service)
+    const text = (await service.path(source, target)).trim()
+    return { source, target, path: text, text }
+  }
+
+  /** code/explain：单节点解释文本。 */
+  async codeExplain(input: unknown): Promise<{ node: string; explain: string; text: string }> {
+    const p = asPayload(input)
+    const node = requireString(p, 'node')
+    const service = this.requireGraphService()
+    this.ensureGraphBuilt(service)
+    const text = (await service.explain(node)).trim()
+    return { node, explain: text, text }
+  }
+
+  /** code/affected：改动文件影响面。 */
+  async codeAffected(input: unknown): Promise<AffectedFlowsResult> {
+    const p = asPayload(input)
+    const rawFiles = p['files']
+    if (!Array.isArray(rawFiles)) {
+      throw new WeaveError('invalid_argument', 'files 必须为字符串数组', { field: 'files' })
+    }
+    const files = rawFiles.map((file, index) => {
+      if (typeof file !== 'string' || file.trim() === '') {
+        throw new WeaveError('invalid_argument', `files[${index}] 必须为非空字符串`, { field: 'files', index })
+      }
+      return file.trim()
+    })
+    const service = this.requireGraphService()
+    this.ensureGraphBuilt(service)
+    if (files.length > 0) this.ensureFlowsBuilt(service)
+    return service.affectedFlows(files)
+  }
+
+  /** code/flows：执行流摘要列表。 */
+  async codeFlows(input: unknown = {}): Promise<{ flows: GraphFlow[] }> {
+    const p = asPayload(input)
+    const limit = optionalPositiveInt(p, 'limit') ?? 50
+    const service = this.requireGraphService()
+    this.ensureFlowsBuilt(service)
+    return { flows: await service.listFlows(limit) }
+  }
+
+  /** code/flows/get：单个执行流详情。 */
+  async codeFlowGet(input: unknown): Promise<GraphFlow> {
+    const p = asPayload(input)
+    const id = requireString(p, 'id', 'flowId', 'flow_id')
+    const service = this.requireGraphService()
+    this.ensureFlowsBuilt(service)
+    return service.getFlow(id)
+  }
+
+  /* --------------------------------- 文档转换域 --------------------------------- */
+
+  private requireDocumentConverter(): DocumentConverter {
+    if (!this.documentConverter) {
+      throw new WeaveError('configuration_error', 'documentConverter 未注入（document/* 端点不可用）')
+    }
+    return this.documentConverter
+  }
+
+  /** document/convert：提交独立转换任务（返回 jobId/status，转换在后台进行）。 */
+  async documentConvert(input: unknown): Promise<unknown> {
+    const p = asPayload(input)
+    const converter = this.requireDocumentConverter()
+    return converter.convert(p as DocumentConvertInput)
+  }
+
+  /** document/status：查询独立转换任务状态。 */
+  async documentStatus(input: unknown): Promise<unknown> {
+    const p = asPayload(input)
+    const jobId = requireString(p, 'jobId', 'job_id')
+    return this.requireDocumentConverter().status(jobId)
+  }
+
+  /** document/preview：读取已完成转换的 Markdown。 */
+  async documentPreview(input: unknown): Promise<unknown> {
+    const p = asPayload(input)
+    const jobId = requireString(p, 'jobId', 'job_id')
+    return this.requireDocumentConverter().preview(jobId)
+  }
+
+  /** document/history：最近独立转换记录（doc/10 建议端点）。 */
+  async documentHistory(input: unknown = {}): Promise<{ jobs: Awaited<ReturnType<DocumentConverter['history']>> }> {
+    const p = asPayload(input)
+    const limit = optionalPositiveInt(p, 'limit') ?? 20
+    return { jobs: await this.requireDocumentConverter().history(limit) }
+  }
+
+  /* --------------------------------- Obsidian 域 --------------------------------- */
+
+  private requireObsidianService(): ObsidianService {
+    if (!this.obsidianService) {
+      throw new WeaveError('configuration_error', 'obsidianService 未注入（obsidian/* 端点不可用）')
+    }
+    return this.obsidianService
+  }
+
+  /** obsidian/generate：生成/刷新 Vault（增量 + 冲突保护）。 */
+  async obsidianGenerate(input: unknown): Promise<ObsidianGenerateResult> {
+    const p = asPayload(input)
+    return this.requireObsidianService().generate({
+      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
+      ...(p['force'] === true ? { force: true } : {}),
+    })
+  }
+
+  /** obsidian/open：返回 Obsidian 打开协议 URI。 */
+  async obsidianOpen(input: unknown): Promise<ObsidianOpenResult> {
+    const p = asPayload(input)
+    return this.requireObsidianService().open({
+      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
+    })
+  }
+
+  /** obsidian/reindex：手动扫描 Vault Markdown 并重建指纹。 */
+  async obsidianReindex(input: unknown): Promise<ObsidianReindexResult> {
+    const p = asPayload(input)
+    return this.requireObsidianService().reindex({
+      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
+    })
+  }
+
+  /** obsidian/status：Vault 状态摘要。 */
+  async obsidianStatus(input: unknown): Promise<ObsidianStatusResult> {
+    const p = asPayload(input)
+    return this.requireObsidianService().status({
+      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
+    })
+  }
+
+  /** obsidian/conflicts：冲突清单（辅助端点）。 */
+  async obsidianConflicts(input: unknown): Promise<{ vaultPath: string; conflicts: ObsidianConflict[] }> {
+    const p = asPayload(input)
+    return this.requireObsidianService().conflicts({
+      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
+    })
   }
 
   /* --------------------------------- 审计域 --------------------------------- */
@@ -602,8 +861,16 @@ export class WeaveQueryService {
         return this.knowledgeApprove(payload)
       case 'knowledge/reject':
         return this.knowledgeReject(payload)
+      case 'knowledge/build':
+        return this.knowledgeBuild(payload ?? {})
       case 'knowledge/graph':
         return this.knowledgeGraph(payload ?? {})
+      case 'knowledge/query':
+        return this.knowledgeQuery(payload ?? {})
+      case 'knowledge/path':
+        return this.knowledgePath(payload ?? {})
+      case 'knowledge/explain':
+        return this.knowledgeExplain(payload ?? {})
       case 'knowledge/import/upload':
         return this.importUpload(payload ?? {})
       case 'knowledge/import/convert':
@@ -614,6 +881,38 @@ export class WeaveQueryService {
         return this.importConfirm(payload ?? {})
       case 'knowledge/import/cancel':
         return this.importCancel(payload ?? {})
+      case 'code/build':
+        return this.codeBuild(payload ?? {})
+      case 'code/graph':
+        return this.codeGraph(payload ?? {})
+      case 'code/path':
+        return this.codePath(payload ?? {})
+      case 'code/explain':
+        return this.codeExplain(payload ?? {})
+      case 'code/affected':
+        return this.codeAffected(payload ?? {})
+      case 'code/flows':
+        return this.codeFlows(payload ?? {})
+      case 'code/flows/get':
+        return this.codeFlowGet(payload ?? {})
+      case 'document/convert':
+        return this.documentConvert(payload ?? {})
+      case 'document/status':
+        return this.documentStatus(payload ?? {})
+      case 'document/preview':
+        return this.documentPreview(payload ?? {})
+      case 'document/history':
+        return this.documentHistory(payload ?? {})
+      case 'obsidian/generate':
+        return this.obsidianGenerate(payload ?? {})
+      case 'obsidian/open':
+        return this.obsidianOpen(payload ?? {})
+      case 'obsidian/reindex':
+        return this.obsidianReindex(payload ?? {})
+      case 'obsidian/status':
+        return this.obsidianStatus(payload ?? {})
+      case 'obsidian/conflicts':
+        return this.obsidianConflicts(payload ?? {})
       case 'audit/list':
         return this.auditList(payload)
       case 'session/bindings':
@@ -637,11 +936,17 @@ export class WeaveQueryService {
  * mcp / 审计日志（目录与 KnowledgeReview 一致）/ 修订跟踪在此按需构造，
  * 由 index.ts 注入 registerWeaveRpc 的 deps.queryService；extras.scheduler 为
  * 队长调度器（session/status 成员实时状态数据源）。
+ * graphService / obsidianService 以 extras 优先，缺省回落 deps；
+ * documentConverter 直接取 deps（CliMcpDeps 已负责组装）。
  */
 export function createWeaveQueryServiceFromCliDeps(
   deps: CliMcpDeps,
-  extras: { scheduler?: WeaveScheduler } = {},
+  extras: { scheduler?: WeaveScheduler; graphService?: GraphService; obsidianService?: ObsidianService } = {},
 ): WeaveQueryService {
+  // CliMcpDeps 本身已携带 graphService / obsidianService / documentConverter，
+  // 这里以 extras 优先（部署方可显式覆盖/注入不同实例），缺省回落 deps，保证工厂自组装完整。
+  const graphService = extras.graphService ?? deps.graphService
+  const obsidianService = extras.obsidianService ?? deps.obsidianService
   return new WeaveQueryService({
     persistence: deps.persistence,
     mcp: new WeaveMcp(deps),
@@ -649,7 +954,11 @@ export function createWeaveQueryServiceFromCliDeps(
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
     ...(extras.scheduler ? { scheduler: extras.scheduler } : {}),
+    ...(graphService ? { graphService } : {}),
+    ...(obsidianService ? { obsidianService } : {}),
     knowledgeStore: deps.knowledgeStore,
+    knowledgeGraphService: deps.knowledgeStore ? new KnowledgeGraphService({ store: deps.knowledgeStore }) : undefined,
     importPipeline: deps.importPipeline,
+    documentConverter: deps.documentConverter,
   })
 }

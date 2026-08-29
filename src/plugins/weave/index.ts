@@ -21,6 +21,7 @@ import {
   type WeaveNoticeMessage,
 } from './session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
+import { CaptainTurnGuard } from './captain-turn-guard.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
@@ -114,6 +115,7 @@ export function apply(ctx: Context): void {
         ...(settingsOverrides.teams_dir ? { teamsDir: settingsOverrides.teams_dir } : {}),
         ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
         ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
+        ...(settingsOverrides.obsidian_dir ? { obsidianDir: settingsOverrides.obsidian_dir } : {}),
       })
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
       const refreshExecutorSnapshot = () => deps.executorRegistry.load(runtime)
@@ -294,11 +296,39 @@ export function apply(ctx: Context): void {
         console.warn('[dsh-weave] pre-step delegation hook registration failed:', error)
       }
 
+      // 队长回合硬约束：有在途 Weave 任务时，turn-stopping 注入 next-step，
+      // 使 agent-loop 不关闭回合，模型无法“提前结束回合”绕过值守。
+      try {
+        const guard = new CaptainTurnGuard({
+          persistence: deps.persistence,
+          notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
+        })
+        const evented = runtime as Context & { on?(name: string, listener: unknown): unknown }
+        const offTurnGuard = evented.on?.('agent/turn-stopping', async (payload: { agent?: { id?: string } }) => {
+          const sessionId = payload?.agent?.id ?? ''
+          if (!sessionId) return
+          const tasks = await guard.activeTasks(sessionId)
+          if (tasks.length === 0) return
+          const message = guard.buildInjectedMessage(tasks)
+          const agent = (payload as { agent?: { inject?: (message: unknown) => void } & Record<string, unknown> }).agent
+          if (message && typeof agent?.inject === 'function') {
+            agent.inject(message)
+          }
+          guard.startWatching(sessionId)
+        })
+        runtime.effect(() => () => {
+          if (typeof offTurnGuard === 'function') offTurnGuard()
+          guard.dispose()
+        }, 'dsh-weave captain turn guard')
+      } catch (error) {
+        console.warn('[dsh-weave] captain turn guard registration failed:', error)
+      }
+
       // RPC 通道（WS handler + HTTP fallback）：传输层失败只降级面板/远程调用。
       try {
         registerWeaveRpc(runtime, {
           ...deps,
-          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }),
+          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler, graphService: deps.graphService, obsidianService: deps.obsidianService }),
           executorRuns: delegation,
           executorProviders: service.executorProviders,
           providerStore: new ProviderStore({ file: effectiveProvidersFile }),

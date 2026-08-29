@@ -168,12 +168,13 @@ describe('TeamPlanner.plan', () => {
       .rejects.toMatchObject({ code: 'invalid_argument' })
   })
 
-  it('序号分配器随计划递增（同 project/version 内 dag 命名连续）', async () => {
+  it('缺省不传 append_to：自动沿用同会话/项目/版本既有任务组（不新建）', async () => {
     await manager.bindTeam('sess-1', 'alpha')
     const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
     const second = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '二', assignee: 'coder' }] })
-    const seqOf = (dagId: string): number => Number(dagId.split('-').pop())
-    expect(seqOf(second.dag_id)).toBe(seqOf(first.dag_id) + 1)
+    expect(second.appended).toBe(true)
+    expect(second.dag_id).toBe(first.dag_id)
+    expect(second.tasks[0]!.id.endsWith('-T2')).toBe(true)
   })
 })
 
@@ -280,13 +281,13 @@ describe('TeamPlanner.plan 追加模式（doc/05 §6.1 P1-A）', () => {
     expect(status).toBe('created')
   })
 
-  it('缺省新建回归：不传 append_to 行为不变（新 dag、编号从 T1 重开、appended=false）', async () => {
+  it('缺省自动沿用既有任务组：不传 append_to 时 appended=true，编号 DAG 域递增', async () => {
     await manager.bindTeam('sess-1', 'alpha')
     const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
     const second = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '二', assignee: 'coder' }] })
-    expect(second.appended).toBe(false)
-    expect(second.dag_id).not.toBe(first.dag_id)
-    expect(second.tasks[0]!.id.endsWith('-T1')).toBe(true)
+    expect(second.appended).toBe(true)
+    expect(second.dag_id).toBe(first.dag_id)
+    expect(second.tasks[0]!.id.endsWith('-T2')).toBe(true)
   })
 })
 

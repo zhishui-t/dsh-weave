@@ -12,6 +12,16 @@ import { WeaveError } from './state/weave-error.js'
 import type { TeamManager } from './team-manager.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import type { AuditLog } from './audit/audit-log.js'
+import type { AffectedFlowsResult, GraphQueryOptions, GraphService } from './graph/graph-service.js'
+import type {
+  DocumentConverter,
+  DocumentConvertInput,
+  DocumentHistoryItem,
+  DocumentPreviewResult,
+  DocumentStatusResult,
+} from './convert/document-converter.js'
+import type { ObsidianService } from './obsidian/obsidian-service.js'
+import type { ObsidianCli } from './obsidian/cli.js'
 
 /**
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
@@ -55,6 +65,23 @@ export interface CliMcpDeps {
    * 与通知同位置、逐条容错（审计失败不影响治理动作）。
    */
   audit?: AuditLog
+  /**
+   * Graphify 图谱服务（doc/09 §2.4）：weave_graph_* 工具与 /weave graph CLI 使用。
+   * 未注入时对应入口返回 configuration_error（纯 CLI 可显式注入本地项目根）。
+   */
+  graphService?: GraphService
+  /**
+   * AnyDoc 独立文档转换服务（doc/08 §7 / doc/09 §2.1，T6）：
+   * document convert/preview/status 与 weave_document_convert 使用。
+   * 未注入时对应入口返回 configuration_error（不依赖知识导入/团队）。
+   */
+  documentConverter?: DocumentConverter
+  /**
+   * Obsidian 真实 Vault 集成服务（doc/09 §2.1，T3）：
+   * obsidian generate/open/reindex/status 与 weave_obsidian_* 使用。
+   * 未注入时对应入口返回 configuration_error。
+   */
+  obsidianService?: ObsidianService
   /**
    * 运行时执行联动（index.ts 在调度器就绪后注入）：
    * cancelTask → 中止运行中的子代理；resumeTask → 重试后重新泵 DAG。
@@ -346,6 +373,152 @@ export class WeaveMcp {
     return { bans: breaker.snapshot().filter((b) => b.state !== 'ACTIVE') }
   }
 
+  /* ------------------- 图谱工具（doc/09 §2.4，T2） ------------------- */
+
+  /** weave_graph_build：构建/更新代码图谱与执行流（Graphify extract + flows build）。 */
+  async graphBuild(): Promise<{ graphPath: string; flowsPath: string }> {
+    return this.#requireGraph().build()
+  }
+
+  /** weave_graph_query：代码图谱语义查询。 */
+  async graphQuery(input: { question: string; budget?: number; dfs?: boolean }): Promise<{ question: string; result: string }> {
+    const question = typeof input.question === 'string' ? input.question.trim() : ''
+    if (question === '') {
+      throw new WeaveError('invalid_argument', 'question 不能为空', { field: 'question' })
+    }
+    const options: GraphQueryOptions = {}
+    if (input.budget !== undefined) options.budget = input.budget
+    if (input.dfs !== undefined) options.dfs = input.dfs
+    return { question, result: await this.#requireGraph().query(question, options) }
+  }
+
+  /** weave_graph_path：两个节点之间的最短路径。 */
+  async graphPath(input: { source: string; target: string }): Promise<{ source: string; target: string; path: string }> {
+    const source = typeof input.source === 'string' ? input.source.trim() : ''
+    const target = typeof input.target === 'string' ? input.target.trim() : ''
+    if (source === '' || target === '') {
+      throw new WeaveError('invalid_argument', 'source 与 target 不能为空', { source, target })
+    }
+    return { source, target, path: await this.#requireGraph().path(source, target) }
+  }
+
+  /** weave_graph_explain：单节点详情/解释。 */
+  async graphExplain(input: { node: string }): Promise<{ node: string; explain: string }> {
+    const node = typeof input.node === 'string' ? input.node.trim() : ''
+    if (node === '') {
+      throw new WeaveError('invalid_argument', 'node 不能为空', { field: 'node' })
+    }
+    return { node, explain: await this.#requireGraph().explain(node) }
+  }
+
+  /** weave_graph_affected：改动文件 → 影响面（执行流）。 */
+  async graphAffected(input: { files: string[] }): Promise<AffectedFlowsResult> {
+    const rawFiles = input.files
+    if (!Array.isArray(rawFiles)) {
+      throw new WeaveError('invalid_argument', 'files 必须为字符串数组', { field: 'files' })
+    }
+    const files: string[] = []
+    for (let i = 0; i < rawFiles.length; i += 1) {
+      const file = rawFiles[i]
+      if (typeof file !== 'string' || file.trim() === '') {
+        throw new WeaveError('invalid_argument', `files[${i}] 必须为非空字符串`, { field: 'files', index: i })
+      }
+      files.push(file.trim())
+    }
+    return this.#requireGraph().affectedFlows(files)
+  }
+
+  /* ------------------- 文档转换（doc/08 §7 / doc/09 §2.1，T6） ------------------- */
+
+  /**
+   * weave_document_convert：独立文档转换（CLI/MCP 使用最终结果）。
+   * base64 上传模式传 filename+data；服务端路径模式传 file。
+   */
+  async documentConvert(input: DocumentConvertInput): Promise<{
+    jobId: string
+    status: string
+    filename: string
+    title?: string
+    markdown?: string
+    warnings: string[]
+    error?: string
+  }> {
+    const job = await this.#requireDocumentConverter().convertAndWait(input)
+    return {
+      jobId: job.id,
+      status: job.status,
+      filename: job.filename,
+      ...(job.title !== undefined ? { title: job.title } : {}),
+      ...(job.markdown !== undefined ? { markdown: job.markdown } : {}),
+      warnings: job.warnings,
+      ...(job.error !== undefined ? { error: job.error } : {}),
+    }
+  }
+
+  /** weave_document_status：查询独立转换任务状态。 */
+  async documentStatus(jobId: string): Promise<DocumentStatusResult> {
+    return this.#requireDocumentConverter().status(jobId)
+  }
+
+  /** weave_document_preview：读取已完成转换的 Markdown。 */
+  async documentPreview(jobId: string): Promise<DocumentPreviewResult> {
+    return this.#requireDocumentConverter().preview(jobId)
+  }
+
+  /** weave_document_history：最近独立转换记录（可选入口）。 */
+  async documentHistory(limit = 20): Promise<DocumentHistoryItem[]> {
+    return this.#requireDocumentConverter().history(limit)
+  }
+
+  /* ------------------- Obsidian（doc/09 §2.1，T3） ------------------- */
+
+  /** weave_obsidian_generate：生成/刷新 Obsidian Vault（增量 + 冲突保护）。 */
+  async obsidianGenerate(input: { vaultPath?: string; force?: boolean } = {}): Promise<unknown> {
+    return this.#requireObsidian().generate(input)
+  }
+
+  /** weave_obsidian_open：返回 Obsidian 打开协议 URI。 */
+  async obsidianOpen(input: { vaultPath?: string } = {}): Promise<unknown> {
+    return this.#requireObsidian().open(input)
+  }
+
+  /** weave_obsidian_reindex：手动扫描 Vault Markdown 并重建指纹。 */
+  async obsidianReindex(input: { vaultPath?: string } = {}): Promise<unknown> {
+    return this.#requireObsidian().reindex(input)
+  }
+
+  /** weave_obsidian_status：Vault 状态摘要。 */
+  async obsidianStatus(input: { vaultPath?: string } = {}): Promise<unknown> {
+    return this.#requireObsidian().status(input)
+  }
+
+  /** weave_obsidian_conflicts：冲突清单（辅助工具）。 */
+  async obsidianConflicts(input: { vaultPath?: string } = {}): Promise<unknown> {
+    return this.#requireObsidian().conflicts(input)
+  }
+
+  #requireObsidian(): ObsidianService {
+    const service = this.#deps.obsidianService
+    if (!service) {
+      throw new WeaveError('configuration_error', 'obsidianService 未注入（weave_obsidian_* 需要 ObsidianService）')
+    }
+    return service
+  }
+
+  #requireDocumentConverter(): DocumentConverter {
+    const converter = this.#deps.documentConverter
+    if (!converter) {
+      throw new WeaveError('configuration_error', 'documentConverter 未注入（document/* 需要 DocumentConverter）')
+    }
+    return converter
+  }
+
+  #requireGraph(): GraphService {
+    const graph = this.#deps.graphService
+    if (!graph) throw new WeaveError('configuration_error', 'graphService 未注入（weave_graph_* 需要 GraphService）')
+    return graph
+  }
+
   async #updateTask(taskId: string, patch: { status: TaskStatus }): Promise<void> {
     await this.#deps.persistence.tasks.run((db) => {
       db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(patch.status, new Date().toISOString(), taskId)
@@ -420,6 +593,20 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   provider add <JSON|JSON数组|YAML|文件路径|紧凑配置>
   provider list
   provider remove <name>
+  graph build
+  graph query <问题> [--budget N] [--dfs]
+  graph path <source> <target>
+  graph explain <node>
+  graph affected <file> [file...]
+  document convert <file>
+  document status <job_id>
+  document preview <job_id>
+  document history [--limit N]
+  obsidian generate [--vault <path>] [--force]
+  obsidian open [--vault <path>]
+  obsidian reindex [--vault <path>]
+  obsidian status [--vault <path>]
+  obsidian conflicts [--vault <path>]
 
 任务下发已收敛为对话式：在会话中描述目标，队长模型调用 weave_plan_tasks 拆解派发。`
 
@@ -431,10 +618,12 @@ export type WeaveProviderCliCommand = (args: string[]) => Promise<{
 export class WeaveCli {
   readonly #mcp: WeaveMcp
   readonly #providerCommand?: WeaveProviderCliCommand
+  readonly #obsidianCli?: ObsidianCli
 
-  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand) {
+  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand, obsidianCli?: ObsidianCli) {
     this.#mcp = mcp
     this.#providerCommand = providerCommand
+    this.#obsidianCli = obsidianCli
   }
 
   /**
@@ -575,6 +764,109 @@ export class WeaveCli {
           return { json: `知识 ${data.id} → ${data.status}`, data }
         }
         break
+      }
+      case 'graph': {
+        if (command === 'build') {
+          const data = await this.#mcp.graphBuild()
+          return { json: `图谱已构建: ${data.graphPath}\n执行流: ${data.flowsPath}`, data }
+        }
+        if (command === 'query') {
+          const { positionals, flags } = parseArgs(rest)
+          if (positionals.length === 0) {
+            throw new WeaveError('invalid_argument', '用法: /weave graph query <问题> [--budget N] [--dfs]')
+          }
+          const data = await this.#mcp.graphQuery({
+            question: positionals.join(' '),
+            ...(flags.has('budget') ? { budget: Number(flags.get('budget')) } : {}),
+            ...(flags.has('dfs') ? { dfs: true } : {}),
+          })
+          return { json: data.result || '（无查询结果）', data }
+        }
+        if (command === 'path') {
+          const { positionals } = parseArgs(rest)
+          const [source, target] = positionals
+          if (!source || !target) {
+            throw new WeaveError('invalid_argument', '用法: /weave graph path <source> <target>')
+          }
+          const data = await this.#mcp.graphPath({ source, target })
+          return { json: data.path || '（无路径）', data }
+        }
+        if (command === 'explain') {
+          const { positionals } = parseArgs(rest)
+          const [node] = positionals
+          if (!node) {
+            throw new WeaveError('invalid_argument', '用法: /weave graph explain <node>')
+          }
+          const data = await this.#mcp.graphExplain({ node })
+          return { json: data.explain || '（无解释）', data }
+        }
+        if (command === 'affected') {
+          const { positionals: files } = parseArgs(rest)
+          if (files.length === 0) {
+            throw new WeaveError('invalid_argument', '用法: /weave graph affected <file1> [file2 ...]')
+          }
+          const data = await this.#mcp.graphAffected({ files })
+          const result = data
+          const lines = [
+            `改动文件 ${result.changedFiles.length} 个，命中节点 ${result.matchedNodeIds.length} 个，影响执行流 ${result.affectedFlows.length} 条`,
+            ...result.affectedFlows.map((f) => `- [${f.id}] ${f.name}（${f.files.length} 文件，深度 ${f.depth}）`),
+          ]
+          return { json: lines.join('\n'), data }
+        }
+        break
+      }
+      case 'document': {
+        if (command === 'convert') {
+          const { positionals } = parseArgs(rest)
+          const file = positionals[0]
+          if (!file) {
+            throw new WeaveError('invalid_argument', '用法: /weave document convert <file>')
+          }
+          const data = await this.#mcp.documentConvert({ file })
+          if (data.status === 'failed') {
+            throw new WeaveError('conversion_failed', `文档转换失败: ${data.error ?? '未知错误'}`, { jobId: data.jobId })
+          }
+          const markdown = data.markdown ?? ''
+          const snippet = markdown.length > 200 ? `${markdown.slice(0, 200)}…` : markdown
+          return {
+            json: `转换完成: ${data.jobId} [${data.status}] ${data.title ?? data.filename}\n${snippet}`,
+            data,
+          }
+        }
+        if (command === 'status') {
+          const [jobId] = rest
+          if (!jobId) throw new WeaveError('invalid_argument', '用法: /weave document status <job_id>')
+          const data = await this.#mcp.documentStatus(jobId)
+          const lines = [
+            `- ${data.jobId} [${data.status}] ${data.filename}`,
+            ...(data.title ? [`  标题: ${data.title}`] : []),
+            ...(data.progress !== undefined ? [`  进度: ${data.progress}`] : []),
+            ...(data.error ? [`  错误: ${data.error}`] : []),
+            ...(data.warnings.length ? [`  警告: ${data.warnings.join('; ')}`] : []),
+          ]
+          return { json: lines.join('\n'), data }
+        }
+        if (command === 'preview') {
+          const [jobId] = rest
+          if (!jobId) throw new WeaveError('invalid_argument', '用法: /weave document preview <job_id>')
+          const data = await this.#mcp.documentPreview(jobId)
+          return { json: data.markdown, data }
+        }
+        if (command === 'history') {
+          const { flags } = parseArgs(rest)
+          const limit = flags.has('limit') ? Number(flags.get('limit')) : undefined
+          const items = await this.#mcp.documentHistory(limit && Number.isFinite(limit) ? limit : 20)
+          const lines = items.map((item) => `- ${item.jobId} [${item.status}] ${item.filename} ${item.title ?? ''}`.trimEnd())
+          return { json: lines.length ? lines.join('\n') : '（暂无文档转换记录）', data: items }
+        }
+        break
+      }
+      case 'obsidian': {
+        if (!this.#obsidianCli) {
+          throw new WeaveError('configuration_error', 'obsidianService 未注入（/weave obsidian 不可用）')
+        }
+        const result = await this.#obsidianCli.run(command === undefined ? rest : [command, ...rest])
+        return { json: result.text, data: result.data }
       }
       case 'ban': {
         if (command === 'list') {
