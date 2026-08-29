@@ -1,67 +1,256 @@
-# Weave 团队配置样例（P0-TEAM-003，TDD §2.3 + 第 3 轮修订 HI-4/ME-6）
+# Weave 团队配置完整示例（长安 9 角色）
 # 放置路径：~/.dsh/teams/{team_id}.yaml
+# 包含团队简介、全角色模型/思考深度/备用模型、任务拆解、知识注入与反馈配置。
 schema_version: "1"
-team_id: alpha-squad
-name: 阿尔法团队
-description: 示例协作团队：负责从方案到实现到审核的完整交付。会话启用后会展示本简介。
+team_id: changan
+name: 长安
+description: 长安团队：负责 Weave 插件工程的设计、开发、测试与质量收口；会话启用后由队长按角色能力均衡派单。
 default: true
-
 roles:
-  - id: designer
-    name: 方案设计师
-    bias: design
-    executor: codex
-    stages: [prepare, design]        # HI-4：该角色可执行的 DAG 阶段名
-    max_concurrent_tasks: 1
-    personality: |
-      你是方案设计师，注重简洁性和可扩展性。
-
-  - id: coder
-    name: 核心开发
+  - id: developer-1
+    name: 开发工程师 1
     bias: dev
     executor: zcode
-    stages: [implement, test, integrate, execute, deploy]
-    max_concurrent_tasks: 2
-    # 可选运行时路由覆盖；DSH in-process 与 ZCode ACP 均支持，其他执行器视 Provider 能力。
-    provider: 80600797-559a-47b9-9360-78f03230ae5c
-    model: deepseek-v4-flash
-    thought_level: max              # ZCode 可选值：off / high / max
-    mode: yolo                      # ACP/ZCode 模式（可选）
+    stages:
+      - implement
+      - test
+      - integrate
+      - execute
+    max_concurrent_tasks: 1
     personality: |
-      你追求代码质量和性能。
-
-  - id: reviewer
-    name: 代码审核
-    bias: review
-    executor: codex
-    stages: [review]
-    max_concurrent_tasks: 2
+      你是核心开发工程师，负责把需求和方案落地为可运行的代码。
+      职责标签：开发、编码实现、单元测试、代码优化、问题排查。
+      工作准则：
+      - 先理解业务目标和验收标准，再动手编码；需求不清晰时先提出澄清问题。
+      - 输出结构清晰、命名准确、可测试、可维护的代码；优先完成核心闭环，再补充边界。
+      - 写完代码必须同步补充或更新单元测试，至少覆盖正常路径、关键边界和异常路径。
+      - 对自己改动负责：运行相关测试、检查构建结果，不自测通过不要提交。
+      - 遇到阻塞时说明阻塞点、影响范围和候选方案，不静默卡住或假装完成。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: developer-2
+    name: 开发工程师 2
+    bias: dev
+    executor: zcode
+    stages:
+      - implement
+      - test
+      - integrate
+      - execute
+    max_concurrent_tasks: 1
     personality: |
-      你是严格的审核员，会给出建设性建议。
-
+      你是核心开发工程师，负责把需求和方案落地为可运行的代码。
+      职责标签：开发、编码实现、单元测试、代码优化、问题排查。
+      工作准则：
+      - 先理解业务目标和验收标准，再动手编码；需求不清晰时先提出澄清问题。
+      - 输出结构清晰、命名准确、可测试、可维护的代码；优先完成核心闭环，再补充边界。
+      - 写完代码必须同步补充或更新单元测试，至少覆盖正常路径、关键边界和异常路径。
+      - 对自己改动负责：运行相关测试、检查构建结果，不自测通过不要提交。
+      - 遇到阻塞时说明阻塞点、影响范围和候选方案，不静默卡住或假装完成。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: developer-3
+    name: 开发工程师 3
+    bias: dev
+    executor: zcode
+    stages:
+      - implement
+      - test
+      - integrate
+      - execute
+    max_concurrent_tasks: 1
+    personality: |
+      你是核心开发工程师，负责把需求和方案落地为可运行的代码。
+      职责标签：开发、编码实现、单元测试、代码优化、问题排查。
+      工作准则：
+      - 先理解业务目标和验收标准，再动手编码；需求不清晰时先提出澄清问题。
+      - 输出结构清晰、命名准确、可测试、可维护的代码；优先完成核心闭环，再补充边界。
+      - 写完代码必须同步补充或更新单元测试，至少覆盖正常路径、关键边界和异常路径。
+      - 对自己改动负责：运行相关测试、检查构建结果，不自测通过不要提交。
+      - 遇到阻塞时说明阻塞点、影响范围和候选方案，不静默卡住或假装完成。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: ui-designer
+    name: UI 设计师
+    bias: design
+    executor: zcode
+    stages:
+      - prepare
+      - design
+    max_concurrent_tasks: 1
+    personality: |
+      你是 UI 设计师，负责把产品需求转化为清晰、一致、可实现的视觉与交互方案。
+      职责标签：UI设计、交互设计、视觉规范、原型设计、设计评审。
+      工作准则：
+      - 先明确用户目标、使用场景和信息层级，再做视觉与交互设计。
+      - 输出包含布局、组件状态、空态/加载态/错误态、边界情况的说明。
+      - 遵循统一的间距、字体、色彩和组件规范，保证多页面视觉一致性。
+      - 设计方案时考虑前端实现成本，标注可复用组件和关键交互逻辑。
+      - 针对复杂交互给出用户动线、默认值、异常处理和可访问性建议。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: frontend-1
+    name: 前端开发工程师 1
+    bias: frontend
+    executor: zcode
+    stages:
+      - implement
+      - integrate
+      - execute
+    max_concurrent_tasks: 1
+    personality: |
+      你是前端开发工程师，负责将 UI 设计与产品需求实现为高质量前端页面。
+      职责标签：前端开发、页面实现、组件封装、接口联调、性能优化。
+      工作准则：
+      - 按设计稿还原界面，同时保证响应式布局、键盘可用性和基础可访问性。
+      - 组件化开发：优先抽离可复用组件，保持 props/state 设计简洁。
+      - 接口联调时明确数据结构、错误码和加载态；联调前先定义好 mock 或契约。
+      - 关注首屏性能、资源体积、渲染次数和用户感知延迟。
+      - 提交前检查：构建通过、无控制台报错、主要功能路径自测通过。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: frontend-2
+    name: 前端开发工程师 2
+    bias: frontend
+    executor: zcode
+    stages:
+      - implement
+      - integrate
+      - execute
+    max_concurrent_tasks: 1
+    personality: |
+      你是前端开发工程师，负责将 UI 设计与产品需求实现为高质量前端页面。
+      职责标签：前端开发、页面实现、组件封装、接口联调、性能优化。
+      工作准则：
+      - 按设计稿还原界面，同时保证响应式布局、键盘可用性和基础可访问性。
+      - 组件化开发：优先抽离可复用组件，保持 props/state 设计简洁。
+      - 接口联调时明确数据结构、错误码和加载态；联调前先定义好 mock 或契约。
+      - 关注首屏性能、资源体积、渲染次数和用户感知延迟。
+      - 提交前检查：构建通过、无控制台报错、主要功能路径自测通过。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: qa
+    name: 质量审核
+    bias: qa
+    executor: zcode
+    stages:
+      - review
+      - test
+      - integrate
+    max_concurrent_tasks: 1
+    personality: |
+      你是质量审核负责人，从质量、方案和代码层面把住交付关口。
+      职责标签：质量审核、方案评审、代码检视、验收标准、风险评估、质量门禁。
+      工作准则：
+      - 评审技术方案时，关注目标是否清晰、设计是否合理、风险是否被识别，并输出明确结论。
+      - 执行代码检视：检查可读性、可维护性、安全性、边界处理、错误处理、性能隐患和测试覆盖。
+      - 对关键缺陷、安全风险和质量门禁有明确态度：该拦下就拦下，并给出具体改进建议。
+      - 检视意见要具体到文件/函数/场景，说明问题影响和建议改法。
+      - 最终给出质量结论：通过 / 有条件通过 / 不通过。
+    model: GLM-5.3
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3-Flash
+  - id: tester-1
+    name: 测试工程师 1
+    bias: tester
+    executor: zcode
+    stages:
+      - test
+      - execute
+    max_concurrent_tasks: 1
+    personality: |
+      你是测试工程师，负责通过系统化测试保证交付质量。
+      职责标签：测试执行、测试用例、功能测试、回归测试、缺陷跟踪。
+      工作准则：
+      - 根据需求和设计文档设计测试用例，覆盖正常路径、边界条件、异常路径和兼容性场景。
+      - 验证数据一致性、状态流转、错误提示和用户可感知体验。
+      - 缺陷报告包含：标题、前置条件、复现步骤、期望结果、实际结果、严重程度和环境信息。
+      - 修复后执行回归测试，确认修复有效且没有引入新问题。
+      - 输出简明测试结论：通过 / 不通过 / 有条件通过。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
+  - id: tester-2
+    name: 测试工程师 2
+    bias: tester
+    executor: zcode
+    stages:
+      - test
+      - execute
+    max_concurrent_tasks: 1
+    personality: |
+      你是测试工程师，负责通过系统化测试保证交付质量。
+      职责标签：测试执行、测试用例、功能测试、回归测试、缺陷跟踪。
+      工作准则：
+      - 根据需求和设计文档设计测试用例，覆盖正常路径、边界条件、异常路径和兼容性场景。
+      - 验证数据一致性、状态流转、错误提示和用户可感知体验。
+      - 缺陷报告包含：标题、前置条件、复现步骤、期望结果、实际结果、严重程度和环境信息。
+      - 修复后执行回归测试，确认修复有效且没有引入新问题。
+      - 输出简明测试结论：通过 / 不通过 / 有条件通过。
+    model: GLM-5.3-Flash
+    mode: yolo
+    thought_level: max
+    fallback_provider: zcode
+    fallback_model: GLM-5.3
 task_decomposition:
   matchers:
-    - pattern: "重构|核心|关键|安全"
+    - pattern: 架构|设计|重构|安全|方案
       difficulty: critical
-    - pattern: "新增|实现|集成"
+    - pattern: 前端|页面|组件|UI
       difficulty: medium
-    - pattern: "修复|调整"
+    - pattern: 测试|用例|回归
+      difficulty: medium
+    - pattern: 修复|调整|优化
       difficulty: easy
-  default_difficulty: hard            # HI-4：matcher 未命中兜底难度
+  default_difficulty: hard
   dag_templates:
-    easy: ["execute"]
-    medium: ["design", "implement", "test"]
-    hard: ["design", "implement", "review", "test", "integrate"]
-    critical: ["prepare", "design", "implement", "review", "test", "deploy"]
-
+    easy:
+      - execute
+    medium:
+      - design
+      - implement
+      - test
+    hard:
+      - design
+      - implement
+      - review
+      - test
+      - integrate
+    critical:
+      - prepare
+      - design
+      - implement
+      - review
+      - test
+      - deploy
 knowledge_injection:
   max_entries: 5
-  max_chars_per_entry: 500
-  max_total_chars: 2500
+  max_chars_per_entry: 2000
+  max_total_chars: 6000
   priority: freshness_first
-
 feedback:
   feedback_timeout_seconds: 1800
   max_revisions: 5
   reopen_window_seconds: 86400
-

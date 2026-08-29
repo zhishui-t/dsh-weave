@@ -264,10 +264,12 @@ describe('TeamManager 备用模型同执行器校验（用户裁定）', () => {
 
 describe('TeamManager loadTeam/listTeams', () => {
   it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', () => {
-    // 样例文件的 team_id(alpha-squad) 与本夹具文件名对齐后再加载，保持对样例结构的真实覆盖
-    writeTeam('alpha-team', readFileSync(EXAMPLES_TEAM_YAML, 'utf8').replace('team_id: alpha-squad', 'team_id: alpha-team'))
+    // 样例文件已是长安 9 角色完整配置；仅把 team_id 对齐到夹具文件名后加载
+    writeTeam('alpha-team', readFileSync(EXAMPLES_TEAM_YAML, 'utf8').replace('team_id: changan', 'team_id: alpha-team'))
     const team = manager(['codex', 'zcode']).loadTeam('alpha-team')
-    expect(team.roles.map((r: TeamConfig['roles'][number]) => r.id)).toEqual(['designer', 'coder', 'reviewer'])
+    expect(team.roles.map((r: TeamConfig['roles'][number]) => r.id)).toEqual([
+      'developer-1', 'developer-2', 'developer-3', 'ui-designer', 'frontend-1', 'frontend-2', 'qa', 'tester-1', 'tester-2',
+    ])
   })
 
   it('团队不存在 → invalid_team', () => {
