@@ -172,8 +172,14 @@ export function apply(ctx: Context): void {
                 for (const team of deps.teamManager.listTeams()) {
                   for (const [executor, lim] of Object.entries(team.executor_limits ?? {})) {
                     const prev = merged[executor]
-                    if (!prev || (lim.max_concurrent ?? 0) > (prev.maxConcurrent ?? 0)) {
-                      merged[executor] = { maxConcurrent: lim.max_concurrent ?? prev?.maxConcurrent ?? 0, maxPerHour: Math.max(lim.max_per_hour ?? 0, prev?.maxPerHour ?? 0) }
+                    // 0 = 不限制；任一家为 0 即为不限制（避免其他团队的正数限制把总上限拉回来）。
+                    const mergedConcurrent =
+                      (prev?.maxConcurrent === 0 || (lim.max_concurrent ?? 0) === 0)
+                        ? 0
+                        : Math.max(lim.max_concurrent ?? 0, prev?.maxConcurrent ?? 0)
+                    merged[executor] = {
+                      maxConcurrent: mergedConcurrent,
+                      maxPerHour: (prev?.maxPerHour === 0 || (lim.max_per_hour ?? 0) === 0) ? 0 : Math.max(lim.max_per_hour ?? 0, prev?.maxPerHour ?? 0),
                     }
                   }
                 }

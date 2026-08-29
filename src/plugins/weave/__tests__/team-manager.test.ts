@@ -213,10 +213,12 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('executor_limits 非正数 → invalid_team（ME-6）', () => {
+  it('executor_limits 负数 → invalid_team；0 表示不限制并允许', () => {
     const mgr = manager(['codex', 'zcode'])
-    const bad = GOOD_TEAM.replace('    max_concurrent: 2\n    max_per_hour: 20', '    max_concurrent: 0\n    max_per_hour: 20')
+    const bad = GOOD_TEAM.replace('    max_concurrent: 2\n    max_per_hour: 20', '    max_concurrent: -1\n    max_per_hour: 20')
     expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    const unlimited = GOOD_TEAM.replace('    max_concurrent: 2\n    max_per_hour: 20', '    max_concurrent: 0\n    max_per_hour: 0')
+    expect(() => mgr.validateTeam(mgr.parseTeam(unlimited, 'f'))).not.toThrow()
   })
 })
 

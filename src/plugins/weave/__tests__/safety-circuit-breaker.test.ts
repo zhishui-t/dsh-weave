@@ -200,6 +200,12 @@ describe('ProcessLimiter：per-executor 并发 + 小时频率，超限排队不�
     await expect(p).rejects.toThrow(/abort/i)
   })
 
+  it('maxConcurrent=0 表示不限制并发', () => {
+    const pl = new ProcessLimiter({ defaultLimits: { maxConcurrent: 0, maxPerHour: 0 } })
+    for (let i = 0; i < 50; i += 1) expect(pl.acquire('x')).toBe(true)
+    expect(pl.status('x').active).toBe(50)
+  })
+
   it('status() 快照反映并发与窗口内频率', () => {
     let t = 0
     const pl = new ProcessLimiter({

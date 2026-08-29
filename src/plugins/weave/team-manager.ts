@@ -380,11 +380,11 @@ export class TeamManager {
     for (const [executor, limit] of Object.entries(team.executor_limits ?? {})) {
       if (
         !Number.isInteger(limit.max_concurrent) ||
-        limit.max_concurrent <= 0 ||
+        limit.max_concurrent < 0 ||
         !Number.isInteger(limit.max_per_hour) ||
         limit.max_per_hour < 0
       ) {
-        throw new WeaveError('invalid_team', `executor_limits.${executor} 的并发必须 > 0；小时频率必须 >= 0（0 = 不限制）`, {
+        throw new WeaveError('invalid_team', `executor_limits.${executor} 的并发/小时频率必须 >= 0（0 = 不限制）`, {
           executor,
         })
       }
