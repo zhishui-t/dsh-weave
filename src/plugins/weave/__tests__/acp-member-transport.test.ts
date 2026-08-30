@@ -30,7 +30,11 @@ describe('AcpMemberTransport', () => {
       hooks: { onSettled, onStatusChange },
     })
     expect(result.accepted).toBe(true)
-    expect(start).toHaveBeenCalledWith(expect.objectContaining({ sessionKey: expect.stringContaining('dev') }))
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: expect.stringContaining('dev'),
+      // 主机解析的工作区必须作为父会话 cwd 传导（ACP 会话创建依赖它）
+      parent: { session: { header: { cwd: 'C:/proj' } } },
+    }))
     expect(onStatusChange).toHaveBeenCalledWith('working')
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(onSettled).toHaveBeenCalledWith(expect.objectContaining({ output: 'done', failed: false }))

@@ -5,6 +5,12 @@ export interface AcpStartRequest {
   resumeSessionId?: string
   prompt: Array<{ type: 'text'; text: string }>
   signal: AbortSignal
+  /**
+   * ACP 会话的父会话（IPC 契约：`parent.session.header.cwd` 即会话工作目录）。
+   * 团队主机经 deliver 传入 workspace（= 队长会话 header.cwd）；不传时
+   * AcpSessionProvider 会因缺 cwd 直接 fail fast（zcode: cwd is required）。
+   */
+  parent?: { session?: { header?: { cwd?: string } } }
   runtime?: unknown
 }
 
@@ -83,6 +89,9 @@ export class AcpMemberTransport {
       ...resumed?.resumeSessionId ? { resumeSessionId: resumed.resumeSessionId } : {},
       prompt: [{ type: 'text', text: input.prompt }],
       signal,
+      // ACP/zcode 会话创建必需：把主机解析的工作区（队长会话 header.cwd）
+      // 作为父会话 cwd 传导，否则新会话无法落盘工作目录而直接抛错。
+      parent: { session: { header: { cwd: input.workspace } } },
       runtime: {
         ...input.member.provider ? { provider: input.member.provider } : {},
         ...input.member.model ? { model: input.member.model } : {},
