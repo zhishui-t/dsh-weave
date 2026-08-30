@@ -1064,7 +1064,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         }),
         Card({
           title: `任务总数（${data.tasks ?? '—'}）`,
-          meta: React.createElement('span', null, data.taskError ? missing : '成员与当前会话任务图见会话视图的「Weave 团队」页签。'),
+          meta: React.createElement('span', null, data.taskError ? missing : '任务与成员状态请查看会话中的小队面板。'),
           testId: 'overview-card-tasks',
         }),
         Card({
@@ -6115,23 +6115,6 @@ moduleLoader.load({
             ),
           ),
         'dsh-weave sidebar action',
-      )
-
-      const sessionPanel = app.WeaveSessionPanel
-      ctx.effect(
-        () =>
-          ctx.slots.inject('conversation.view', () =>
-            ctx.slots.register(
-              {
-                name: 'conversation.view',
-                id: PLUGIN_ID,
-                order: 70,
-                label: () => 'Weave 团队',
-              },
-              sessionPanel,
-            ),
-          ),
-        'dsh-weave conversation session panel',
       )
 
     }
