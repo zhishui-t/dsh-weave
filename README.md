@@ -95,7 +95,7 @@ pnpm test:e2e:harness
 | `pnpm typecheck` | 类型检查（`tsc --noEmit`） |
 | `pnpm lint` | ESLint 检查 |
 
-测试路径约定（与 doc/04-任务规划文档.md 的 `testCommand` 对齐）：
+测试路径约定（与 doc/tasks/04-任务规划文档.md 的 `testCommand` 对齐）：
 `pnpm vitest run src/plugins/weave/__tests__/<name>.test.ts`。
 Vitest 只收集 `src/plugins/weave/__tests__/**/*.test.ts`（见 `vitest.config.ts`），统一 node 环境。
 

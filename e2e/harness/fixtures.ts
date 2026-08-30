@@ -1,6 +1,6 @@
 // harness 层共享设施：虚拟域 + ModuleLoader 桩 + __WEAVE_RPC__ 信封注册表 stub。
 // 被测对象是 dist/client/index.js 真实构建产物与真实 DOM 行为，仅 RPC 数据层可控可断言。
-// 运行前提：pnpm build（dist 与 src 同步）；GBK 坑见 doc/e2e-acceptance-plan.md（charset 必须 utf-8）。
+// 运行前提：pnpm build（dist 与 src 同步）；GBK 坑见 doc/reports/e2e-acceptance-plan.md（charset 必须 utf-8）。
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { expect, type Page } from '@playwright/test'

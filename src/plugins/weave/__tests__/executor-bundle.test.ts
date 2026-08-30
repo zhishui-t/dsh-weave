@@ -12,7 +12,7 @@
  *    `ctx.subagents.list()` 出现 codex / claude-code / acp 且 provider 形态正确。
  *  - Suite C「版本与 peer 满足实证」：记录 Bundle 与 DSH 宿主的实际版本（0.1.1-rc.2 /
  *    dist-tag next），断言 peer（^0.1.1-rc.2）被宿主满足 —— 回写
- *    doc/P0-EXEC-021-conclusion.md 的实证依据。
+ *    doc/decisions/P0-EXEC-021-conclusion.md 的实证依据。
  *
  * 运行：pnpm vitest run src/plugins/weave/__tests__/executor-bundle.test.ts
  */

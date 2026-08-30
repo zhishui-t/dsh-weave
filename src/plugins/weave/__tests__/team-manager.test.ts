@@ -72,7 +72,7 @@ feedback:
 `
 
 const EXAMPLES_TEAM_YAML = fileURLToPath(
-  new URL('../../../../examples/team.yaml', import.meta.url),
+  new URL('../../../../examples/teams/team.yaml', import.meta.url),
 )
 
 function makeLookup(executors: string[]): ExecutorLookup {
@@ -263,7 +263,7 @@ describe('TeamManager 备用模型同执行器校验（用户裁定）', () => {
 })
 
 describe('TeamManager loadTeam/listTeams', () => {
-  it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', () => {
+  it('loadTeam 成功（含仓库内 examples/teams/team.yaml 样例）', () => {
     // 样例文件已是长安 9 角色完整配置；仅把 team_id 对齐到夹具文件名后加载
     writeTeam('alpha-team', readFileSync(EXAMPLES_TEAM_YAML, 'utf8').replace('team_id: changan', 'team_id: alpha-team'))
     const team = manager(['codex', 'zcode']).loadTeam('alpha-team')
