@@ -23,6 +23,7 @@ import {
 } from './session-delegation.js'
 import { resolveAgentTeamsHost, type AgentTeamsAssignmentLike } from './agent-teams-host.js'
 import { bootstrapSessionTeam } from './session-bootstrap.js'
+import { teamConfigToAgentTeamsProfile } from './team-profile-mapper.js'
 import { KnowledgeBridge } from './knowledge-bridge.js'
 import { ExecutorSessionStore } from './executor-session-store.js'
 import { AcpMemberTransport } from './acp-member-transport.js'
@@ -227,6 +228,12 @@ export function apply(ctx: Context): void {
       })
       const reflectionBridge = new ReflectionBridge(reflection)
       const agentTeamsHost = resolveAgentTeamsHost(runtime)
+      if (agentTeamsHost?.registerProfile) {
+        for (const team of deps.teamManager.listTeams()) {
+          const mapped = teamConfigToAgentTeamsProfile(team)
+          agentTeamsHost.registerProfile(mapped.profileName, mapped.profile)
+        }
+      }
       agentTeamsHost?.hostHooks?.add({
         onTaskSettled: (input: AgentTeamsTaskSettledLike) => reflectionBridge.onTaskSettled(input),
       })

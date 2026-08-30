@@ -47,6 +47,7 @@ export interface AgentTeamsHost {
   bootstrapTeam(input: AgentTeamsBootstrapInput): Promise<AgentTeamsBootstrapResult>
   hostHooks?: AgentTeamsHostHooks
   memberTransports?: MemberTransportRegistrar
+  registerProfile?(profileName: string, profile: unknown): void
 }
 
 interface CordisLike {
@@ -65,5 +66,8 @@ export function resolveAgentTeamsHost(ctx: CordisLike | undefined | null): Agent
       : typeof directBootstrap === 'function' ? directBootstrap : undefined) as
     ((input: AgentTeamsBootstrapInput) => Promise<AgentTeamsBootstrapResult>) | undefined
   if (typeof bootstrapTeam !== 'function') return null
-  return { bootstrapTeam, ...hostHooks ? { hostHooks } : {}, ...memberTransports ? { memberTransports } : {} }
+  const registerProfile = runtime && typeof (runtime as { registerProfile?: unknown }).registerProfile === 'function'
+    ? (runtime as { registerProfile: (n: string, p: unknown) => void }).registerProfile
+    : undefined
+  return { bootstrapTeam, ...hostHooks ? { hostHooks } : {}, ...memberTransports ? { memberTransports } : {}, ...registerProfile ? { registerProfile } : {} }
 }
