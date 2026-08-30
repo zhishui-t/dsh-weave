@@ -59,6 +59,7 @@ export class AcpMemberTransport {
     member: { id: string; name: string }
   }): Promise<{ memberId: string }> {
     const memberId = `acp:${input.team.id}:${input.member.name}`
+    input.member.id = memberId
     return { memberId }
   }
 

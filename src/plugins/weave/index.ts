@@ -84,7 +84,7 @@ export function apply(ctx: Context): void {
 
   // 真实 DSH 宿主接入：等待宿主服务就绪后一次性注册真实依赖。
   // 执行器列表来自 ctx.subagents 当前实际注册项；ZCode ACP 只是可选附加源。
-  ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
+  ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm'], (scoped) => {
     const runtime = scoped as Context
 
     const dynamicProviderDisposers = new Map<string, Array<() => void>>()
@@ -326,6 +326,8 @@ export function apply(ctx: Context): void {
           onTeamEnabled: async (sessionId, team, agent) => {
             const host = resolveAgentTeamsHost(runtime)
             if (!host) return
+            const mapped = teamConfigToAgentTeamsProfile(team)
+            if (host.registerProfile) host.registerProfile(mapped.profileName, mapped.profile)
             await bootstrapSessionTeam({ host }, { sessionId, team, captain: agent })
           },
           notify: notifyWeaveSession,
