@@ -619,11 +619,13 @@ export class WeaveCli {
   readonly #mcp: WeaveMcp
   readonly #providerCommand?: WeaveProviderCliCommand
   readonly #obsidianCli?: ObsidianCli
+  readonly #hideLegacyTaskTools: boolean
 
-  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand, obsidianCli?: ObsidianCli) {
+  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand, obsidianCli?: ObsidianCli, options: { hideLegacyTaskTools?: boolean } = {}) {
     this.#mcp = mcp
     this.#providerCommand = providerCommand
     this.#obsidianCli = obsidianCli
+    this.#hideLegacyTaskTools = options.hideLegacyTaskTools === true
   }
 
   /**
@@ -669,6 +671,9 @@ export class WeaveCli {
         json: JSON.stringify({ ok: true, result }, null, 2),
         data: result,
       }
+    }
+    if (this.#hideLegacyTaskTools && (domain === 'team' || domain === 'task')) {
+      throw new WeaveError('unsupported', `旧任务/团队命令已由 AgentTeams fork 接管：请使用 agent_teams_* 工具或小队面板。`)
     }
     switch (domain) {
       case 'team': {

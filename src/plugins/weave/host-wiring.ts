@@ -533,7 +533,7 @@ export function registerWeaveHost(
 ): WeaveHostBundle {
   const mcp = new WeaveMcp(deps)
   const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
-  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
+  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli, { hideLegacyTaskTools: options.hideLegacyTaskTools })
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -697,7 +697,7 @@ export function registerWeaveCommand(
   }
   const mcp = new WeaveMcp(deps)
   const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
-  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
+  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli, { hideLegacyTaskTools: options.hideLegacyTaskTools })
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
