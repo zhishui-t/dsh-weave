@@ -10,6 +10,7 @@ import { SessionTracker } from './session-tracker.js'
 import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
 import { WeaveScheduler, subjectLabel } from './scheduler.js'
 import { ReflectionService } from './reflection-service.js'
+import { ReflectionBridge, type AgentTeamsTaskSettledLike } from './reflection-bridge.js'
 import { createExecutorEventNotifier } from './session-stream.js'
 import { TaskStatusNotifier } from './task-status-notifier.js'
 import {
@@ -220,6 +221,11 @@ export function apply(ctx: Context): void {
       const reflection = new ReflectionService({
         knowledge: deps.knowledgeStore!,
         audit: auditLog,
+      })
+      const reflectionBridge = new ReflectionBridge(reflection)
+      const agentTeamsHost = resolveAgentTeamsHost(runtime)
+      agentTeamsHost?.hostHooks?.add({
+        onTaskSettled: (input: AgentTeamsTaskSettledLike) => reflectionBridge.onTaskSettled(input),
       })
       // 任务状态变更通知单出口（doc/05 §6.4 P1-D）：scheduler 旁路（外部取消/重试）
       // 发电，会话面经 resolveNoticeSession 解析；echoSelfActions 缺省 false（不回声）。
