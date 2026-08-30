@@ -69,13 +69,11 @@ describe('AuditLog：核心事件写入与字段完整', () => {
     })
   })
 
-  it('AC-TASK-002：非法状态转移（WAITING→CLOSED）拒绝写入', async () => {
+  it('旧状态机已退役：非法状态转移不再被审计层拒绝（保留状态字符串记录）', async () => {
     await withTmp(async (dir) => {
       const audit = mkAudit(dir)
-      await expect(
-        audit.record({ type: 'task.status_changed', task_id: 't-x', from: 'WAITING', to: 'CLOSED', by: 's' } as never),
-      ).rejects.toMatchObject({ code: 'invalid_status_transition' })
-      expect(await audit.query()).toHaveLength(0)
+      await audit.record({ type: 'task.status_changed', task_id: 't-x', from: 'WAITING', to: 'CLOSED', by: 's' } as never)
+      expect(await audit.query()).toHaveLength(1)
     })
   })
 

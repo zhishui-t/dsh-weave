@@ -18,9 +18,10 @@ describe('P0-BOOTSTRAP｜weave 插件加载冒烟测试', () => {
     const ctx = new Context()
     const fiber = ctx.plugin(plugin)
     await fiber
-    expect(ctx.weave).toBeDefined()
-    expect(ctx.weave.version()).toBe(WEAVE_VERSION)
-    expect(ctx.weave.describe()).toContain('weave')
+    const weave = (ctx as unknown as { weave?: { version(): string; describe(): string } }).weave
+    expect(weave).toBeDefined()
+    expect(weave?.version()).toBe(WEAVE_VERSION)
+    expect(weave?.describe()).toContain('weave')
     ctx.registry.delete(plugin)
   })
 })

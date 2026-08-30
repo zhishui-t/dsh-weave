@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { WeaveError } from './state/weave-error.js'
 import type { ExecutorRunEventType } from './executors/executor-shared-types.js'
-import type { StreamOptions } from './session-stream.js'
+
 
 export const DEFAULT_WEAVE_SETTINGS_FILE = join(homedir(), '.dsh', 'weave', 'settings.json')
 
@@ -62,6 +62,13 @@ export function saveWeaveSettingsOverrides(
   writeFileSync(temp, JSON.stringify(current, null, 2), 'utf8')
   renameSync(temp, file)
   return current
+}
+
+export interface StreamOptions {
+  enabled?: boolean
+  minIntervalMs?: number
+  maxChars?: number
+  events?: ExecutorRunEventType[]
 }
 
 const EXECUTION_STREAM_EVENTS: readonly ExecutorRunEventType[] = ['status', 'output', 'reasoning', 'tool_call', 'tool_result']
