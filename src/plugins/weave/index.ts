@@ -23,6 +23,8 @@ import {
 } from './session-delegation.js'
 import { resolveAgentTeamsHost } from './agent-teams-host.js'
 import { bootstrapSessionTeam } from './session-bootstrap.js'
+import { ExecutorSessionStore } from './executor-session-store.js'
+import { AcpMemberTransport } from './acp-member-transport.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import { CaptainTurnGuard } from './captain-turn-guard.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
@@ -227,6 +229,12 @@ export function apply(ctx: Context): void {
       agentTeamsHost?.hostHooks?.add({
         onTaskSettled: (input: AgentTeamsTaskSettledLike) => reflectionBridge.onTaskSettled(input),
       })
+      if (agentTeamsHost?.memberTransports && zcodeProvider) {
+        agentTeamsHost.memberTransports.register('acp', new AcpMemberTransport(
+          zcodeProvider as never,
+          new ExecutorSessionStore(),
+        ))
+      }
       // 任务状态变更通知单出口（doc/05 §6.4 P1-D）：scheduler 旁路（外部取消/重试）
       // 发电，会话面经 resolveNoticeSession 解析；echoSelfActions 缺省 false（不回声）。
       const statusNotifier = new TaskStatusNotifier({
