@@ -6,6 +6,11 @@ Phase 0 目标为可验证地基：执行器发现、状态机、持久化、知
 
 设计文档见 `doc/`（功能设计 FDD / 软件设计 SDD / 软件规格 TDD / 架构设计 / 任务规划 / 评审报告）。
 
+> **架构迁移状态**：任务/团队核心已切到 `dsh-agent-teams` fork（子模块
+> `subprojects/dsh-agent-teams`）。fork 接管后 weave 不再实例化旧任务引擎，
+> 并隐藏旧 `weave_plan_tasks / weave_team_* / weave_task_*` 工具与 `/weave team|task`
+> CLI；weave 保留知识库、反思、ACP transport、图谱/Obsidian/AnyDoc 等独立能力。
+
 ## 1. 工程形态（P0-BOOTSTRAP 定义）
 
 仓库 `weave` 本身即 **DSH 插件 npm 包**：包名 `@deepseek-ai/dsh-plugin-weave`（与 DSH 官方插件
