@@ -20,6 +20,8 @@ import {
   type NoticeSessionLike,
   type WeaveNoticeMessage,
 } from './session-delegation.js'
+import { resolveAgentTeamsHost } from './agent-teams-host.js'
+import { bootstrapSessionTeam } from './session-bootstrap.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import { CaptainTurnGuard } from './captain-turn-guard.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
@@ -284,6 +286,11 @@ export function apply(ctx: Context): void {
           setSelection: async (sessionId, teamId) => {
             if (teamId === null) await deps.teamManager.unbindTeam(sessionId)
             else await deps.teamManager.bindTeam(sessionId, teamId)
+          },
+          onTeamEnabled: async (sessionId, team, agent) => {
+            const host = resolveAgentTeamsHost(runtime)
+            if (!host) return
+            await bootstrapSessionTeam({ host }, { sessionId, team, captain: agent })
           },
           notify: notifyWeaveSession,
         })

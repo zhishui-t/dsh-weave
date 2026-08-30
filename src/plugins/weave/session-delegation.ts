@@ -129,6 +129,8 @@ export function notifySession(session: NoticeSessionLike, text: string): void {
 export interface PreStepHookDeps {
   listTeams(): TeamConfig[]
   setSelection(sessionId: string, teamId: string | null): Promise<void>
+  /** 启用后创建/reuse fork 小队（可选；fork 服务不存在时跳过）。 */
+  onTeamEnabled?: (sessionId: string, team: TeamConfig, agent?: unknown) => Promise<void>
   /** 会话 notice 写入（prod 绑定 notifySession；session 缺席时实现方自行降级告警）。 */
   notify: (sessionId: string, text: string, session?: NoticeSessionLike) => void
   log?: { warn?: (...args: unknown[]) => void }
@@ -223,8 +225,11 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
       markProcessed(latest.id, deps.dedupeLimit ?? DEFAULT_PROCESSED_MESSAGE_LIMIT)
       try {
         await deps.setSelection(sessionId, command.action === 'enable' ? command.team.team_id : null)
+        if (command.action === 'enable' && deps.onTeamEnabled) {
+          await deps.onTeamEnabled(sessionId, command.team, payload.agent)
+        }
       } catch (error) {
-        // 绑定失败时释放占位，允许后续重试；异常仍由外层统一降级为放行。
+        // 绑定/建队失败时释放占位，允许后续重试；异常仍由外层统一降级为放行。
         processedMessages.delete(latest.id)
         throw error
       }
