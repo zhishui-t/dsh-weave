@@ -20,7 +20,7 @@
 | T10 AcpMemberTransport | ✅ 完成并已注册；真实 ACP 派单启动 |
 | T11 spawn/fork 集成 | ✅ 全链路通过（建队→派单→完成→删除） |
 | T12 acp 集成 | ✅ 完成：ACP 成员执行并回传结果，主机侧 onSettled 正确写 completed；DeepSeek V4 Flash + zcode 通过 |
-| T13 退役旧模块 | ⏸ 未开始，需 T12 确认后执行 |
+| T13 退役旧模块 | ✅ 安全退役：fork 模式下旧引擎不实例化、旧任务工具/CLI 隐藏；物理删除延后 |
 | T14 文档/发布 | ⏸ 未开始 |
 | T15 alpha 预研 | ⏸ 延后 |
 
