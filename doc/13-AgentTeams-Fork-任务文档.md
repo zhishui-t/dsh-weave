@@ -4,7 +4,31 @@
 > 状态：v1 任务拆解（未开始执行）
 > 主线环境：DSH `0.1.1-rc.2`，Node `v24.15.0`
 
-## 0. 执行纪律
+## 0. 执行状态（2026-08-30 更新）
+
+| 任务 | 状态 |
+|---|---|
+| T1 fork 基线 | ✅ 完成，fork verify 全绿 |
+| T2 executor 字段 | ✅ 完成 |
+| T3 MemberTransport | ✅ 完成 |
+| T4 bootstrapTeam + hooks | ✅ 完成 |
+| T5 yaml→profile 映射 | ✅ 完成 |
+| T6 会话启动建队 | ✅ 完成（headless/web 均可动态注册 profile） |
+| T7 知识桥 | ✅ 单元完成；运行时 enrichAssignment 已接线 |
+| T8 反思桥 | ✅ 完成；真实任务已产生 knowledge.deposited |
+| T9 ACP 索引 v2 | ✅ 完成 |
+| T10 AcpMemberTransport | ✅ 完成并已注册；真实 ACP 派单启动 |
+| T11 spawn/fork 集成 | ✅ 全链路通过（建队→派单→完成→删除） |
+| T12 acp 集成 | ⏳ 部分：ACP 建队/派单/working 通过，执行完成未在超时内确认 |
+| T13 退役旧模块 | ⏸ 未开始，需 T12 确认后执行 |
+| T14 文档/发布 | ⏸ 未开始 |
+| T15 alpha 预研 | ⏸ 延后 |
+
+真实验证环境：
+- `web-fork` profile 可启动
+- `headless-fork` profile 可跑模型会话
+- 主 `web` profile 尚未重启载入新代码
+
 
 - 小步快跑：每个任务独立验证，验证通过再进下一个。
 - 不跨任务同时改核心：fork 侧和 weave 侧分批完成。
