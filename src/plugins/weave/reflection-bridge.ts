@@ -1,4 +1,4 @@
-import type { ReflectionDepositInput, ReflectionDepositResult } from './reflection-service'
+import type { ReflectionDepositInput, ReflectionDepositResult } from './reflection-service.js'
 
 /** Structural fork task-settled payload (see AgentTeamsHostHooks). */
 export interface AgentTeamsTaskSettledLike {

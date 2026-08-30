@@ -1,6 +1,6 @@
-import type { KnowledgeEngine, KnowledgeInjectionEntry } from './knowledge-engine'
-import type { RoleConfig, TeamConfig } from './team-manager'
-import type { AgentTeamsProfile } from './team-profile-mapper'
+import type { KnowledgeEngine, KnowledgeInjectionEntry } from './knowledge-engine.js'
+import type { RoleConfig, TeamConfig } from './team-manager.js'
+import type { AgentTeamsProfile } from './team-profile-mapper.js'
 
 export interface KnowledgeBridgeOptions {
   engine: KnowledgeEngine

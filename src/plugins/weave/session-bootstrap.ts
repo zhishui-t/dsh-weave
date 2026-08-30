@@ -1,9 +1,9 @@
-import type { TeamConfig } from './team-manager'
+import type { TeamConfig } from './team-manager.js'
 import {
   sessionTeamId,
   teamConfigToAgentTeamsProfile,
-} from './team-profile-mapper'
-import type { AgentTeamsHost } from './agent-teams-host'
+} from './team-profile-mapper.js'
+import type { AgentTeamsHost } from './agent-teams-host.js'
 
 export interface SessionBootstrapOptions {
   host: AgentTeamsHost

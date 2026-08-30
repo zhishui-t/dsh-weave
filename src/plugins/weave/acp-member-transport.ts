@@ -1,4 +1,4 @@
-import type { ExecutorSessionStore } from './executor-session-store'
+import type { ExecutorSessionStore } from './executor-session-store.js'
 
 export interface AcpStartRequest {
   sessionKey: string
