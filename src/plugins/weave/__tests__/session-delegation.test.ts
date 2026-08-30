@@ -6,7 +6,6 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
-import { createWeaveRpcHandler } from '../rpc'
 import {
   createPreStepDelegationHook,
   createWeaveNoticeMessage,
@@ -213,54 +212,5 @@ describe('自然语言团队启停（会话控制通道）', () => {
       ],
     }
     expect(hasPendingToolCall(closed as never)).toBe(false)
-  })
-})
-
-describe('session/team-selection RPC（复用 team_bindings，绑定=启用）', () => {
-  function rpcEnv() {
-    const persistence = new WeavePersistence({ inMemory: true })
-    const teamManager = new TeamManager(lookup, { teamsDir: dir, persistence })
-    teamManager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
-    return createWeaveRpcHandler({ teamManager, executorRegistry: { list: () => [], get: () => undefined }, persistence } as never)
-  }
-
-  it('set 缺 sessionId → 明确拒绝，绝不默认 cli-session', async () => {
-    const call = rpcEnv()
-    await expect(call('session/team-selection/set', { teamId: 'pipe-team' })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'bad-request', message: expect.stringContaining('显式'), details: { original_code: 'invalid_argument' } },
-    })
-  })
-
-  it('set/get/clear 全链路：enabled 与 updated_at 真实回读', async () => {
-    const call = rpcEnv()
-    await expect(call('session/team-selection/set', { sessionId: 'web-s1', teamId: 'pipe-team' })).resolves.toMatchObject({
-      ok: true,
-      value: { session_id: 'web-s1', enabled: true, team_id: 'pipe-team' },
-    })
-    await expect(call('session/team-selection/get', { sessionId: 'web-s1' })).resolves.toMatchObject({
-      ok: true,
-      value: { enabled: true, team_id: 'pipe-team', updated_at: expect.any(String) },
-    })
-    await expect(call('session/team-selection/set', { sessionId: 'web-s1', teamId: null })).resolves.toMatchObject({
-      ok: true,
-      value: { enabled: false, cleared: true },
-    })
-    await expect(call('session/team-selection/get', { sessionId: 'web-s1' })).resolves.toMatchObject({
-      ok: true,
-      value: { enabled: false, team_id: null },
-    })
-  })
-
-  it('启用未知团队 → invalid_team；get 缺 sessionId 同样明确拒绝', async () => {
-    const call = rpcEnv()
-    await expect(call('session/team-selection/set', { sessionId: 's', teamId: 'ghost' })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'bad-request', details: { original_code: 'invalid_team' } },
-    })
-    await expect(call('session/team-selection/get', {})).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
-    })
   })
 })

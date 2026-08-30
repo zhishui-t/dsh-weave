@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises'
 import { SingleWriterQueue } from '../persistence/single-writer-queue.js'
-import { TaskStateMachine, TASK_STATUSES } from '../state/index.js'
+import { TASK_STATUSES } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 
 /** 审计事件类型（架构 9.3 / SDD 7.5 + AC-IMPORT-003 导入确认） */
@@ -153,13 +153,6 @@ export class AuditLog {
       const { from, to } = event as { from: string; to: string }
       if (!TASK_STATUSES.includes(from as never) || !TASK_STATUSES.includes(to as never)) {
         throw new WeaveError('invalid_audit_event', `非法状态值: ${from} → ${to}`, { from, to })
-      }
-      if (!TaskStateMachine.canTransition(from as never, to as never)) {
-        throw new WeaveError(
-          'invalid_status_transition',
-          `审计拒绝非法转移: ${from} → ${to}`,
-          { from, to },
-        )
       }
     }
   }
