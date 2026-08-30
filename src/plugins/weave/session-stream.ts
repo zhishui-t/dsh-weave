@@ -1,4 +1,4 @@
-import type { ExecutorRunEvent, ExecutorRunEventType } from './delegation-service.js'
+import type { ExecutorRunEvent, ExecutorRunEventType } from './executors/executor-shared-types.js'
 
 /**
  * 执行实时输出回灌会话——节流适配器（doc/05 §6.2 P1-B）。
