@@ -10,10 +10,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { KnowledgeGraphService } from '../../dist/plugins/weave/graph/knowledge-graph.js'
-import { KnowledgeStore } from '../../dist/plugins/weave/knowledge-model.js'
-import { WeavePersistence } from '../../dist/plugins/weave/persistence/persistence.js'
-import { WeaveQueryService } from '../../dist/plugins/weave/web/query-service.js'
+import { KnowledgeGraphService } from '../../../dist/plugins/weave/graph/knowledge-graph.js'
+import { KnowledgeStore } from '../../../dist/plugins/weave/knowledge-model.js'
+import { WeavePersistence } from '../../../dist/plugins/weave/persistence/persistence.js'
+import { WeaveQueryService } from '../../../dist/plugins/weave/web/query-service.js'
 
 test.describe('T8 knowledge graph e2e (real Graphify + real KnowledgeStore)', () => {
   const roots: string[] = []

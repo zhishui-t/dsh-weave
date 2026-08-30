@@ -11,7 +11,7 @@
  *    stopReason 枚举、返回形态），沉淀"API 快照与兼容性结论"。
  *
  * 运行：pnpm vitest run src/plugins/weave/__tests__/env-subagents-spike.test.ts
- * 环境检查：pnpm env:check（scripts/env-check.mjs 输出 DSH 版本与 provider 包安装状态）
+ * 环境检查：pnpm env:check（test/scripts/env-check.mjs 输出 DSH 版本与 provider 包安装状态）
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

@@ -10,10 +10,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, rmSync as removeFile } f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { GraphService } from '../../dist/plugins/weave/graph/graph-service.js'
-import { WeavePersistence } from '../../dist/plugins/weave/persistence/persistence.js'
-import { WeaveQueryService } from '../../dist/plugins/weave/web/query-service.js'
-import { WeaveError } from '../../dist/plugins/weave/state/weave-error.js'
+import { GraphService } from '../../../dist/plugins/weave/graph/graph-service.js'
+import { WeavePersistence } from '../../../dist/plugins/weave/persistence/persistence.js'
+import { WeaveQueryService } from '../../../dist/plugins/weave/web/query-service.js'
+import { WeaveError } from '../../../dist/plugins/weave/state/weave-error.js'
 
 async function expectWeaveError(promise: Promise<unknown>, code: string): Promise<void> {
   let error: unknown

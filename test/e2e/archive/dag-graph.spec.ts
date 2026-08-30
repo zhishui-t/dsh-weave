@@ -2,7 +2,7 @@
 // 贝塞尔边锚定节点盒中线、聚焦上下游链（data-active/data-dimmed）、画布=内容尺寸 + 横向滚动。
 import { expect, test } from '@playwright/test'
 
-import { HARNESS_DESCRIBE, loadHarnessAssets, mountSessionPanel, openHarnessPage } from './fixtures'
+import { HARNESS_DESCRIBE, loadHarnessAssets, mountSessionPanel, openHarnessPage } from '../harness/fixtures'
 
 test.beforeAll(loadHarnessAssets)
 

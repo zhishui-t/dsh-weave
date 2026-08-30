@@ -3,7 +3,7 @@
 import { expect, test } from '@playwright/test'
 
 import { ROUTES } from '../helpers'
-import { HARNESS_DESCRIBE, loadHarnessAssets, openDashboardHarness, openHarnessPage } from './fixtures'
+import { HARNESS_DESCRIBE, loadHarnessAssets, openDashboardHarness, openHarnessPage } from '../harness/fixtures'
 
 test.beforeAll(loadHarnessAssets)
 

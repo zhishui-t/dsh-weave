@@ -1,5 +1,5 @@
 // t5 诊断探针：抓 tasks 页 page-error 全文 + 全量网络活动（HTTP/WS 双向）
-// 运行：node scripts/e2e-debug.mjs [pageKey，默认 tasks]
+// 运行：node test/scripts/e2e-debug.mjs [pageKey，默认 tasks]
 import { chromium } from 'playwright-core'
 
 const BASE_URL = process.env.WEAVE_E2E_BASE_URL ?? 'http://127.0.0.1:3080'

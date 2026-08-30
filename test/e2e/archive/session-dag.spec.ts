@@ -2,7 +2,7 @@
 // 动作按钮严格等于 TASK_ACTIONS_BY_STATUS 矩阵、confirm/revise 门径与 task/action payload。
 import { expect, test } from '@playwright/test'
 
-import { HARNESS_DESCRIBE, clearCalls, loadHarnessAssets, mountSessionPanel, openHarnessPage, readCalls } from './fixtures'
+import { HARNESS_DESCRIBE, clearCalls, loadHarnessAssets, mountSessionPanel, openHarnessPage, readCalls } from '../harness/fixtures'
 
 test.beforeAll(loadHarnessAssets)
 

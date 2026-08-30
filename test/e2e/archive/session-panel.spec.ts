@@ -2,7 +2,7 @@
 // 运行总览分段、输出页签开合、左右折叠、刷新补偿。
 import { expect, test } from '@playwright/test'
 
-import { HARNESS_DESCRIBE, expectCalled, loadHarnessAssets, mountSessionPanel, openHarnessPage, readCalls } from './fixtures'
+import { HARNESS_DESCRIBE, expectCalled, loadHarnessAssets, mountSessionPanel, openHarnessPage, readCalls } from '../harness/fixtures'
 
 test.beforeAll(loadHarnessAssets)
 

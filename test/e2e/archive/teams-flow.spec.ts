@@ -2,7 +2,7 @@
 // 会话面板的团队绑定/解绑/进行中锁定。
 import { expect, test, type Page } from '@playwright/test'
 
-import { HARNESS_DESCRIBE, clearCalls, expectCalled, loadHarnessAssets, mountSessionPanel, openDashboardHarness, openHarnessPage, readCalls } from './fixtures'
+import { HARNESS_DESCRIBE, clearCalls, expectCalled, loadHarnessAssets, mountSessionPanel, openDashboardHarness, openHarnessPage, readCalls } from '../harness/fixtures'
 
 test.beforeAll(loadHarnessAssets)
 

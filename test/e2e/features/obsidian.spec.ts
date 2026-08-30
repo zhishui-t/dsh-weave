@@ -11,11 +11,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { KnowledgeStore } from '../../dist/plugins/weave/knowledge-model.js'
-import { ObsidianService } from '../../dist/plugins/weave/obsidian/obsidian-service.js'
-import { WeavePersistence } from '../../dist/plugins/weave/persistence/persistence.js'
-import { WeaveQueryService } from '../../dist/plugins/weave/web/query-service.js'
-import { WeaveError } from '../../dist/plugins/weave/state/weave-error.js'
+import { KnowledgeStore } from '../../../dist/plugins/weave/knowledge-model.js'
+import { ObsidianService } from '../../../dist/plugins/weave/obsidian/obsidian-service.js'
+import { WeavePersistence } from '../../../dist/plugins/weave/persistence/persistence.js'
+import { WeaveQueryService } from '../../../dist/plugins/weave/web/query-service.js'
+import { WeaveError } from '../../../dist/plugins/weave/state/weave-error.js'
 
 test.describe('T8 obsidian e2e (real KnowledgeStore + real Vault)', () => {
   const roots: string[] = []

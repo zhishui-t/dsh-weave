@@ -9,9 +9,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { GraphService } from '../../dist/plugins/weave/graph/graph-service.js'
-import { WeavePersistence } from '../../dist/plugins/weave/persistence/persistence.js'
-import { WeaveQueryService } from '../../dist/plugins/weave/web/query-service.js'
+import { GraphService } from '../../../dist/plugins/weave/graph/graph-service.js'
+import { WeavePersistence } from '../../../dist/plugins/weave/persistence/persistence.js'
+import { WeaveQueryService } from '../../../dist/plugins/weave/web/query-service.js'
 
 test.describe('T8 graph positive (real Graphify CLI)', () => {
   const roots: string[] = []

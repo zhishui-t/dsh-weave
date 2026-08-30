@@ -13,11 +13,11 @@ import { join } from 'node:path'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
-import { DocumentConverter } from '../../dist/plugins/weave/convert/document-converter.js'
-import type { AnyDocLikeConverter, ConvertInput } from '../../dist/plugins/weave/import-pipeline.js'
-import { WeavePersistence } from '../../dist/plugins/weave/persistence/persistence.js'
-import { WeaveQueryService } from '../../dist/plugins/weave/web/query-service.js'
-import { WeaveError } from '../../dist/plugins/weave/state/weave-error.js'
+import { DocumentConverter } from '../../../dist/plugins/weave/convert/document-converter.js'
+import type { AnyDocLikeConverter, ConvertInput } from '../../../dist/plugins/weave/import-pipeline.js'
+import { WeavePersistence } from '../../../dist/plugins/weave/persistence/persistence.js'
+import { WeaveQueryService } from '../../../dist/plugins/weave/web/query-service.js'
+import { WeaveError } from '../../../dist/plugins/weave/state/weave-error.js'
 
 class BombConverter implements AnyDocLikeConverter {
   calls: ConvertInput[] = []
