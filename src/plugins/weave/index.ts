@@ -406,6 +406,7 @@ export function apply(ctx: Context): void {
       try {
         // P1-D 通电：治理发电与审计共用 scheduler 侧同一组实例（doc/05 §6.4）。
         const bundle = registerWeaveHost(runtime, { ...deps, statusNotifier, audit: auditLog }, {
+          hideLegacyTaskTools: Boolean(agentTeamsHost),
           planTasks,
           // weave_team_switch 缺省会话解析：与 planTasks 同一真值链（exec.agent 血统回溯），
           // 模型/用户无需知道会话 id；仅纯 CLI（无 exec.agent）回落 'cli-session'。

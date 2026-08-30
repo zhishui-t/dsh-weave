@@ -84,6 +84,8 @@ export interface WeaveHostOptions {
    * 'cli-session'（纯 CLI 场景）。避免绑定落进假 id 导致面板按 sessionId 查空。
    */
   resolveSessionId?: (exec: unknown) => string | undefined
+  /** 在 fork 接管后隐藏旧 weave 任务/团队工具，避免模型误用两套任务引擎。 */
+  hideLegacyTaskTools?: boolean
 }
 
 export interface WeaveMcpToolsRegistration {
@@ -459,6 +461,21 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       execute: (args) => mcp.obsidianConflicts(args as unknown as { vaultPath?: string }),
     },
   ]
+  if (options.hideLegacyTaskTools) {
+    const legacyNames = new Set([
+      `${prefix}plan_tasks`,
+      `${prefix}get_status`,
+      `${prefix}revise_task`,
+      `${prefix}accept_task`,
+      `${prefix}team_list`,
+      `${prefix}team_switch`,
+      `${prefix}task_retry`,
+      `${prefix}task_skip`,
+      `${prefix}task_cancel`,
+      `${prefix}task_reopen`,
+    ])
+    return defs.filter((def) => !legacyNames.has(def.name))
+  }
   return defs
 }
 
