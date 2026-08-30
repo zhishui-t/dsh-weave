@@ -1,0 +1,3 @@
+[submodule "subprojects/dsh-agent-teams"]
+	path = subprojects/dsh-agent-teams
+	url = K:/work/GitHub/dsh-agent-teams
