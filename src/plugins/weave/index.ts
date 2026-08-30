@@ -125,6 +125,7 @@ export function apply(ctx: Context): void {
         ...(settingsOverrides.obsidian_dir ? { obsidianDir: settingsOverrides.obsidian_dir } : {}),
       })
       const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
+      const agentTeamsHost = resolveAgentTeamsHost(runtime)
       const refreshExecutorSnapshot = () => deps.executorRegistry.load(runtime)
       const providerCommands = createWeaveProviderCommandDefinitions({
         providersFile: effectiveProvidersFile,
@@ -166,32 +167,35 @@ export function apply(ctx: Context): void {
       // 队长调度模式：weave_plan_tasks 是唯一的任务下发路径（对话即派发），
       // planner 校验落库 → scheduler 按依赖自动调度成员执行并回灌会话。
       // 委托唯一出口仍是 DelegationService.executeTask（内部 ctx.subagents.start）。
-      const delegation = new DelegationService(
-        { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
-        {
-          executorRegistry: deps.executorRegistry,
-          // iso-1：生产必须走统一 Provider 注册表（ZcodeAcpExecutorProvider），
-          // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
-          executorProviders: service.executorProviders,
-          sessionTracker: new SessionTracker(deps.persistence.feedback),
-          knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
-          // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
-          // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至
-          // 20 分钟（settings.execution_idle_timeout_ms 可覆盖）；绝对墙钟 60min 仍是
-          // 挂死兜底，长任务仍可被队长人工取消。
-          idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
-          delegationMaxWallClockMs: 0,
-          // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
-          // notifyWeaveSession/resolveNoticeSession 在下方定义，事件只在其任务执行期
-          // 异步到达，闭包引用安全。
-          onExecutorEvent: createExecutorEventNotifier({
-            ...executionStream,
-            notify: (sessionId, text) => {
-              notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
-            },
-          }),
-        },
-      )
+      let delegation: DelegationService | undefined
+      if (!agentTeamsHost) {
+        delegation = new DelegationService(
+          { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
+          {
+            executorRegistry: deps.executorRegistry,
+            // iso-1：生产必须走统一 Provider 注册表（ZcodeAcpExecutorProvider），
+            // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
+            executorProviders: service.executorProviders,
+            sessionTracker: new SessionTracker(deps.persistence.feedback),
+            knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
+            // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
+            // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至
+            // 20 分钟（settings.execution_idle_timeout_ms 可覆盖）；绝对墙钟 60min 仍是
+            // 挂死兜底，长任务仍可被队长人工取消。
+            idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
+            delegationMaxWallClockMs: 0,
+            // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
+            // notifyWeaveSession/resolveNoticeSession 在下方定义，事件只在其任务执行期
+            // 异步到达，闭包引用安全。
+            onExecutorEvent: createExecutorEventNotifier({
+              ...executionStream,
+              notify: (sessionId, text) => {
+                notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
+              },
+            }),
+          },
+        )
+      }
       const notifyWeaveSession = (sessionId: string, text: string, session?: NoticeSessionLike): void => {
         if (!session) {
           console.warn('[dsh-weave] cannot notify session', sessionId, '- session surface unavailable')
@@ -227,7 +231,6 @@ export function apply(ctx: Context): void {
         audit: auditLog,
       })
       const reflectionBridge = new ReflectionBridge(reflection)
-      const agentTeamsHost = resolveAgentTeamsHost(runtime)
       if (agentTeamsHost?.registerProfile) {
         for (const team of deps.teamManager.listTeams()) {
           const mapped = teamConfigToAgentTeamsProfile(team)
@@ -264,40 +267,8 @@ export function apply(ctx: Context): void {
           notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
         },
       })
-      const scheduler = new WeaveScheduler({
-        delegation,
-        persistence: deps.persistence,
-        loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
-        // T31（doc/05 §6.5 配套）：session 面缺省（冷启动重建 run 无 parentAgent）
-        // 时经 agentsRegistry 兜底解析，进度/汇总通知不再丢弃。
-        notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
-        statusNotifier,
-        audit: auditLog,
-        onTaskSettledText: async ({ task, role, text }) => {
-          const result = await reflection.depositFromOutput({
-            taskId: task.id,
-            executor: role.executor,
-            roleId: role.id,
-            projectId: task.project_id,
-            version: task.version,
-            outputText: text,
-            // 兑底候选标题来源：输出无 WEAVE_KNOWLEDGE 标记时自动合成（ReflectionService 内）。
-            taskSubject: subjectLabel(task),
-          })
-          return result.deposited.length
-        },
-      })
-      runtime.effect(() => () => scheduler.dispose(), 'dsh-weave scheduler lifecycle')
-      // UI/MCP 的取消与重试动作联动真实运行中的子代理。
-      deps.executionHooks = {
-        cancelTask: async (taskId) => scheduler.onExternalCancel(taskId),
-        resumeTask: async (taskId) => scheduler.onExternalRetry(taskId),
-      }
-      const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
-      // 宿主会话真值回溯：exec.agent 可能是子代理会话（其 id ≠ 对话会话 id），
-      // 通过存活代理注册表沿 session.header.parentSession 向根回溯。
-      // cordis 要求服务通过 inject 访问；agents 不在 inject 列表，直接取会抛错。
-      // 安全捕获：不可用时跳过（会话归属追踪降级，不影响核心委派）。
+      let scheduler: WeaveScheduler | undefined
+      let planTasks: ReturnType<typeof createPlanTasksHandler> | undefined
       let agentsRegistry: { get(id: string): unknown } | undefined
       try {
         // agents 不在 inject 列表，直接读属性会抛错；用 reflect 安全读取。
@@ -307,12 +278,48 @@ export function apply(ctx: Context): void {
       } catch {
         // agents 服务未注入——跳过
       }
-      const planTasks = createPlanTasksHandler({
-        planner,
-        schedulerStart: async (input) => scheduler.start(input),
-        log: console,
-        getAgentById: (id) => agentsRegistry?.get(id as never),
-      })
+      if (!agentTeamsHost) {
+        scheduler = new WeaveScheduler({
+          delegation: delegation!,
+          persistence: deps.persistence,
+          loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
+          notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
+          statusNotifier,
+          audit: auditLog,
+          onTaskSettledText: async ({ task, role, text }) => {
+            const result = await reflection.depositFromOutput({
+              taskId: task.id,
+              executor: role.executor,
+              roleId: role.id,
+              projectId: task.project_id,
+              version: task.version,
+              outputText: text,
+              taskSubject: subjectLabel(task),
+            })
+            return result.deposited.length
+          },
+        })
+        runtime.effect(() => () => scheduler!.dispose(), 'dsh-weave scheduler lifecycle')
+        deps.executionHooks = {
+          cancelTask: async (taskId) => scheduler!.onExternalCancel(taskId),
+          resumeTask: async (taskId) => scheduler!.onExternalRetry(taskId),
+        }
+        const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
+        planTasks = createPlanTasksHandler({
+          planner,
+          schedulerStart: async (input) => scheduler!.start(input),
+          log: console,
+          getAgentById: (id) => agentsRegistry?.get(id as never),
+        })
+      } else {
+        // Fork has taken over task/team lifecycle; do not start the legacy engine.
+        scheduler = undefined
+        deps.executionHooks = {
+          cancelTask: async () => { throw new Error('legacy task engine retired: use agent_teams_*') },
+          resumeTask: async () => { throw new Error('legacy task engine retired: use agent_teams_*') },
+        }
+        planTasks = async () => { throw new Error('legacy task engine retired: use agent_teams_*') }
+      }
 
       // 会话控制通道最先接线：自然语言团队启停短句（绑定=启用）拦截；其余消息放行。
       // 只依赖已构造好的 teamManager，无宿主服务依赖——后续 RPC/工具接线失败不得连坐。
@@ -341,6 +348,7 @@ export function apply(ctx: Context): void {
         console.warn('[dsh-weave] pre-step delegation hook registration failed:', error)
       }
 
+      if (!agentTeamsHost) {
       // 队长回合硬约束：有在途 Weave 任务时，turn-stopping 注入 next-step，
       // 使 agent-loop 不关闭回合，模型无法“提前结束回合”绕过值守。
       try {
@@ -367,6 +375,8 @@ export function apply(ctx: Context): void {
         }, 'dsh-weave captain turn guard')
       } catch (error) {
         console.warn('[dsh-weave] captain turn guard registration failed:', error)
+      }
+
       }
 
       // RPC 通道（WS handler + HTTP fallback）：传输层失败只降级面板/远程调用。
