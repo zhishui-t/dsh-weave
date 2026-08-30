@@ -22,8 +22,21 @@ export interface AgentTeamsBootstrapResult {
   created: boolean
 }
 
+export interface AgentTeamsAssignmentLike {
+  teamId: string
+  teamProfileName?: string
+  memberName: string
+  memberRole?: string
+  memberExecutor?: string
+  taskId: string
+  prompt: string
+}
+
 export interface AgentTeamsHostHooks {
-  add(hooks: unknown): () => void
+  add(hooks: {
+    enrichAssignment?(input: AgentTeamsAssignmentLike): Promise<string | undefined> | string | undefined
+    onTaskSettled?(input: unknown): Promise<unknown> | unknown
+  }): () => void
 }
 
 export interface MemberTransportRegistrar {

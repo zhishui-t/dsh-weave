@@ -21,8 +21,9 @@ import {
   type NoticeSessionLike,
   type WeaveNoticeMessage,
 } from './session-delegation.js'
-import { resolveAgentTeamsHost } from './agent-teams-host.js'
+import { resolveAgentTeamsHost, type AgentTeamsAssignmentLike } from './agent-teams-host.js'
 import { bootstrapSessionTeam } from './session-bootstrap.js'
+import { KnowledgeBridge } from './knowledge-bridge.js'
 import { ExecutorSessionStore } from './executor-session-store.js'
 import { AcpMemberTransport } from './acp-member-transport.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
@@ -228,6 +229,20 @@ export function apply(ctx: Context): void {
       const agentTeamsHost = resolveAgentTeamsHost(runtime)
       agentTeamsHost?.hostHooks?.add({
         onTaskSettled: (input: AgentTeamsTaskSettledLike) => reflectionBridge.onTaskSettled(input),
+      })
+      const knowledgeBridge = new KnowledgeBridge({ engine: new KnowledgeEngine(deps.knowledgeStore!) })
+      agentTeamsHost?.hostHooks?.add({
+        enrichAssignment: async (input: AgentTeamsAssignmentLike) => {
+          const team = input.teamProfileName ? deps.teamManager.loadTeam(input.teamProfileName) : null
+          if (!team) return input.prompt
+          return knowledgeBridge.enrichAssignment({
+            team,
+            teamId: input.teamId,
+            roleId: input.memberName,
+            taskId: input.taskId,
+            prompt: input.prompt,
+          })
+        },
       })
       if (agentTeamsHost?.memberTransports && zcodeProvider) {
         agentTeamsHost.memberTransports.register('acp', new AcpMemberTransport(
