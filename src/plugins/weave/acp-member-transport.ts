@@ -93,8 +93,9 @@ export class AcpMemberTransport {
       // 作为父会话 cwd 传导，否则新会话无法落盘工作目录而直接抛错。
       parent: { session: { header: { cwd: input.workspace } } },
       runtime: {
-        ...input.member.provider ? { provider: input.member.provider } : {},
-        ...input.member.model ? { model: input.member.model } : {},
+        ...input.member.provider && input.member.model
+          ? { model: { provider: input.member.provider, id: input.member.model } }
+          : {},
       },
     })
 
