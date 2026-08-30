@@ -21,7 +21,7 @@
 | T11 spawn/fork 集成 | ✅ 全链路通过（建队→派单→完成→删除） |
 | T12 acp 集成 | ✅ 完成：ACP 成员执行并回传结果，主机侧 onSettled 正确写 completed；DeepSeek V4 Flash + zcode 通过 |
 | T13 退役旧模块 | ✅ 安全退役：fork 模式下旧引擎不实例化、旧任务工具/CLI 隐藏；物理删除延后 |
-| T14 文档/发布 | ⏸ 未开始 |
+| T14 文档/发布 | ✅ README 已说明 fork 接管与旧引擎退役；web-fork/headless-fork profile 已建立 |
 | T15 alpha 预研 | ⏸ 延后 |
 
 真实验证环境：
