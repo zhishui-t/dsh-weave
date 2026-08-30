@@ -3,9 +3,88 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./graph": {
+      "types": "./src/graph/graph-service.ts",
+      "default": "./dist/graph/graph-service.js"
+    },
+    "./graph/knowledge-graph": {
+      "types": "./src/graph/knowledge-graph.ts",
+      "default": "./dist/graph/knowledge-graph.js"
+    },
+    "./web/knowledge-graph": {
+      "types": "./src/web/knowledge-graph.ts",
+      "default": "./dist/web/knowledge-graph.js"
+    },
+    "./knowledge-model": {
+      "types": "./src/knowledge-model.ts",
+      "default": "./dist/knowledge-model.js"
+    },
+    "./knowledge-engine": {
+      "types": "./src/knowledge-engine.ts",
+      "default": "./dist/knowledge-engine.js"
+    },
+    "./knowledge-review": {
+      "types": "./src/knowledge-review.ts",
+      "default": "./dist/knowledge-review.js"
+    },
+    "./reflection": {
+      "types": "./src/reflection.ts",
+      "default": "./dist/reflection.js"
+    },
+    "./reflection-service": {
+      "types": "./src/reflection-service.ts",
+      "default": "./dist/reflection-service.js"
+    },
+    "./reflection-bridge": {
+      "types": "./src/reflection-bridge.ts",
+      "default": "./dist/reflection-bridge.js"
+    },
+    "./import-pipeline": {
+      "types": "./src/import-pipeline.ts",
+      "default": "./dist/import-pipeline.js"
+    },
+    "./document-converter": {
+      "types": "./src/convert/document-converter.ts",
+      "default": "./dist/convert/document-converter.js"
+    },
+    "./obsidian": {
+      "types": "./src/obsidian/obsidian-service.ts",
+      "default": "./dist/obsidian/obsidian-service.js"
+    },
+    "./obsidian/cli": {
+      "types": "./src/obsidian/cli.ts",
+      "default": "./dist/obsidian/cli.js"
+    },
+    "./persistence": {
+      "types": "./src/persistence/index.ts",
+      "default": "./dist/persistence/index.js"
+    },
+    "./audit": {
+      "types": "./src/audit/index.ts",
+      "default": "./dist/audit/index.js"
+    },
+    "./settings-store": {
+      "types": "./src/settings-store.ts",
+      "default": "./dist/settings-store.js"
+    },
+    "./executor-shared-types": {
+      "types": "./src/executor-shared-types.ts",
+      "default": "./dist/executor-shared-types.js"
+    },
+    "./weave-error": {
+      "types": "./src/weave-error.ts",
+      "default": "./dist/weave-error.js"
+    },
+    "./state/types": {
+      "types": "./src/state/types.ts",
+      "default": "./dist/state/types.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -19,5 +98,6 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
-  }
+  },
+  "types": "./src/index.ts"
 }

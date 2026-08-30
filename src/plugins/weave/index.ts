@@ -137,10 +137,20 @@ export function apply(ctx: Context): void {
     })
     const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
     if (agentTeamsHost?.memberTransports && zcodeProvider) {
-      agentTeamsHost.memberTransports.register('acp', new AcpMemberTransport(
-        zcodeProvider as never,
-        new ExecutorSessionStore(),
-      ))
+      if (agentTeamsHost.memberTransports.has?.('acp')) {
+        // The fork default-registered the acp transport; weave must not duplicate it.
+      } else {
+        try {
+          agentTeamsHost.memberTransports.register('acp', new AcpMemberTransport(
+            zcodeProvider as never,
+            new ExecutorSessionStore(),
+          ))
+        } catch (error) {
+          // The fork may have registered between the has() check and this call;
+          // a duplicate registration means fork already owns it, which is fine.
+          console.warn('[dsh-weave] acp transport already registered by dsh-agent-teams:', String(error))
+        }
+      }
     }
 
     try {

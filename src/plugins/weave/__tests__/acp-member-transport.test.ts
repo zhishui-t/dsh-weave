@@ -28,7 +28,7 @@ describe('AcpMemberTransport', () => {
       workspace: 'C:/proj',
       prompt: 'task',
       hooks: { onSettled, onStatusChange },
-    })
+    } as never)
     expect(result.accepted).toBe(true)
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
       sessionKey: expect.stringContaining('dev'),
@@ -50,11 +50,11 @@ describe('AcpMemberTransport', () => {
     const transport = new AcpMemberTransport({ start }, store)
     const first = await transport.deliver({
       captain: {}, member: { id: 'm', name: 'dev' }, team: { id: 't', name: 't' }, workspace: 'w', prompt: 'a',
-    })
+    } as never)
     expect(first.accepted).toBe(true)
     const second = await transport.deliver({
       captain: {}, member: { id: 'm', name: 'dev' }, team: { id: 't', name: 't' }, workspace: 'w', prompt: 'b',
-    })
+    } as never)
     expect(second.accepted).toBe(false)
   })
 })

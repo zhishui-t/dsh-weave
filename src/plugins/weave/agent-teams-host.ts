@@ -41,6 +41,7 @@ export interface AgentTeamsHostHooks {
 
 export interface MemberTransportRegistrar {
   register(kind: string, transport: unknown): unknown
+  has?(kind: string): boolean
 }
 
 export interface AgentTeamsHost {

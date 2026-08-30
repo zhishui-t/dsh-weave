@@ -31,7 +31,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm --dir subprojects/dsh-agent-teams build && pnpm --dir subprojects/dsh-weave-capabilities build && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:persistence": "vitest run src/plugins/weave/__tests__/persistence.test.ts",
     "test:watch": "vitest",
@@ -45,14 +45,14 @@
     "test:e2e:harness": "playwright test e2e/harness"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "0.25.1",
     "@deepseek-ai/cordis": "^4.0.1",
-    "@firecrawl/anydoc": "0.2.3",
-    "@sentropic/graphify": "^0.17.1",
+    "@nanmicoder/dsh-agent-teams": "link:subprojects/dsh-agent-teams",
+    "@zhishui/dsh-weave-capabilities": "link:subprojects/dsh-weave-capabilities",
     "yaml": "^2.9.0",
     "zcode-acp-server": "0.11.9"
   },
   "devDependencies": {
-    "@agentclientprotocol/sdk": "0.25.1",
     "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-commands": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-subagent": "0.1.1-rc.2",
