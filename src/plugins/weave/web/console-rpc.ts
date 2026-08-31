@@ -10,7 +10,7 @@
 
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -39,6 +39,24 @@ export const DEFAULT_GRAPH_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..', '..', '..', '..',
 )
+
+const SOURCE_DIR_CANDIDATES = ['src', 'render', 'lib', 'app', 'packages', '.']
+function autoSourceDir(projectRoot: string): string {
+  for (const candidate of SOURCE_DIR_CANDIDATES) {
+    const path = candidate === '.' ? projectRoot : resolve(projectRoot, candidate)
+    if (existsSync(path)) return candidate
+  }
+  return '.'
+}
+
+/** Best-effort refresh of the default code graph (used by team lifecycle hooks). */
+export async function refreshCodeGraph(): Promise<{ graphPath: string; flowsPath: string }> {
+  const graph = new GraphService({
+    projectRoot: DEFAULT_GRAPH_ROOT,
+    sourceDir: autoSourceDir(DEFAULT_GRAPH_ROOT),
+  })
+  return graph.build()
+}
 
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; details: Record<string, unknown> } }
 
@@ -205,8 +223,9 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
     try {
       const d = resolvedDeps()
       const graphFor = (input: Record<string, unknown>): GraphService => {
-        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : undefined
-        return root ? new GraphService({ projectRoot: root }) : new GraphService({ projectRoot: DEFAULT_GRAPH_ROOT })
+        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : DEFAULT_GRAPH_ROOT
+        const sourceDir = typeof input.sourceDir === 'string' && input.sourceDir.trim() !== '' ? input.sourceDir : autoSourceDir(root)
+        return new GraphService({ projectRoot: root, sourceDir })
       }
       if (endpoint === 'snapshot') {
         const teams = d.teamManager.listTeams()
@@ -318,9 +337,11 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
       if (endpoint === 'code/status') {
         const input = objectPayload(payload)
         const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : DEFAULT_GRAPH_ROOT
-        const graph = new GraphService({ projectRoot: root })
+        const sourceDir = typeof input.sourceDir === 'string' && input.sourceDir.trim() !== '' ? input.sourceDir : autoSourceDir(root)
+        const graph = new GraphService({ projectRoot: root, sourceDir })
         return success({
           projectRoot: graph.projectRoot,
+          sourceDir: graph.sourceDir,
           graphPath: graph.graphPath,
           flowsPath: graph.flowsPath,
           hasGraph: graph.hasGraph(),

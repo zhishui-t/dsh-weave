@@ -20,7 +20,7 @@ import {
   type WeaveNoticeMessage,
 } from './session-delegation.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
-import { registerConsoleRpc } from './web/console-rpc.js'
+import { registerConsoleRpc, refreshCodeGraph } from './web/console-rpc.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
@@ -136,7 +136,13 @@ export function apply(ctx: Context): void {
       }
     }
     agentTeamsHost?.hostHooks?.add({
-      onTaskSettled: (input: AgentTeamsTaskSettledLike) => reflectionBridge.onTaskSettled(input),
+      onTaskSettled: (input: AgentTeamsTaskSettledLike) => {
+        void reflectionBridge.onTaskSettled(input)
+        // Keep the code graph fresh after team work completes.
+        void refreshCodeGraph().catch((error) => {
+          console.warn('[dsh-weave] code graph refresh after task settled failed:', error)
+        })
+      },
     })
     const knowledgeBridge = new KnowledgeBridge({ engine: new KnowledgeEngine(deps.knowledgeStore) })
     agentTeamsHost?.hostHooks?.add({
@@ -180,6 +186,12 @@ export function apply(ctx: Context): void {
         onTeamEnabled: async (sessionId, team, agent) => {
           const host = resolveAgentTeamsHost(runtime)
           if (!host) return
+          // First thing after enabling a team: ensure the code graph exists/updated.
+          try {
+            await refreshCodeGraph()
+          } catch (error) {
+            console.warn('[dsh-weave] code graph refresh after team enable failed:', error)
+          }
           const mapped = teamConfigToAgentTeamsProfile(team)
           if (host.registerProfile) host.registerProfile(mapped.profileName, mapped.profile)
           await bootstrapSessionTeam({ host }, { sessionId, team, captain: agent })

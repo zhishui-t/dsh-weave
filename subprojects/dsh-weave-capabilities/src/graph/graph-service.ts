@@ -45,6 +45,8 @@ export interface AffectedFlowsResult {
 export interface GraphServiceOptions {
   /** 项目根目录；默认 process.cwd() */
   projectRoot?: string
+  /** 源码目录（相对 projectRoot 或绝对路径）；默认 'src' */
+  sourceDir?: string
   /** 自定义 graph.json 路径；默认 <projectRoot>/.graphify/graph.json */
   graphPath?: string
   /** 自定义 flows.json 路径；默认 <projectRoot>/.graphify/flows.json */
@@ -81,11 +83,13 @@ export interface GraphSummary {
  */
 export class GraphService {
   readonly projectRoot: string
+  readonly sourceDir: string
   readonly graphPath: string
   readonly flowsPath: string
 
   constructor(options: GraphServiceOptions = {}) {
     this.projectRoot = resolve(options.projectRoot ?? process.cwd())
+    this.sourceDir = options.sourceDir ?? 'src'
     this.graphPath = options.graphPath ?? join(this.projectRoot, '.graphify', 'graph.json')
     this.flowsPath = options.flowsPath ?? join(this.projectRoot, '.graphify', 'flows.json')
     this.#cliPath = options.cliPath ?? resolveGraphifyCli()
@@ -95,7 +99,7 @@ export class GraphService {
 
   /** 构建/更新代码图谱与执行流文件。 */
   async build(): Promise<{ graphPath: string; flowsPath: string }> {
-    await this.#run(['extract', 'src', '--out', this.projectRoot, '--no-description', '--no-label'])
+    await this.#run(['extract', this.sourceDir, '--out', this.projectRoot, '--no-description', '--no-label'])
     await this.#run(['flows', 'build', '--graph', this.graphPath])
     return { graphPath: this.graphPath, flowsPath: this.flowsPath }
   }
