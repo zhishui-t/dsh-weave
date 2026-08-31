@@ -20,6 +20,7 @@ import {
   type WeaveNoticeMessage,
 } from './session-delegation.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
+import { registerConsoleRpc } from './web/console-rpc.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
@@ -85,6 +86,22 @@ export function apply(ctx: Context): void {
       ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
       ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
     })
+
+    registerConsoleRpc(runtime, () => ({
+      teamManager: deps.teamManager,
+      executorRegistry: deps.executorRegistry,
+      executorProviders: service.executorProviders,
+      knowledgeStore: deps.knowledgeStore,
+      audit: deps.audit,
+      persistence: deps.persistence,
+      settingsFile: weaveSettingsFile,
+      providersFile: effectiveProvidersFile,
+      version: WEAVE_VERSION,
+      ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
+      ...(settingsOverrides.teams_dir ? { teamsDir: settingsOverrides.teams_dir } : {}),
+      ...(settingsOverrides.state_dir ? { stateDir: settingsOverrides.state_dir } : {}),
+      ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
+    }))
 
     const notifyWeaveSession = (sessionId: string, text: string, session?: NoticeSessionLike): void => {
       if (!session) {

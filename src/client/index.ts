@@ -4002,7 +4002,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           { className: 'weave-panel', 'data-testid': 'code-empty' },
           EmptyState({
             title: '尚未生成代码图谱',
-            reason: '当前项目尚未构建 Graphify 图谱，或 code/* RPC 尚未接入。请在项目根目录执行 pnpm code:scan，或使用下方构建入口。',
+            reason: '当前项目尚未构建 Graphify 图谱，或当前工作区没有 src/ 目录导致 Graphify 无法提取。请在含 src/ 的 JS/TS 项目根目录执行 pnpm code:scan，或使用下方构建入口。',
           }),
           buildEntry,
         ),
@@ -4841,6 +4841,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作（取消/重试与真实运行联动）' },
     { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
     { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
+    { cmd: 'pnpm code:scan', desc: '构建代码图谱（生成 .graphify/graph.json 与 flows.json；需要项目存在 src/ 目录）' },
     { cmd: '/weave provider add <JSON|YAML|文件路径|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
