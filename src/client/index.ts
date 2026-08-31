@@ -3919,10 +3919,38 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       () => rpc('code/status', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<{ projectRoot?: string; graphPath?: string; flowsPath?: string; hasGraph?: boolean; hasFlows?: boolean }>,
       [codeGraphRoot],
     )
+    const projects = useResource<{ projects?: Array<{ root?: string; sourceDir?: string; hasGraph?: boolean }> }>(
+      () => rpc('code/projects', {}) as Promise<{ projects?: Array<{ root?: string; sourceDir?: string; hasGraph?: boolean }> }>,
+      [],
+    )
     const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<CodeGraphSummary>, [codeGraphRoot])
     const [tab, setTab] = useState('overview' as CodeTab)
     const [copied, setCopied] = useState(false)
     const build = useAction()
+    const [pickerOpen, setPickerOpen] = useState(false)
+    const [pickerPath, setPickerPath] = useState('')
+    const [pickerParent, setPickerParent] = useState('')
+    const [pickerDirs, setPickerDirs] = useState([] as string[])
+    const [pickerLoading, setPickerLoading] = useState(false)
+    const [pickerError, setPickerError] = useState('')
+    const loadPicker = async (path?: string): Promise<void> => {
+      setPickerLoading(true)
+      setPickerError('')
+      try {
+        const res = (await rpc('code/dirs', { ...(path ? { path } : {}) })) as { path?: string; parent?: string; dirs?: string[] }
+        setPickerPath(res.path ?? '')
+        setPickerParent(res.parent ?? '')
+        setPickerDirs(res.dirs ?? [])
+      } catch (error) {
+        setPickerError(errText(error))
+      } finally {
+        setPickerLoading(false)
+      }
+    }
+    const openPicker = (): void => {
+      setPickerOpen(true)
+      void loadPicker(rootDraft || undefined)
+    }
     useEffect(() => {
       const serverRoot = status.data?.projectRoot
       if (serverRoot && rootDraft === '') {
@@ -3964,7 +3992,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         React.createElement('input', {
           className: 'weave-control',
           type: 'text',
-          placeholder: '例如 K:/work/project/weave',
+          placeholder: '输入或选择项目目录，例如 K:/work/project/weave',
           value: rootDraft,
           'data-testid': 'code-root-input',
           onChange: (event: { target: { value: string } }) => {
@@ -3973,9 +4001,76 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           },
         }),
       ),
+      React.createElement('div', { className: 'weave-toolbar' },
+        React.createElement('select', {
+          className: 'weave-control',
+          value: '',
+          'data-testid': 'code-project-select',
+          onChange: (event: { target: { value: string } }) => {
+            if (event.target.value === '') return
+            setRootDraft(event.target.value)
+            codeGraphRoot = event.target.value
+          },
+        },
+          React.createElement('option', { value: '', key: '' }, '选择工作过的项目...'),
+          ...(projects.data?.projects ?? []).map((item: { root?: string; hasGraph?: boolean }) =>
+            React.createElement('option', {
+              key: item.root ?? '',
+              value: item.root ?? '',
+              label: item.hasGraph ? `[已构建] ${item.root}` : item.root ?? '',
+            }),
+          ),
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button weave-button-secondary',
+            type: 'button',
+            'data-testid': 'code-folder-picker',
+            onClick: () => openPicker(),
+          },
+          '选择文件夹...',
+        ),
+      ),
       React.createElement('span', { className: 'weave-muted' }, `当前目录：${currentRoot}`),
       React.createElement('span', { className: 'weave-muted' }, ' · 构建命令：pnpm code:scan（需要项目存在 src/ 目录）'),
     )
+
+    const pickerModal = pickerOpen
+      ? React.createElement('div', {
+          className: 'weave-panel',
+          style: { position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.55)' },
+          'data-testid': 'code-dir-picker',
+        },
+          React.createElement('div', { className: 'weave-panel', style: { width: 640, maxHeight: '70vh', overflow: 'auto' } },
+            React.createElement('b', null, '选择项目文件夹'),
+            React.createElement('div', { className: 'weave-muted', style: { margin: '6px 0' } }, pickerPath || '加载中...'),
+            pickerLoading
+              ? React.createElement(Note, { text: '正在读取目录...' })
+              : pickerError
+                ? React.createElement(Note, { text: pickerError, kind: 'error' })
+                : React.createElement('div', { className: 'weave-list' },
+                    pickerParent
+                      ? React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', style: { width: '100%', marginBottom: 4 }, onClick: () => void loadPicker(pickerParent), 'data-testid': 'dir-up' }, '上一级')
+                      : null,
+                    ...(pickerDirs.map((dir: string) =>
+                      React.createElement('button', {
+                        className: 'weave-button weave-button-secondary',
+                        type: 'button',
+                        key: dir,
+                        style: { width: '100%', marginBottom: 4, textAlign: 'left' },
+                        onClick: () => void loadPicker(dir),
+                        'data-testid': `dir-${dir}`,
+                      }, dir),
+                    )),
+                  ),
+            React.createElement('div', { className: 'weave-actions', style: { marginTop: 10 } },
+              React.createElement('button', { className: 'weave-button', type: 'button', onClick: () => { setRootDraft(pickerPath); codeGraphRoot = pickerPath; setPickerOpen(false) }, 'data-testid': 'dir-select' }, '选择此文件夹'),
+              React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => setPickerOpen(false) }, '取消'),
+            ),
+          ),
+        )
+      : null
 
     const buildEntry = React.createElement(
       'div',
@@ -4043,6 +4138,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             reason: '当前项目尚未构建 Graphify 图谱，或当前工作区没有 src/ 目录导致 Graphify 无法提取。请在含 src/ 的 JS/TS 项目根目录执行 pnpm code:scan，或使用下方构建入口。',
           }),
           rootBar,
+          pickerModal,
           buildEntry,
         ),
       )
@@ -4087,6 +4183,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       ),
       build.note ? Note({ text: build.note, kind: build.ok ? undefined : 'error' }) : null,
       rootBar,
+      pickerModal,
       React.createElement(
         'div',
         { className: 'weave-grid' },

@@ -10,7 +10,7 @@
 
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -49,6 +49,55 @@ function autoSourceDir(projectRoot: string): string {
   return '.'
 }
 
+export function listGraphProjects(): Array<{ root: string; sourceDir: string; hasGraph: boolean; hasFlows: boolean; current: boolean }> {
+  const roots = new Set<string>([DEFAULT_GRAPH_ROOT, process.cwd()])
+  const parent = resolve(DEFAULT_GRAPH_ROOT, '..')
+  try {
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      const root = resolve(parent, entry.name)
+      if (existsSync(join(root, 'package.json')) || existsSync(join(root, 'src')) || existsSync(join(root, '.git'))) {
+        roots.add(root)
+      }
+    }
+  } catch {
+    // Best-effort scanning; missing parent is not fatal.
+  }
+  return [...roots].slice(0, 30).map((root) => {
+    const sourceDir = autoSourceDir(root)
+    const graph = new GraphService({ projectRoot: root, sourceDir })
+    return {
+      root,
+      sourceDir,
+      hasGraph: graph.hasGraph(),
+      hasFlows: graph.hasFlows(),
+      current: root === DEFAULT_GRAPH_ROOT,
+    }
+  })
+}
+
+export interface DirectoryListing {
+  path: string
+  parent?: string
+  dirs: string[]
+}
+
+export function listDirectories(inputPath?: string): DirectoryListing {
+  const base = inputPath?.trim() || resolve(DEFAULT_GRAPH_ROOT, '..')
+  const path = resolve(base)
+  let dirs: string[] = []
+  try {
+    dirs = readdirSync(path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => resolve(path, entry.name))
+      .sort()
+  } catch {
+    // Not readable / not a directory: return empty list.
+  }
+  const parent = dirname(path) === path ? undefined : dirname(path)
+  return { path, ...(parent ? { parent } : {}), dirs }
+}
+
 export interface BuildCodeGraphOptions {
   projectRoot?: string
   sourceDir?: string
@@ -56,7 +105,14 @@ export interface BuildCodeGraphOptions {
 
 /** Build/update a code graph for an optional project root/source directory. */
 export async function buildCodeGraph(options: BuildCodeGraphOptions = {}): Promise<{ graphPath: string; flowsPath: string }> {
-  const projectRoot = options.projectRoot?.trim() || DEFAULT_GRAPH_ROOT
+  let projectRoot = options.projectRoot?.trim() || ''
+  if (projectRoot === '') {
+    // Prefer the current DSH project when it already has a graph (so the
+    // command updates the current project); otherwise fall back to weave.
+    const cwdRoot = process.cwd()
+    const cwdGraph = new GraphService({ projectRoot: cwdRoot, sourceDir: autoSourceDir(cwdRoot) })
+    projectRoot = cwdGraph.hasGraph() ? cwdRoot : DEFAULT_GRAPH_ROOT
+  }
   const sourceDir = options.sourceDir?.trim() || autoSourceDir(projectRoot)
   const graph = new GraphService({ projectRoot, sourceDir })
   return graph.build()
@@ -342,6 +398,14 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
         const candidate = (input.candidate ?? input) as Record<string, unknown>
         const result = await services.importPipeline.confirm(requireString(input, 'jobId'), candidate as never)
         return success({ id: result, candidate_id: result })
+      }
+      if (endpoint === 'code/dirs') {
+        const input = objectPayload(payload)
+        return success(listDirectories(typeof input.path === 'string' ? input.path : undefined))
+      }
+      if (endpoint === 'code/projects') {
+        objectPayload(payload)
+        return success({ projects: listGraphProjects() })
       }
       if (endpoint === 'code/status') {
         const input = objectPayload(payload)
