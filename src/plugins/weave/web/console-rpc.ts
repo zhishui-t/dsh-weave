@@ -9,8 +9,9 @@
  */
 
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { stringify as stringifyYaml } from 'yaml'
@@ -32,6 +33,12 @@ import type { TeamManager } from '../team-manager.js'
 import type { ExecutorRegistry } from '../executor-registry.js'
 
 export const WEAVE_RPC_CHANNEL = '/dsh-weave'
+
+/** The weave plugin repository root: the console's default code graph project. */
+export const DEFAULT_GRAPH_ROOT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..', '..',
+)
 
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; details: Record<string, unknown> } }
 
@@ -177,7 +184,7 @@ function buildServices(deps: ConsoleRpcDeps): ConsoleServices {
       })
     : undefined
   return {
-    graph: new GraphService(),
+    graph: new GraphService({ projectRoot: DEFAULT_GRAPH_ROOT }),
     knowledgeGraph: new KnowledgeGraphService({ store: deps.knowledgeStore }),
     documentConverter: new DocumentConverter({ outputDir }),
     obsidian: new ObsidianService({ defaultVaultPath: obsidianDir, knowledgeStore: deps.knowledgeStore }),
@@ -199,7 +206,7 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
       const d = resolvedDeps()
       const graphFor = (input: Record<string, unknown>): GraphService => {
         const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : undefined
-        return root ? new GraphService({ projectRoot: root }) : services.graph
+        return root ? new GraphService({ projectRoot: root }) : new GraphService({ projectRoot: DEFAULT_GRAPH_ROOT })
       }
       if (endpoint === 'snapshot') {
         const teams = d.teamManager.listTeams()
@@ -310,8 +317,8 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
       }
       if (endpoint === 'code/status') {
         const input = objectPayload(payload)
-        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : undefined
-        const graph = new GraphService({ ...(root ? { projectRoot: root } : {}) })
+        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : DEFAULT_GRAPH_ROOT
+        const graph = new GraphService({ projectRoot: root })
         return success({
           projectRoot: graph.projectRoot,
           graphPath: graph.graphPath,
