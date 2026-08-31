@@ -21,6 +21,7 @@ import {
 } from './session-delegation.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import { registerConsoleRpc, refreshCodeGraph } from './web/console-rpc.js'
+import { registerCodeGraphCommand } from './graph-tool.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides } from './settings-store.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
@@ -87,6 +88,7 @@ export function apply(ctx: Context): void {
       ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
     })
 
+    registerCodeGraphCommand(runtime as never)
     registerConsoleRpc(runtime, () => ({
       teamManager: deps.teamManager,
       executorRegistry: deps.executorRegistry,

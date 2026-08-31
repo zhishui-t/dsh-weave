@@ -49,13 +49,22 @@ function autoSourceDir(projectRoot: string): string {
   return '.'
 }
 
-/** Best-effort refresh of the default code graph (used by team lifecycle hooks). */
-export async function refreshCodeGraph(): Promise<{ graphPath: string; flowsPath: string }> {
-  const graph = new GraphService({
-    projectRoot: DEFAULT_GRAPH_ROOT,
-    sourceDir: autoSourceDir(DEFAULT_GRAPH_ROOT),
-  })
+export interface BuildCodeGraphOptions {
+  projectRoot?: string
+  sourceDir?: string
+}
+
+/** Build/update a code graph for an optional project root/source directory. */
+export async function buildCodeGraph(options: BuildCodeGraphOptions = {}): Promise<{ graphPath: string; flowsPath: string }> {
+  const projectRoot = options.projectRoot?.trim() || DEFAULT_GRAPH_ROOT
+  const sourceDir = options.sourceDir?.trim() || autoSourceDir(projectRoot)
+  const graph = new GraphService({ projectRoot, sourceDir })
   return graph.build()
+}
+
+/** Best-effort refresh of the default code graph (used by team lifecycle hooks). */
+export function refreshCodeGraph(): Promise<{ graphPath: string; flowsPath: string }> {
+  return buildCodeGraph()
 }
 
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string; details: Record<string, unknown> } }
