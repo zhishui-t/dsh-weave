@@ -3571,6 +3571,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   type CodeTab = 'overview' | 'query' | 'path' | 'explain' | 'affected' | 'flows'
 
+  /** User-selected graph project root. Tools read this at call time. */
+  let codeGraphRoot = ''
+
   const CODE_TAB_ITEMS: Array<{ key: CodeTab; label: string }> = [
     { key: 'overview', label: '概览' },
     { key: 'query', label: '语义查询' },
@@ -3593,6 +3596,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           question: question.trim(),
           ...(/^\d+$/.test(budget) ? { budget: Number(budget) } : {}),
           dfs,
+          ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}),
         })) as { text?: string; path?: string }
         setResult(String(res.text ?? res.path ?? ''))
         return result === '' ? '查询无命中文本。' : '查询完成。'
@@ -3654,7 +3658,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const submit = async (): Promise<void> => {
       if (source.trim() === '' || target.trim() === '') return
       const ok = await action.run(async () => {
-        const res = (await rpc('code/path', { source: source.trim(), target: target.trim() })) as { text?: string; path?: string }
+        const res = (await rpc('code/path', { source: source.trim(), target: target.trim(), ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { text?: string; path?: string }
         setResult(String(res.text ?? res.path ?? ''))
         return '路径查询完成。'
       })
@@ -3707,7 +3711,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const submit = async (): Promise<void> => {
       if (node.trim() === '') return
       const ok = await action.run(async () => {
-        const res = (await rpc('code/explain', { node: node.trim() })) as { text?: string; explain?: string }
+        const res = (await rpc('code/explain', { node: node.trim(), ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { text?: string; explain?: string }
         setResult(String(res.text ?? res.explain ?? ''))
         return '解释完成。'
       })
@@ -3758,7 +3762,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         return
       }
       const ok = await action.run(async () => {
-        const res = (await rpc('code/affected', { files })) as AffectedFlowsLike
+        const res = (await rpc('code/affected', { files, ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as AffectedFlowsLike
         setResult(res)
         return `影响面分析完成：命中 ${res.matchedNodeIds?.length ?? 0} 节点、影响 ${res.affectedFlows?.length ?? 0} 个执行流。`
       })
@@ -3828,7 +3832,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function GraphFlowsTool() {
-    const flows = useResource<{ flows?: GraphFlowLike[] }>(() => rpc('code/flows', { limit: 50 }) as Promise<{ flows?: GraphFlowLike[] }>, [])
+    const flows = useResource<{ flows?: GraphFlowLike[] }>(() => rpc('code/flows', { limit: 50, ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<{ flows?: GraphFlowLike[] }>, [codeGraphRoot])
     const [search, setSearch] = useState('')
     const [expanded, setExpanded] = useState('')
     const list = (flows.data?.flows ?? []).filter((flow: GraphFlowLike) => {
@@ -3910,10 +3914,22 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function CodeGraphPage() {
-    const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', {}) as Promise<CodeGraphSummary>, [])
+    const [rootDraft, setRootDraft] = useState('')
+    const status = useResource<{ projectRoot?: string; graphPath?: string; flowsPath?: string; hasGraph?: boolean; hasFlows?: boolean }>(
+      () => rpc('code/status', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<{ projectRoot?: string; graphPath?: string; flowsPath?: string; hasGraph?: boolean; hasFlows?: boolean }>,
+      [codeGraphRoot],
+    )
+    const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<CodeGraphSummary>, [codeGraphRoot])
     const [tab, setTab] = useState('overview' as CodeTab)
     const [copied, setCopied] = useState(false)
     const build = useAction()
+    useEffect(() => {
+      const serverRoot = status.data?.projectRoot
+      if (serverRoot && rootDraft === '') {
+        setRootDraft(serverRoot)
+        codeGraphRoot = serverRoot
+      }
+    }, [status.data, rootDraft])
 
     const copyCommand = async (): Promise<void> => {
       await copyText('pnpm code:scan')
@@ -3924,7 +3940,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const runBuild = async (): Promise<void> => {
       await build.run(async () => {
         try {
-          const result = (await rpc('code/build', {})) as { graphPath?: string; flowsPath?: string }
+          const result = (await rpc('code/build', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { graphPath?: string; flowsPath?: string }
           graph.refresh()
           return `图谱已更新：${result.graphPath ?? '未知路径'}`
         } catch (cause) {
@@ -3938,6 +3954,28 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const graphErrorText = /invalid_union|No matching discriminator|code\/\* 尚未接入|graphService 未注入/.test(graph.error)
       ? 'code/* RPC 尚未接入当前宿主（请确认 Weave 插件已重启并加载最新 RPC），或项目尚未构建 Graphify 图谱。'
       : graph.error
+
+    const currentRoot = rootDraft || status.data?.projectRoot || '（未指定，使用 DSH 工作目录）'
+    const rootBar = React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-root-bar' },
+      React.createElement('div', { className: 'weave-field' },
+        React.createElement('span', null, '项目根目录（Graphify 图谱目录）'),
+        React.createElement('input', {
+          className: 'weave-control',
+          type: 'text',
+          placeholder: '例如 K:\work\project\weave',
+          value: rootDraft,
+          'data-testid': 'code-root-input',
+          onChange: (event: { target: { value: string } }) => {
+            setRootDraft(event.target.value)
+            codeGraphRoot = event.target.value
+          },
+        }),
+      ),
+      React.createElement('span', { className: 'weave-muted' }, `当前目录：${currentRoot}`),
+      React.createElement('span', { className: 'weave-muted' }, ' · 构建命令：pnpm code:scan（需要项目存在 src/ 目录）'),
+    )
 
     const buildEntry = React.createElement(
       'div',
@@ -4004,6 +4042,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
             title: '尚未生成代码图谱',
             reason: '当前项目尚未构建 Graphify 图谱，或当前工作区没有 src/ 目录导致 Graphify 无法提取。请在含 src/ 的 JS/TS 项目根目录执行 pnpm code:scan，或使用下方构建入口。',
           }),
+          rootBar,
           buildEntry,
         ),
       )
@@ -4047,6 +4086,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       ),
       build.note ? Note({ text: build.note, kind: build.ok ? undefined : 'error' }) : null,
+      rootBar,
       React.createElement(
         'div',
         { className: 'weave-grid' },

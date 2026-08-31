@@ -58,12 +58,17 @@ function success<T>(value: T): RpcResult<T> {
 
 function failure(error: unknown): RpcResult<never> {
   if (error instanceof WeaveError) {
+    // DSH host RPC validates error.code against a strict whitelist. Normalize
+    // weave-specific codes to bad-request and keep the original code in details.
+    const known = error.code === 'internal' || error.code === 'bad-request'
     return {
       ok: false,
       error: {
-        code: error.code,
+        code: known ? error.code : 'bad-request',
         message: error.message,
-        details: error.details ?? {},
+        details: known
+          ? (error.details ?? {})
+          : { ...(error.details ?? {}), original_code: error.code },
       },
     }
   }
@@ -177,6 +182,10 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
     const payload = rawPayload ?? {}
     try {
       const d = resolvedDeps()
+      const graphFor = (input: Record<string, unknown>): GraphService => {
+        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : undefined
+        return root ? new GraphService({ projectRoot: root }) : services.graph
+      }
       if (endpoint === 'snapshot') {
         const teams = d.teamManager.listTeams()
         const executors = d.executorRegistry.list()
@@ -284,37 +293,49 @@ export function createConsoleRpcHandler(deps: ConsoleRpcDeps | (() => ConsoleRpc
         const result = await services.importPipeline.confirm(requireString(input, 'jobId'), candidate as never)
         return success({ id: result, candidate_id: result })
       }
+      if (endpoint === 'code/status') {
+        const input = objectPayload(payload)
+        const root = typeof input.projectRoot === 'string' && input.projectRoot.trim() !== '' ? input.projectRoot : undefined
+        const graph = new GraphService({ ...(root ? { projectRoot: root } : {}) })
+        return success({
+          projectRoot: graph.projectRoot,
+          graphPath: graph.graphPath,
+          flowsPath: graph.flowsPath,
+          hasGraph: graph.hasGraph(),
+          hasFlows: graph.hasFlows(),
+        })
+      }
       if (endpoint === 'code/graph') {
-        objectPayload(payload)
-        return success(await services.graph.graphSummary())
+        const input = objectPayload(payload)
+        return success(await graphFor(input).graphSummary())
       }
       if (endpoint === 'code/build') {
-        objectPayload(payload)
-        return success(await services.graph.build())
+        const input = objectPayload(payload)
+        return success(await graphFor(input).build())
       }
       if (endpoint === 'code/query') {
         const input = objectPayload(payload)
-        return success({ text: await services.graph.query(requireString(input, 'question'), {
+        return success({ text: await graphFor(input).query(requireString(input, 'question'), {
           ...(typeof input.budget === 'number' ? { budget: input.budget } : {}),
           ...(input.dfs === true ? { dfs: true } : {}),
         }) })
       }
       if (endpoint === 'code/path') {
         const input = objectPayload(payload)
-        return success({ path: await services.graph.path(requireString(input, 'source'), requireString(input, 'target')) })
+        return success({ path: await graphFor(input).path(requireString(input, 'source'), requireString(input, 'target')) })
       }
       if (endpoint === 'code/explain') {
         const input = objectPayload(payload)
-        return success({ explain: await services.graph.explain(requireString(input, 'node')) })
+        return success({ explain: await graphFor(input).explain(requireString(input, 'node')) })
       }
       if (endpoint === 'code/affected') {
         const input = objectPayload(payload)
         const files = Array.isArray(input.files) ? input.files.filter((item): item is string => typeof item === 'string') : []
-        return success(await services.graph.affectedFlows(files))
+        return success(await graphFor(input).affectedFlows(files))
       }
       if (endpoint === 'code/flows') {
         const input = objectPayload(payload)
-        return success({ flows: await services.graph.listFlows(typeof input.limit === 'number' ? input.limit : 50) })
+        return success({ flows: await graphFor(input).listFlows(typeof input.limit === 'number' ? input.limit : 50) })
       }
       if (endpoint === 'document/history') {
         const input = objectPayload(payload)
