@@ -3951,9 +3951,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
     // 宿主未重启或旧插件未加载最新 RPC 时，connection 层会返回一坨 union 校验 JSON；
     // 这里归一为可读的“未接入”提示，避免把协议噪音铺到用户面前。
-    const graphErrorText = /invalid_union|No matching discriminator|code\/\* 尚未接入|graphService 未注入/.test(graph.error)
-      ? 'code/* RPC 尚未接入当前宿主（请确认 Weave 插件已重启并加载最新 RPC），或项目尚未构建 Graphify 图谱。'
-      : graph.error
+    const graphErrorText = graph.error
 
     const currentRoot = rootDraft || status.data?.projectRoot || '（未指定，使用 DSH 工作目录）'
     const rootBar = React.createElement(

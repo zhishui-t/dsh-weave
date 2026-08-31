@@ -58,17 +58,32 @@ function success<T>(value: T): RpcResult<T> {
 
 function failure(error: unknown): RpcResult<never> {
   if (error instanceof WeaveError) {
-    // DSH host RPC validates error.code against a strict whitelist. Normalize
-    // weave-specific codes to bad-request and keep the original code in details.
-    const known = error.code === 'internal' || error.code === 'bad-request'
+    // DSH host RPC validates both error.code and error.details against a strict
+    // schema. For bad-request, details.issues must be an array. Preserve the
+    // original weave code inside the issue entry for diagnostics.
+    if (error.code === 'internal') {
+      return {
+        ok: false,
+        error: {
+          code: 'internal',
+          message: error.message,
+          details: {},
+        },
+      }
+    }
+    const issues: unknown[] = [
+      {
+        message: error.message,
+        code: error.code,
+        ...(error.details ?? {}),
+      },
+    ]
     return {
       ok: false,
       error: {
-        code: known ? error.code : 'bad-request',
+        code: 'bad-request',
         message: error.message,
-        details: known
-          ? (error.details ?? {})
-          : { ...(error.details ?? {}), original_code: error.code },
+        details: { issues },
       },
     }
   }
