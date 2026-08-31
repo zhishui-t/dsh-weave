@@ -49,6 +49,23 @@ export class WeaveService extends Service {
 export function apply(ctx: Context): void {
   const service = new WeaveService(ctx, 'weave')
 
+  // Tell the model in natural-language sessions that code graph build/update is
+  // available through the /weave code build command.
+  try {
+    const promptCtx = ctx as Context & {
+      systemPrompt?: {
+        section?(input: { name: string; order?: number; text: () => string }): unknown
+      }
+    }
+    promptCtx.systemPrompt?.section?.({
+      name: 'dsh-weave:code-graph',
+      order: 118,
+      text: () => 'When the user asks to build or update the code graph, use `/weave code build`. If a specific project/source is needed, use `/weave code build <projectRoot> [sourceDir]`.',
+    })
+  } catch {
+    // systemPrompt is optional; headless/minimal profiles may not provide it.
+  }
+
   ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm'], (scoped) => {
     const runtime = scoped as Context
     const weaveSettingsFile = DEFAULT_WEAVE_SETTINGS_FILE
