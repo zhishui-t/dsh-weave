@@ -3951,7 +3951,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
     // 宿主未重启或旧插件未加载最新 RPC 时，connection 层会返回一坨 union 校验 JSON；
     // 这里归一为可读的“未接入”提示，避免把协议噪音铺到用户面前。
-    const graphErrorText = graph.error
+    const graphErrorText = /bad-request:|代码图谱尚未构建/.test(graph.error)
+      ? '当前项目尚未构建代码图谱。请在“项目根目录”选择包含 src/ 的 JS/TS 项目，然后点击“构建 / 刷新图谱”。'
+      : graph.error
 
     const currentRoot = rootDraft || status.data?.projectRoot || '（未指定，使用 DSH 工作目录）'
     const rootBar = React.createElement(
@@ -3962,7 +3964,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         React.createElement('input', {
           className: 'weave-control',
           type: 'text',
-          placeholder: '例如 K:\work\project\weave',
+          placeholder: '例如 K:/work/project/weave',
           value: rootDraft,
           'data-testid': 'code-root-input',
           onChange: (event: { target: { value: string } }) => {
