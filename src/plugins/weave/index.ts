@@ -205,15 +205,13 @@ export function apply(ctx: Context): void {
         onTeamEnabled: async (sessionId, team, agent) => {
           const host = resolveAgentTeamsHost(runtime)
           if (!host) return
-          // First thing after enabling a team: ensure the code graph exists/updated.
-          try {
-            await refreshCodeGraph()
-          } catch (error) {
-            console.warn('[dsh-weave] code graph refresh after team enable failed:', error)
-          }
           const mapped = teamConfigToAgentTeamsProfile(team)
           if (host.registerProfile) host.registerProfile(mapped.profileName, mapped.profile)
           await bootstrapSessionTeam({ host }, { sessionId, team, captain: agent })
+          // Keep graph refresh non-blocking: team startup must not wait for Graphify.
+          void refreshCodeGraph().catch((error) => {
+            console.warn('[dsh-weave] code graph refresh after team enable failed:', error)
+          })
         },
         notify: notifyWeaveSession,
       })
