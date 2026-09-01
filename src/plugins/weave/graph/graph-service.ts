@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -81,6 +81,66 @@ export function autoSourceDir(projectRoot: string): string {
     if (existsSync(path)) return candidate
   }
   return '.'
+}
+
+
+export interface GraphProjectSummary {
+  root: string
+  sourceDir: string
+  hasGraph: boolean
+  hasFlows: boolean
+  current: boolean
+}
+
+export interface DirectoryListing {
+  path: string
+  parent?: string
+  dirs: string[]
+}
+
+/** 扫描候选 Web 代码图项目：先当前 cwd，再扫描其父目录下常见项目。 */
+export function listGraphProjects(cwd = process.cwd()): GraphProjectSummary[] {
+  const roots = new Set<string>([resolve(cwd)])
+  const parent = dirname(cwd)
+  try {
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      const root = resolve(parent, entry.name)
+      if (existsSync(join(root, 'package.json')) || existsSync(join(root, 'src')) || existsSync(join(root, '.git'))) {
+        roots.add(root)
+      }
+    }
+  } catch {
+    // parent 不可扫描时忽略
+  }
+  return [...roots].slice(0, 30).map((root) => {
+    const sourceDir = autoSourceDir(root)
+    const service = new GraphService({ projectRoot: root, sourceDir })
+    return {
+      root,
+      sourceDir,
+      hasGraph: service.hasGraph(),
+      hasFlows: service.hasFlows(),
+      current: root === resolve(cwd),
+    }
+  })
+}
+
+/** 目录选择：返回给定路径下的子目录。 */
+export function listDirectories(inputPath?: string, cwd = process.cwd()): DirectoryListing {
+  const base = inputPath?.trim() || resolve(cwd)
+  const path = resolve(base)
+  let dirs: string[] = []
+  try {
+    dirs = readdirSync(path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => resolve(path, entry.name))
+      .sort()
+  } catch {
+    return { path, dirs: [] }
+  }
+  const parent = dirname(path) === path ? undefined : dirname(path)
+  return { path, ...(parent ? { parent } : {}), dirs }
 }
 
 /**

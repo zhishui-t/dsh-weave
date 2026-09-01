@@ -14,6 +14,8 @@ import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../imp
 import type { TeamManager } from '../team-manager.js'
 import type { WeaveScheduler } from '../scheduler.js'
 import { GraphService, type AffectedFlowsResult, type GraphFlow, type GraphSummary } from '../graph/graph-service.js'
+import { listDirectories, listGraphProjects, type DirectoryListing, type GraphProjectSummary } from '../graph/graph-service.js'
+export { listDirectories, listGraphProjects, type DirectoryListing, type GraphProjectSummary } from '../graph/graph-service.js'
 import { KnowledgeGraphService, type KnowledgeGraphBuildResult } from '../graph/knowledge-graph.js'
 import type { DocumentConverter, DocumentConvertInput } from '../convert/document-converter.js'
 import type {
@@ -149,75 +151,6 @@ export interface QueryServiceDeps {
 const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
 const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
 const TASK_ACTIONS = ['revise', 'accept', 'retry', 'skip', 'cancel', 'reopen'] as const
-
-
-export interface GraphProjectSummary {
-  root: string
-  sourceDir: string
-  hasGraph: boolean
-  hasFlows: boolean
-  current: boolean
-}
-
-const SOURCE_DIR_CANDIDATES = ['src', 'render', 'lib', 'app', 'packages', '.']
-function autoSourceDir(projectRoot: string): string {
-  for (const candidate of SOURCE_DIR_CANDIDATES) {
-    if (candidate === '.') return '.'
-    if (existsSync(resolve(projectRoot, candidate))) return candidate
-  }
-  return '.'
-}
-
-/** 扫描候选 Web 代码图项目：先当前 cwd，再扫描其父目录下常见项目。 */
-export function listGraphProjects(cwd = process.cwd()): GraphProjectSummary[] {
-  const roots = new Set<string>([resolve(cwd)])
-  const parent = dirname(resolve(cwd))
-  try {
-    for (const entry of readdirSync(parent, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
-      const root = resolve(parent, entry.name)
-      if (existsSync(join(root, 'package.json')) || existsSync(join(root, 'src')) || existsSync(join(root, '.git'))) {
-        roots.add(root)
-      }
-    }
-  } catch {
-    // parent 不可扫描时忽略
-  }
-  return [...roots].slice(0, 30).map((root) => {
-    const sourceDir = autoSourceDir(root)
-    const service = new GraphService({ projectRoot: root, sourceDir })
-    return {
-      root,
-      sourceDir,
-      hasGraph: service.hasGraph(),
-      hasFlows: service.hasFlows(),
-      current: root === resolve(cwd),
-    }
-  })
-}
-
-export interface DirectoryListing {
-  path: string
-  parent?: string
-  dirs: string[]
-}
-
-/** 目录选择：返回给定路径或其父目录下的子目录。 */
-export function listDirectories(inputPath?: string, cwd = process.cwd()): DirectoryListing {
-  const base = inputPath?.trim() || resolve(cwd)
-  const path = resolve(base)
-  let dirs: string[] = []
-  try {
-    dirs = readdirSync(path, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-      .map((entry) => resolve(path, entry.name))
-      .sort()
-  } catch {
-    return { path, dirs: [] }
-  }
-  const parent = dirname(path) === path ? undefined : dirname(path)
-  return { path, ...(parent ? { parent } : {}), dirs }
-}
 
 
 export class WeaveQueryService {
