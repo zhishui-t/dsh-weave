@@ -167,12 +167,20 @@ export function parseTeamSelectionCommand(text: string, teams: readonly TeamConf
 
   const target = (enabled[1] ?? '').trim().replace(/^["'“”]+|["'“”]+$/g, '')
   if (target === '') return null
-  const needle = target.toLowerCase()
+  const normalizeTeamText = (value: string): string => value
+    .toLowerCase()
+    .replace(/[\s\-_]+/gu, '')
+    .replace(/(?:团队|小队)$/u, '')
+  const needle = normalizeTeamText(target)
   const team =
-    teams.find((item) => item.team_id.toLowerCase() === needle) ??
-    teams.find((item) => item.name.toLowerCase() === needle) ??
-    teams.find((item) => item.team_id.toLowerCase().includes(needle)) ??
-    teams.find((item) => item.name.toLowerCase().includes(needle))
+    teams.find((item) => normalizeTeamText(item.team_id) === needle) ??
+    teams.find((item) => normalizeTeamText(item.name) === needle) ??
+    teams.find((item) => normalizeTeamText(item.team_id).includes(needle)) ??
+    teams.find((item) => normalizeTeamText(item.name).includes(needle)) ??
+    teams.find((item) => item.team_id.toLowerCase() === target.toLowerCase()) ??
+    teams.find((item) => item.name.toLowerCase() === target.toLowerCase()) ??
+    teams.find((item) => item.team_id.toLowerCase().includes(target.toLowerCase())) ??
+    teams.find((item) => item.name.toLowerCase().includes(target.toLowerCase()))
   return team ? { action: 'enable', team } : null
 }
 
@@ -246,6 +254,7 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
       return { kind: 'reject' }
     } catch (hookError) {
       // hook 自身异常不得破坏 pre-step 主链路。
+      console.warn('[dsh-weave] pre-step control hook error:', hookError)
       deps.log?.warn?.('[dsh-weave] pre-step control hook error:', hookError)
       try {
         return await next()
