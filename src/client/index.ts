@@ -1064,7 +1064,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         }),
         Card({
           title: `任务总数（${data.tasks ?? '—'}）`,
-          meta: React.createElement('span', null, data.taskError ? missing : '成员与当前会话任务图见会话视图的「Weave 团队」页签。'),
+          meta: React.createElement('span', null, data.taskError ? missing : '任务与成员状态请查看会话中的小队面板。'),
           testId: 'overview-card-tasks',
         }),
         Card({
@@ -3571,6 +3571,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   type CodeTab = 'overview' | 'query' | 'path' | 'explain' | 'affected' | 'flows'
 
+  /** User-selected graph project root. Tools read this at call time. */
+  let codeGraphRoot = ''
+
   const CODE_TAB_ITEMS: Array<{ key: CodeTab; label: string }> = [
     { key: 'overview', label: '概览' },
     { key: 'query', label: '语义查询' },
@@ -3593,6 +3596,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           question: question.trim(),
           ...(/^\d+$/.test(budget) ? { budget: Number(budget) } : {}),
           dfs,
+          ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}),
         })) as { text?: string; path?: string }
         setResult(String(res.text ?? res.path ?? ''))
         return result === '' ? '查询无命中文本。' : '查询完成。'
@@ -3654,7 +3658,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const submit = async (): Promise<void> => {
       if (source.trim() === '' || target.trim() === '') return
       const ok = await action.run(async () => {
-        const res = (await rpc('code/path', { source: source.trim(), target: target.trim() })) as { text?: string; path?: string }
+        const res = (await rpc('code/path', { source: source.trim(), target: target.trim(), ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { text?: string; path?: string }
         setResult(String(res.text ?? res.path ?? ''))
         return '路径查询完成。'
       })
@@ -3707,7 +3711,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const submit = async (): Promise<void> => {
       if (node.trim() === '') return
       const ok = await action.run(async () => {
-        const res = (await rpc('code/explain', { node: node.trim() })) as { text?: string; explain?: string }
+        const res = (await rpc('code/explain', { node: node.trim(), ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { text?: string; explain?: string }
         setResult(String(res.text ?? res.explain ?? ''))
         return '解释完成。'
       })
@@ -3758,7 +3762,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         return
       }
       const ok = await action.run(async () => {
-        const res = (await rpc('code/affected', { files })) as AffectedFlowsLike
+        const res = (await rpc('code/affected', { files, ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as AffectedFlowsLike
         setResult(res)
         return `影响面分析完成：命中 ${res.matchedNodeIds?.length ?? 0} 节点、影响 ${res.affectedFlows?.length ?? 0} 个执行流。`
       })
@@ -3828,7 +3832,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function GraphFlowsTool() {
-    const flows = useResource<{ flows?: GraphFlowLike[] }>(() => rpc('code/flows', { limit: 50 }) as Promise<{ flows?: GraphFlowLike[] }>, [])
+    const flows = useResource<{ flows?: GraphFlowLike[] }>(() => rpc('code/flows', { limit: 50, ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<{ flows?: GraphFlowLike[] }>, [codeGraphRoot])
     const [search, setSearch] = useState('')
     const [expanded, setExpanded] = useState('')
     const list = (flows.data?.flows ?? []).filter((flow: GraphFlowLike) => {
@@ -3910,10 +3914,50 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   }
 
   function CodeGraphPage() {
-    const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', {}) as Promise<CodeGraphSummary>, [])
+    const [rootDraft, setRootDraft] = useState('')
+    const status = useResource<{ projectRoot?: string; graphPath?: string; flowsPath?: string; hasGraph?: boolean; hasFlows?: boolean }>(
+      () => rpc('code/status', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<{ projectRoot?: string; graphPath?: string; flowsPath?: string; hasGraph?: boolean; hasFlows?: boolean }>,
+      [codeGraphRoot],
+    )
+    const projects = useResource<{ projects?: Array<{ root?: string; sourceDir?: string; hasGraph?: boolean }> }>(
+      () => rpc('code/projects', {}) as Promise<{ projects?: Array<{ root?: string; sourceDir?: string; hasGraph?: boolean }> }>,
+      [],
+    )
+    const graph = useResource<CodeGraphSummary>(() => rpc('code/graph', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) }) as Promise<CodeGraphSummary>, [codeGraphRoot])
     const [tab, setTab] = useState('overview' as CodeTab)
     const [copied, setCopied] = useState(false)
     const build = useAction()
+    const [pickerOpen, setPickerOpen] = useState(false)
+    const [pickerPath, setPickerPath] = useState('')
+    const [pickerParent, setPickerParent] = useState('')
+    const [pickerDirs, setPickerDirs] = useState([] as string[])
+    const [pickerLoading, setPickerLoading] = useState(false)
+    const [pickerError, setPickerError] = useState('')
+    const loadPicker = async (path?: string): Promise<void> => {
+      setPickerLoading(true)
+      setPickerError('')
+      try {
+        const res = (await rpc('code/dirs', { ...(path ? { path } : {}) })) as { path?: string; parent?: string; dirs?: string[] }
+        setPickerPath(res.path ?? '')
+        setPickerParent(res.parent ?? '')
+        setPickerDirs(res.dirs ?? [])
+      } catch (error) {
+        setPickerError(errText(error))
+      } finally {
+        setPickerLoading(false)
+      }
+    }
+    const openPicker = (): void => {
+      setPickerOpen(true)
+      void loadPicker(rootDraft || undefined)
+    }
+    useEffect(() => {
+      const serverRoot = status.data?.projectRoot
+      if (serverRoot && rootDraft === '') {
+        setRootDraft(serverRoot)
+        codeGraphRoot = serverRoot
+      }
+    }, [status.data, rootDraft])
 
     const copyCommand = async (): Promise<void> => {
       await copyText('pnpm code:scan')
@@ -3924,7 +3968,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const runBuild = async (): Promise<void> => {
       await build.run(async () => {
         try {
-          const result = (await rpc('code/build', {})) as { graphPath?: string; flowsPath?: string }
+          const result = (await rpc('code/build', { ...(codeGraphRoot.trim() !== '' ? { projectRoot: codeGraphRoot.trim() } : {}) })) as { graphPath?: string; flowsPath?: string }
           graph.refresh()
           return `图谱已更新：${result.graphPath ?? '未知路径'}`
         } catch (cause) {
@@ -3935,9 +3979,98 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
     // 宿主未重启或旧插件未加载最新 RPC 时，connection 层会返回一坨 union 校验 JSON；
     // 这里归一为可读的“未接入”提示，避免把协议噪音铺到用户面前。
-    const graphErrorText = /invalid_union|No matching discriminator|code\/\* 尚未接入|graphService 未注入/.test(graph.error)
-      ? 'code/* RPC 尚未接入当前宿主（请确认 Weave 插件已重启并加载最新 RPC），或项目尚未构建 Graphify 图谱。'
+    const graphErrorText = /bad-request:|代码图谱尚未构建/.test(graph.error)
+      ? '当前项目尚未构建代码图谱。请在“项目根目录”选择包含 src/ 的 JS/TS 项目，然后点击“构建 / 刷新图谱”。'
       : graph.error
+
+    const currentRoot = rootDraft || status.data?.projectRoot || '（未指定，使用 DSH 工作目录）'
+    const rootBar = React.createElement(
+      'div',
+      { className: 'weave-panel', 'data-testid': 'code-root-bar' },
+      React.createElement('div', { className: 'weave-field' },
+        React.createElement('span', null, '项目根目录（Graphify 图谱目录）'),
+        React.createElement('input', {
+          className: 'weave-control',
+          type: 'text',
+          placeholder: '输入或选择项目目录，例如 K:/work/project/weave',
+          value: rootDraft,
+          'data-testid': 'code-root-input',
+          onChange: (event: { target: { value: string } }) => {
+            setRootDraft(event.target.value)
+            codeGraphRoot = event.target.value
+          },
+        }),
+      ),
+      React.createElement('div', { className: 'weave-toolbar' },
+        React.createElement('select', {
+          className: 'weave-control',
+          value: '',
+          'data-testid': 'code-project-select',
+          onChange: (event: { target: { value: string } }) => {
+            if (event.target.value === '') return
+            setRootDraft(event.target.value)
+            codeGraphRoot = event.target.value
+          },
+        },
+          React.createElement('option', { value: '', key: '' }, '选择工作过的项目...'),
+          ...(projects.data?.projects ?? []).map((item: { root?: string; hasGraph?: boolean }) =>
+            React.createElement('option', {
+              key: item.root ?? '',
+              value: item.root ?? '',
+              label: item.hasGraph ? `[已构建] ${item.root}` : item.root ?? '',
+            }),
+          ),
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'weave-button weave-button-secondary',
+            type: 'button',
+            'data-testid': 'code-folder-picker',
+            onClick: () => openPicker(),
+          },
+          '选择文件夹...',
+        ),
+      ),
+      React.createElement('span', { className: 'weave-muted' }, `当前目录：${currentRoot}`),
+      React.createElement('span', { className: 'weave-muted' }, ' · 构建命令：pnpm code:scan（需要项目存在 src/ 目录）'),
+    )
+
+    const pickerModal = pickerOpen
+      ? React.createElement('div', {
+          className: 'weave-panel',
+          style: { position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.55)' },
+          'data-testid': 'code-dir-picker',
+        },
+          React.createElement('div', { className: 'weave-panel', style: { width: 640, maxHeight: '70vh', overflow: 'auto' } },
+            React.createElement('b', null, '选择项目文件夹'),
+            React.createElement('div', { className: 'weave-muted', style: { margin: '6px 0' } }, pickerPath || '加载中...'),
+            pickerLoading
+              ? React.createElement(Note, { text: '正在读取目录...' })
+              : pickerError
+                ? React.createElement(Note, { text: pickerError, kind: 'error' })
+                : React.createElement('div', { className: 'weave-list' },
+                    pickerParent
+                      ? React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', style: { width: '100%', marginBottom: 4 }, onClick: () => void loadPicker(pickerParent), 'data-testid': 'dir-up' }, '上一级')
+                      : null,
+                    ...(pickerDirs.map((dir: string) =>
+                      React.createElement('button', {
+                        className: 'weave-button weave-button-secondary',
+                        type: 'button',
+                        key: dir,
+                        style: { width: '100%', marginBottom: 4, textAlign: 'left' },
+                        onClick: () => void loadPicker(dir),
+                        'data-testid': `dir-${dir}`,
+                      }, dir),
+                    )),
+                  ),
+            React.createElement('div', { className: 'weave-actions', style: { marginTop: 10 } },
+              React.createElement('button', { className: 'weave-button', type: 'button', onClick: () => { setRootDraft(pickerPath); codeGraphRoot = pickerPath; setPickerOpen(false) }, 'data-testid': 'dir-select' }, '选择此文件夹'),
+              React.createElement('button', { className: 'weave-button weave-button-secondary', type: 'button', onClick: () => setPickerOpen(false) }, '取消'),
+            ),
+          ),
+        )
+      : null
 
     const buildEntry = React.createElement(
       'div',
@@ -4002,8 +4135,10 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           { className: 'weave-panel', 'data-testid': 'code-empty' },
           EmptyState({
             title: '尚未生成代码图谱',
-            reason: '当前项目尚未构建 Graphify 图谱，或 code/* RPC 尚未接入。请在项目根目录执行 pnpm code:scan，或使用下方构建入口。',
+            reason: '当前项目尚未构建 Graphify 图谱，或当前工作区没有 src/ 目录导致 Graphify 无法提取。请在含 src/ 的 JS/TS 项目根目录执行 pnpm code:scan，或使用下方构建入口。',
           }),
+          rootBar,
+          pickerModal,
           buildEntry,
         ),
       )
@@ -4047,6 +4182,8 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ),
       ),
       build.note ? Note({ text: build.note, kind: build.ok ? undefined : 'error' }) : null,
+      rootBar,
+      pickerModal,
       React.createElement(
         'div',
         { className: 'weave-grid' },
@@ -4841,6 +4978,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作（取消/重试与真实运行联动）' },
     { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
     { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
+    { cmd: 'pnpm code:scan', desc: '构建代码图谱（生成 .graphify/graph.json 与 flows.json；需要项目存在 src/ 目录）' },
     { cmd: '/weave provider add <JSON|YAML|文件路径|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
@@ -5099,948 +5237,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return createPortal ? createPortal(content, document.body) : content
   }
 
-  /* ============================ 会话视图面板（会话即团队） ============================ */
-
-  /* ---- E 块：成员卡「查看输出」事件流 ---- */
-  /** 后端 executor/run-events 就绪后置 false 直接联调；true 时用确定性 mock 数据开发。 */
-  const RUN_EVENTS_MOCK = false
-  /** 事件流轮询间隔（≥1s，约束上限）。 */
-  const RUN_EVENTS_POLL_MS = 1000
-  /** 卡片内联展开区最多渲染的事件条数（完整历史看抽屉）。 */
-  const RUN_EVENTS_INLINE_CAP = 30
-  /** 抽屉全量历史的硬顶（防极端内存占用；超出提示截断）。 */
-  const RUN_EVENTS_DRAWER_CAP = 500
-
-  interface ExecutorEventRow {
-    ts: number
-    type: string
-    tool?: string
-    text?: string
-  }
-
-  interface RunEventsPayload {
-    unavailable?: boolean
-    sessionId?: string
-    modelIoPath?: string
-    events: ExecutorEventRow[]
-    truncated?: boolean
-  }
-
-  const EVENT_TYPE_LABELS: Record<string, string> = {
-    status: '状态',
-    output: '输出',
-    reasoning: '思考',
-    tool_call: '工具',
-    tool_result: '结果',
-  }
-
-  const normalizeExecutorEvent = (raw: unknown): ExecutorEventRow => {
-    const row = (typeof raw === 'object' && raw !== null ? raw : {}) as Json
-    const tsRaw = row['ts'] ?? row['timestamp']
-    const ts = typeof tsRaw === 'number' && Number.isFinite(tsRaw) ? tsRaw : Date.parse(String(tsRaw ?? '')) || 0
-    return {
-      ts,
-      type: String(row['type'] ?? 'status'),
-      // RPC 侧 toClientEvent 输出键为 tool；mock 数据用 name，两者都兼容。
-      ...((row['tool'] ?? row['name']) !== undefined ? { tool: String(row['tool'] ?? row['name']) } : {}),
-      ...(row['text'] !== undefined ? { text: String(row['text']) } : {}),
-    }
-  }
-
-  /**
-   * 确定性 mock 事件流：按 taskId 播种、tick 推进累计两条/秒（封顶），
-   * 让 UI 开发不依赖后端；taskId 含「idle」时模拟 stream_unavailable 空态。
-   */
-  const mockRunEvents = (taskId: string, tick: number): RunEventsPayload => {
-    if (/idle/.test(taskId)) return { unavailable: true, events: [] }
-    const seed = [...taskId].reduce((sum, ch) => sum + ch.charCodeAt(0), 7)
-    const tools = ['Read', 'Grep', 'Edit', 'Bash', 'TodoWrite']
-    const texts = [
-      '解析任务目标并拆解验收点',
-      '定位相关实现文件…',
-      '命中现有组件可直接复用',
-      '应用补丁并保持既有风格',
-      '准备执行回归验证',
-    ]
-    const kinds: Array<keyof typeof EVENT_TYPE_LABELS> = ['status', 'output', 'tool_call', 'tool_result', 'reasoning']
-    const baseTick = Math.min(tick, 40)
-    const total = 2 + baseTick * 2
-    const capped = total > RUN_EVENTS_DRAWER_CAP ? RUN_EVENTS_DRAWER_CAP : total
-    const now = Date.now()
-    const events: ExecutorEventRow[] = []
-    for (let i = 0; i < capped; i += 1) {
-      const kind = kinds[(seed + i) % kinds.length] ?? 'status'
-      const withTool = kind === 'tool_call' || kind === 'tool_result'
-      const withText = kind === 'output' || kind === 'reasoning' || kind === 'tool_call'
-      events.push({
-        ts: now - (capped - i) * 1500,
-        type: kind,
-        ...(withTool ? { tool: tools[(seed + i) % tools.length] } : {}),
-        ...(withText ? { text: `${texts[i % texts.length]}#${i + 1}` } : {}),
-      })
-    }
-    return {
-      sessionId: `sess-mock-${(seed % 9973).toString(16).padStart(4, '0')}`,
-      modelIoPath: `~/.dsh/state/executors/mock/${taskId}.jsonl`,
-      events,
-      truncated: total > RUN_EVENTS_DRAWER_CAP,
-    }
-  }
-
-  /** executor/run-events 取数：未就绪走 mock（RUN_EVENTS_MOCK）；真实路径带降级空态。 */
-  const fetchRunEvents = async (taskId: string, tick: number): Promise<RunEventsPayload> => {
-    if (RUN_EVENTS_MOCK) return mockRunEvents(taskId, tick)
-    try {
-      const res = (await rpc('executor/run-events', { taskId })) as Json
-      return {
-        sessionId: typeof res['session_id'] === 'string' && res['session_id'] !== '' ? res['session_id'] : undefined,
-        modelIoPath: typeof res['model_io_path'] === 'string' ? res['model_io_path'] : undefined,
-        events: Array.isArray(res['events']) ? (res.events as unknown[]).map(normalizeExecutorEvent) : [],
-      }
-    } catch {
-      return { unavailable: true, events: [] }
-    }
-  }
-
-  const formatEventClock = (ts: number): string => {
-    if (!Number.isFinite(ts) || ts <= 0) return '--:--:--'
-    const date = new Date(ts)
-    const pad = (n: number): string => String(n).padStart(2, '0')
-    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  }
-
-  /** 共享轮询 Hook 形态的取数逻辑（两个面板复用；卸载清理定时器）。 */
-  function useRunEvents(taskId: string, cap: number): { rows: ExecutorEventRow[]; meta: RunEventsPayload; loading: boolean } {
-    const [rows, setRows] = useState([] as ExecutorEventRow[])
-    const [meta, setMeta] = useState({ events: [] as ExecutorEventRow[] } as RunEventsPayload)
-    const [loading, setLoading] = useState(true)
-    useEffect(() => {
-      if (taskId === '') return
-      let alive = true
-      let tick = 0
-      const pull = async (): Promise<void> => {
-        const payload = await fetchRunEvents(taskId, tick)
-        if (!alive) return
-        tick += 1
-        setLoading(false)
-        setMeta(payload)
-        setRows(payload.unavailable ? [] : payload.events.slice(-cap))
-      }
-      void pull()
-      const timer = setInterval(() => void pull(), RUN_EVENTS_POLL_MS)
-      return () => {
-        alive = false
-        clearInterval(timer)
-      }
-    }, [taskId, cap])
-    return { rows, meta, loading }
-  }
-
-  const eventLineOf = (row: ExecutorEventRow): React.ReactElement =>
-    React.createElement(
-      'div',
-      { className: 'weave-eventline', key: `${row.ts}-${row.type}-${row.tool ?? ''}` },
-      React.createElement('time', null, formatEventClock(row.ts)),
-      React.createElement('b', null, row.tool ? `${EVENT_TYPE_LABELS[row.type] ?? row.type}·${row.tool}` : (EVENT_TYPE_LABELS[row.type] ?? row.type)),
-      row.text ? React.createElement('span', null, row.text.length > 80 ? `${row.text.slice(0, 80)}…` : row.text) : null,
-    )
-
-  const eventStreamEmptyNote = (status: boolean): React.ReactElement =>
-    React.createElement(
-      'div',
-      { className: 'weave-adv-note' },
-      status
-        ? '该执行器未提供实时事件流（stream_unavailable）：无法查看过程输出，仅展示最终结果与状态变更。'
-        : '连接事件流…',
-    )
-
-  /** 成员卡内联展开区：最近事件（限条数）+ 打开完整历史入口。 */
-  function InlineRunEventsPane(props: { taskId: string; onOpenDrawer: () => void; showMeta?: boolean; sessionLabel?: string; onOpenSubagent?: (childSessionId: string) => void; autoOpenSubagent?: boolean }): React.ReactElement | null {
-    const { rows, meta, loading } = useRunEvents(props.taskId, RUN_EVENTS_INLINE_CAP)
-    const autoOpenedSubagent = useRef(false)
-    useEffect(() => {
-      if (props.autoOpenSubagent && props.onOpenSubagent && meta.sessionId && !autoOpenedSubagent.current) {
-        autoOpenedSubagent.current = true
-        props.onOpenSubagent(meta.sessionId)
-      }
-    }, [props.autoOpenSubagent, props.onOpenSubagent, meta.sessionId])
-    if (loading) return React.createElement('span', { className: 'weave-muted' }, '连接事件流...')
-    if (meta.unavailable) return eventStreamEmptyNote(true)
-    return React.createElement(
-      'div',
-      null,
-      React.createElement('div', { className: 'weave-eventstream', role: 'log' }, rows.map(eventLineOf)),
-      props.showMeta
-        ? React.createElement(
-            'div',
-            { className: 'weave-event-meta', style: { marginTop: 4 } },
-            React.createElement('span', null, `${props.sessionLabel ?? 'sessionId'}：${meta.sessionId ?? '—'}`),
-            React.createElement('span', null, `模型 IO：${meta.modelIoPath ?? '—'}`),
-            props.onOpenSubagent && meta.sessionId
-              ? React.createElement(
-                  'button',
-                  {
-                    className: 'weave-button weave-button-secondary weave-button-small',
-                    type: 'button',
-                    'data-testid': 'session-open-subagent',
-                    onClick: () => props.onOpenSubagent?.(meta.sessionId ?? ''),
-                  },
-                  '打开子代理会话',
-                )
-              : null,
-          )
-        : null,
-    )
-  }
-
-  /** 完整历史抽屉：滚动只读展示全部事件 + zcode sessionId / 模型 IO 路径提示。 */
-  function RunEventsDrawer(props: { taskId: string; title: string; onClose: () => void }): React.ReactElement {
-    const { rows, meta } = useRunEvents(props.taskId, RUN_EVENTS_DRAWER_CAP)
-    return React.createElement(
-      'div',
-      {
-        className: 'weave-drawer-wrap',
-        'data-testid': 'run-events-drawer',
-        onClick: (event: { target: unknown; currentTarget: unknown }) => {
-          if (event.target === event.currentTarget) props.onClose()
-        },
-      },
-      React.createElement(
-        'aside',
-        { className: 'weave-drawer' },
-        React.createElement(
-          'div',
-          { className: 'weave-list-head' },
-          React.createElement('b', null, `运行输出 · ${props.title}`),
-          React.createElement(Pill, { label: props.taskId }),
-          React.createElement(
-            'button',
-            { className: 'weave-close', type: 'button', style: { marginLeft: 'auto' }, onClick: props.onClose },
-            '×',
-          ),
-        ),
-        meta.unavailable
-          ? eventStreamEmptyNote(true)
-          : React.createElement('div', { className: 'weave-eventstream', style: { maxHeight: '50vh' }, role: 'log' }, rows.map(eventLineOf)),
-        React.createElement(
-          'div',
-          { className: 'weave-event-meta' },
-          React.createElement('span', null, `sessionId：${meta.sessionId ?? '—'}（zcode 会话标识，只读）`),
-          React.createElement('span', null, `模型 IO：${meta.modelIoPath ?? '~/.dsh/state/executors/<task>.jsonl'}（只读展示）`),
-          meta.truncated ? React.createElement('span', null, `事件过多，仅保留最近 ${RUN_EVENTS_DRAWER_CAP} 条`) : null,
-        ),
-      ),
-    )
-  }
-
-
-  /** 成员状态徽标色（与节点边框色系一致）。 */
-  const memberToneOf = (status: string): string => {
-    if (status === 'running') return 'run'
-    if (status === 'interrupted' || status === 'idle_timeout') return 'bad'
-    return 'idle'
-  }
-
-  const memberStatusLabel = (status: string): string => {
-    const lower = String(status ?? '').toLowerCase()
-    if (lower === 'running') return '执行中'
-    if (lower === 'queued') return '排队中'
-    if (lower === 'interrupted' || lower === 'idle_timeout') return '中断'
-    return '空闲'
-  }
-
-  /**
-   * 会话面板活跃探测指纹（纯函数）：团队 + 成员占用 + 最近任务。
-   * 探测取回与已加载资源共用同一结构，保证基线与探测可比；
-   * 全部任务状态写点都会刷新 updated_at，指纹可覆盖任务域全部迁移。
-   */
-  const sessionFingerprint = (
-    next: SessionStatusData | undefined,
-    listed: { tasks?: TaskRow[] } | undefined,
-  ): unknown[] => [
-    String(next?.team?.team_id ?? ''),
-    (next?.members ?? []).map((member) => [
-      String(member.role_id ?? ''),
-      String(member.status ?? ''),
-      String(member.task_id ?? ''),
-      String(member.phase ?? ''),
-      String(member.started_at ?? ''),
-      String(member.last_task_id ?? ''),
-      String(member.last_status ?? ''),
-    ]),
-    ...((listed?.tasks ?? []).slice(0, 1).map((task) => [
-      String(task.id ?? ''),
-      String(task.status ?? ''),
-      String(task.updated_at ?? ''),
-    ])),
-  ]
-
-  /**
-   * 会话即团队面板：挂在 conversation.view 槽位，宿主注入框架标准 kit
-   * （sessionId 即当前会话）。三段：团队绑定头 / 成员实时状态卡片 / 本会话任务 DAG。
-   * 任务下发只有对话一条路——队长模型调用 weave_plan_tasks；本面板只做展示与治理动作。
-   */
-  function WeaveSessionPanel({ sessionId }: { sessionId?: string }) {
-    const sid = String(sessionId ?? '')
-    const snapshot = useResource<SnapshotData>(() => rpc('snapshot') as Promise<SnapshotData>, [])
-    const teams = snapshot.data?.teams ?? []
-
-    const status = useResource<SessionStatusData | undefined>(
-      () =>
-        sid === ''
-          ? Promise.resolve(undefined)
-          : rpc('session/status', { sessionId: sid }) as Promise<SessionStatusData>,
-      [sid],
-    )
-    const boundTeamId = String(status.data?.team?.team_id ?? '')
-
-    // 本会话最近任务（updated_at 倒序）→ 首行的 dag_id 即最近活跃任务图。
-    // 团队状态确定前不拉任务；未启用团队的会话直接跳过任务轮询（无意义请求）。
-    const statusKnown = status.data !== undefined || status.error !== ''
-    const teamBound = Boolean(status.data?.team)
-    const list = useResource<{ total?: number; tasks?: TaskRow[] } | undefined>(
-      async () => {
-        if (sid === '' || !statusKnown || !teamBound) return undefined
-        // 只取当前会话的任务，避免把其他会话的同团队任务误显示到本会话。
-        return (await rpc('task/list', { sessionId: sid, limit: 20 })) as { total?: number; tasks?: TaskRow[] }
-      },
-      [sid, statusKnown, teamBound],
-    )
-    const latestDagId = String((list.data?.tasks ?? [])[0]?.dag_id ?? '')
-    const detail = useResource<TaskDagDetail | undefined>(
-      () =>
-        latestDagId === ''
-          ? Promise.resolve(undefined)
-          : rpc('task/get', { dagId: latestDagId }) as Promise<TaskDagDetail>,
-      [latestDagId],
-    )
-    // 就绪判定：详情必须与当前最新 DAG 匹配才渲染图（避免资源切换瞬间读到上一份/空数据）。
-    const pendingDetail = latestDagId !== '' && detail.loading
-    const dag = detail.data && String(detail.data.dag_id ?? '') === latestDagId ? detail.data : undefined
-
-    const binder = useAction()
-    const bindTeam = async (teamId: string) => {
-      if (teamId === boundTeamId) return
-      await binder.run(async () => {
-        if (teamId === '') {
-          await rpc('session/clear-binding', { sessionId: sid })
-          return '已关闭当前会话的团队。'
-        }
-        await rpc('session/set-binding', { sessionId: sid, teamId })
-        return `已启用团队：${teamId}`
-      })
-      void status.refresh()
-    }
-
-    const actor = useAction()
-    const [confirmTask, setConfirmTask] = useState(null as null | { taskId: string; action: string; label: string })
-    const [reviseTask, setReviseTask] = useState(null as null | { taskId: string })
-
-    const performTaskAction = async (taskId: string, action: string, feedback?: string) => {
-      await actor.run(async () => {
-        await rpc('task/action', { action, taskId, ...(feedback !== undefined ? { feedback } : {}) })
-        void list.refresh()
-        void detail.refresh()
-        void status.refresh()
-        const label = TASK_ACTIONS_BY_STATUS[String(selectedNode?.status ?? '')]?.find((entry) => entry.action === action)?.label ?? action
-        return `已${label}：${taskId}`
-      })
-    }
-
-    const runTaskAction = async (taskId: string, action: string, needsConfirm: boolean, label: string) => {
-      if (action === 'revise') {
-        setReviseTask({ taskId })
-        return
-      }
-      if (needsConfirm) {
-        setConfirmTask({ taskId, action, label })
-        return
-      }
-      await performTaskAction(taskId, action)
-    }
-
-    const refreshAll = useCallback(() => {
-      void status.refresh()
-      void list.refresh()
-      if (latestDagId !== '') void detail.refresh()
-    }, [status.refresh, list.refresh, detail.refresh, latestDagId])
-
-    /* ---- 事件驱动刷新（参照 dsh-agent-teams ActivityPanel 的 ObservableSnapshot 订阅模式） ----
-     * ① 宿主推流：订阅 ctx.sessions.list（ObservableSnapshot）——成员子代理会话生成/退出即推，
-     *    状态一变即刷（零轮询主路径）；旧宿主无此面时静默降级。
-     * ② 活跃探测：团队已绑定时按 SESSION_HEARTBEAT_MS 心跳拉轻量指纹（成员占用 + 最近任务
-     *    updated_at，全部状态写点都会刷新 updated_at），指纹变化才全量刷新——变更检测与数据
-     *    获取分离（细粒度订阅），覆盖 zcode ACP 等不产生宿主会话 churn 的执行器；页签隐藏时暂停。
-     * ③ 手动「刷新」按钮保留为兜底路径，同样走防抖合并。 */
-    const sessionsList = sessionNavigator?.list
-    const subscribeSessions =
-      typeof sessionsList?.subscribe === 'function' ? sessionsList.subscribe : noopSnapshotSubscribe
-    const getSessionsSnapshot =
-      typeof sessionsList?.getSnapshot === 'function' ? sessionsList.getSnapshot : noopSnapshotGet
-    const sessionVersion = useSyncExternalStore(subscribeSessions, getSessionsSnapshot)
-
-    const refreshTimer = useRef(null as null | number)
-    const scheduleRefresh = useCallback(() => {
-      if (refreshTimer.current !== null) return
-      refreshTimer.current = window.setTimeout(() => {
-        refreshTimer.current = null
-        refreshAll()
-      }, SESSION_REFRESH_DEBOUNCE_MS)
-    }, [refreshAll])
-    useEffect(
-      () => () => {
-        if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current)
-      },
-      [],
-    )
-
-    // 宿主推流 → 版本变化 → 防抖刷新（挂载首帧同值不触发）。
-    const seenSessionVersion = useRef(sessionVersion)
-    useEffect(() => {
-      if (seenSessionVersion.current === sessionVersion) return
-      seenSessionVersion.current = sessionVersion
-      scheduleRefresh()
-    }, [sessionVersion, scheduleRefresh])
-
-    // 活跃探测：成员占用 + 最近任务的轻量指纹；探测自带的 inFlight 闸防重叠。
-    // 基线从已加载资源同步（而非首拍置空）——挂载后首个心跳前发生的变更不被吞。
-    const probeBusy = useRef(false)
-    const seenFingerprint = useRef('')
-    const loadedFingerprint = status.data
-      ? JSON.stringify(sessionFingerprint(status.data, list.data))
-      : ''
-    useEffect(() => {
-      if (loadedFingerprint !== '') seenFingerprint.current = loadedFingerprint
-    }, [loadedFingerprint])
-    const probe = useCallback(async () => {
-      if (sid === '' || !statusKnown || !teamBound || probeBusy.current) return
-      probeBusy.current = true
-      try {
-        const [next, listed] = await Promise.all([
-          rpc('session/status', { sessionId: sid }) as Promise<SessionStatusData>,
-          rpc('task/list', { sessionId: sid, limit: 1 }) as Promise<{ tasks?: TaskRow[] }>,
-        ])
-        const fingerprint = JSON.stringify(sessionFingerprint(next, listed))
-        if (seenFingerprint.current !== '' && seenFingerprint.current !== fingerprint) scheduleRefresh()
-        seenFingerprint.current = fingerprint
-      } catch {
-        // 探测失败（连接抖动）静默：下个心跳再试，不打扰用户。
-      } finally {
-        probeBusy.current = false
-      }
-    }, [sid, statusKnown, teamBound, scheduleRefresh])
-    useEffect(() => {
-      if (sid === '' || !statusKnown || !teamBound) return
-      const timer = window.setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return
-        void probe()
-      }, SESSION_HEARTBEAT_MS)
-      return () => window.clearInterval(timer)
-    }, [sid, statusKnown, teamBound, probe])
-
-    const members = status.data?.members ?? []
-    /* ---- 底部 Tab 组：固定「任务依赖图」+ 队员输出 Tab（可关闭） ---- */
-    const [outputTabs, setOutputTabs] = useState([] as Array<{ roleId: string; name: string; taskId: string; executor?: string }>)
-    const [activeTab, setActiveTab] = useState('dag' as string)
-    const [membersOpen, setMembersOpen] = useState(true)
-    const [tabsOpen, setTabsOpen] = useState(true)
-    const [showLeft, setShowLeft] = useState(true)
-    const [showRight, setShowRight] = useState(true)
-    useEffect(() => {
-      document.body.classList.add('weave-session-active')
-      return () => document.body.classList.remove('weave-session-active')
-    }, [])
-    const [streamDrawer, setStreamDrawer] = useState(null as null | { taskId: string; name: string })
-    const isDshExecutor = (executor?: string): boolean =>
-      executor === 'spawn' || executor === 'fork' || executor === 'dsh_subagent'
-    const openOutputTab = (roleId: string, name: string, taskId: string, executor?: string): void => {
-      setOutputTabs((current: Array<{ roleId: string; name: string; taskId: string; executor?: string }>) =>
-        current.some((tab) => tab.roleId === roleId) ? current : [...current, { roleId, name, taskId, executor }],
-      )
-      setActiveTab(`member-${roleId}`)
-    }
-    const closeOutputTab = (roleId: string): void => {
-      setOutputTabs((current: Array<{ roleId: string; name: string; taskId: string }>) => current.filter((tab) => tab.roleId !== roleId))
-      setActiveTab((current: string) => (current === `member-${roleId}` ? 'dag' : current))
-    }
-    const selectedFromDag = String((dag?.tasks ?? [])[0]?.id ?? '')
-    const [selectedId0, setSelectedId0] = useState('')
-    const selectedId = selectedId0 !== '' ? selectedId0 : selectedFromDag
-    const selectedNode = (dag?.tasks ?? []).find((task: TaskRow) => String(task.id ?? '') === selectedId)
-    const nodeActions = TASK_ACTIONS_BY_STATUS[String(selectedNode?.status ?? '')] ?? []
-
-    /* ---- AgentTeams 风格运行视图派生：进度分段、成员已接任务 ---- */
-    const sessionTasks = ((dag?.tasks ?? list.data?.tasks ?? []) as TaskRow[])
-    const hasActiveTasks = sessionTasks.some((task: TaskRow) =>
-      !['COMPLETED', 'CLOSED', 'FAILED', 'CANCELLED', 'SKIPPED', 'BANNED', 'LOOP_TERMINATED', 'INTERRUPTED', 'COOLDOWN'].includes(String(task.status ?? '')),
-    )
-    const sessionTaskStateOf = (status: string | undefined): string => {
-      const s = String(status ?? '')
-      if (s === 'RUNNING' || s === 'REVISION_RUNNING') return 'running'
-      if (s === 'WAITING' || s === 'BLOCKED' || s === 'COOLDOWN') return 'waiting'
-      if (s === 'AWAITING_FEEDBACK') return 'awaiting'
-      if (s === 'COMPLETED' || s === 'CLOSED') return 'completed'
-      return 'failed'
-    }
-    const sessionTaskCounts = (tasks: TaskRow[]): { running: number; waiting: number; awaiting: number; completed: number; failed: number; total: number } => {
-      const counts = { running: 0, waiting: 0, awaiting: 0, completed: 0, failed: 0, total: tasks.length }
-      for (const task of tasks) {
-        const state = sessionTaskStateOf(task.status)
-        if (state === 'running') counts.running += 1
-        else if (state === 'waiting') counts.waiting += 1
-        else if (state === 'awaiting') counts.awaiting += 1
-        else if (state === 'completed') counts.completed += 1
-        else counts.failed += 1
-      }
-      return counts
-    }
-    const memberAssignedTasks = (member: SessionStatusMember): TaskRow[] => {
-      const roleId = String(member.role_id ?? '')
-      const current = String(member.task_id ?? '')
-      const last = String(member.last_task_id ?? '')
-      return sessionTasks.filter((task: TaskRow) =>
-        String(task.assigned_agent ?? '') === roleId ||
-        (current !== '' && String(task.id ?? '') === current) ||
-        (last !== '' && String(task.id ?? '') === last),
-      )
-    }
-    const sessionProgressBar = (tasks: TaskRow[], testId: string): React.ReactElement =>
-      React.createElement(
-        'div',
-        { className: 'weave-progress-segments', 'data-testid': testId },
-        ...tasks.map((task: TaskRow) =>
-          React.createElement('span', {
-            key: String(task.id ?? ''),
-            'data-state': sessionTaskStateOf(task.status),
-            title: `${String(task.id ?? '')} · ${labelOf(TASK_STATUS_LABELS, task.status)}`,
-          }),
-        ),
-      )
-
-    if (sid === '') {
-      return React.createElement(
-        'div',
-        { className: 'weave-spanel', 'data-testid': 'weave-session-panel' },
-        React.createElement('span', { className: 'weave-muted' }, 'Weave 团队面板等待会话上下文...'),
-      )
-    }
-
-    return React.createElement(
-      'div',
-      { className: 'weave-spanel', 'data-testid': 'weave-session-panel' },
-      /* ---- 头部：团队绑定 ---- */
-      React.createElement(
-        'div',
-        { className: 'weave-spanel-head' },
-        React.createElement('b', { 'data-testid': 'weave-session-team-name' },
-          status.data?.team
-            ? `团队 · ${String(status.data.team.name ?? status.data.team.team_id)}${status.data.resolved_via && status.data.resolved_via !== 'binding' ? '（自动）' : ''}`
-            : '未确定团队'),
-        status.data?.team && typeof status.data.team.description === 'string' && status.data.team.description.trim() !== ''
-          ? React.createElement(
-              'div',
-              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px', whiteSpace: 'pre-line' }, 'data-testid': 'weave-session-team-description' },
-              status.data.team.description,
-            )
-          : null,
-        hasActiveTasks
-          ? React.createElement(
-              'span',
-              { className: 'weave-muted', style: { fontSize: '11px', lineHeight: '14px' }, 'data-testid': 'weave-session-team-locked' },
-              '有进行中任务，不能切团队',
-            )
-          : null,
-        React.createElement(
-          'select',
-          {
-            className: 'weave-control',
-            value: boundTeamId,
-            disabled: binder.busy || teams.length === 0 || hasActiveTasks,
-            title: hasActiveTasks ? '当前团队有进行中任务，不能切换团队' : '选择当前会话使用的团队',
-            'data-testid': 'weave-session-team-select',
-            onChange: (event: { target: { value: string } }) => void bindTeam(event.target.value),
-          },
-          React.createElement('option', { value: '' }, teams.length === 0 ? '（无可用团队）' : '未绑定'),
-          ...teams.map((team: TeamSummaryRow) =>
-            React.createElement(
-              'option',
-              { key: String(team.team_id ?? ''), value: String(team.team_id ?? '') },
-              `${String(team.name ?? team.team_id)}${team.default ? '（默认）' : ''}`,
-            ),
-          ),
-        ),
-        React.createElement(
-          'button',
-          { className: 'weave-button weave-button-secondary weave-button-small', type: 'button', 'data-testid': 'weave-session-refresh', onClick: scheduleRefresh },
-          '刷新',
-        ),
-        React.createElement('span', { className: 'weave-muted', style: { marginLeft: 'auto' } }, `会话 ${sid.slice(0, 18)}${sid.length > 18 ? '…' : ''}`),
-      ),
-      binder.note ? Note({ text: binder.note }) : null,
-      binder.ok === false || actor.ok === false ? Note({ text: binder.note || actor.note, kind: 'error' }) : null,
-
-      /* ---- AgentTeams 风格：团队运行总览（进度分段 + 状态统计） ---- */
-      status.data?.team
-        ? React.createElement(
-            'div',
-            { className: 'weave-session-runtime', 'data-testid': 'weave-session-runtime' },
-            React.createElement(
-              'div',
-              { className: 'weave-team-stats', 'data-testid': 'weave-session-team-stats' },
-              React.createElement('span', null, React.createElement('b', null, String(members.length)), ' 成员'),
-              React.createElement('span', null, React.createElement('b', null, String(sessionTasks.length)), ' 任务'),
-              React.createElement('span', null, React.createElement('b', null, String(sessionTaskCounts(sessionTasks).completed)), ` / ${String(sessionTasks.length)} 已完成`),
-              React.createElement('span', null, React.createElement('b', null, String(sessionTaskCounts(sessionTasks).running)), ' 执行中'),
-            ),
-            sessionTasks.length > 0
-              ? sessionProgressBar(sessionTasks, 'weave-session-progress')
-              : null,
-          )
-        : null,
-
-      /* ---- 左右分栏：左成员 / 右任务与输出 ---- */
-      React.createElement(
-        'div',
-        {
-          className: 'weave-session-split',
-          'data-left': showLeft ? 'open' : 'closed',
-          'data-right': showRight ? 'open' : 'closed',
-        },
-        showLeft
-          ? React.createElement(
-          'div',
-          { className: 'weave-session-left' },
-      /* ---- 成员区（可折叠） ---- */
-      React.createElement(
-        'div',
-        { className: 'weave-section' },
-        React.createElement(
-          'div',
-          { className: 'weave-section-head-row' },
-          React.createElement(
-            'button',
-            { className: 'weave-section-head', 'data-testid': 'session-members-toggle', onClick: () => setMembersOpen(!membersOpen) },
-            membersOpen ? '▾ 成员' : '▸ 成员',
-          ),
-          React.createElement(
-            'button',
-            { className: 'weave-section-collapse', 'data-testid': 'session-collapse-left', title: '收起左侧队员区', onClick: () => setShowLeft(false) },
-            '◀',
-          ),
-        ),
-        membersOpen
-          ? React.createElement(
-              'div',
-              { className: 'weave-section-body' },
-      React.createElement(
-        'div',
-        null,
-        React.createElement('b', { className: 'weave-subh' }, '成员'),
-        status.loading
-          ? React.createElement('div', { className: 'weave-members' }, React.createElement('span', { className: 'weave-muted' }, '加载中...'))
-          : !status.data?.team
-            ? EmptyState({
-                title: '无法确定本次会话的团队',
-                reason: '已配置默认团队或仅有一个团队时会自动生效；当前存在多个团队且未指定——在上方下拉选择一次或发送「启用 <团队名>」，之后长期生效。',
-              })
-            : members.length === 0
-              ? React.createElement('span', { className: 'weave-muted' }, '该团队没有角色。')
-              : React.createElement(
-                  'div',
-                  { className: 'weave-members', 'data-testid': 'weave-session-members' },
-                  ...members.map((member: SessionStatusMember) => {
-                    const st = String(member.status ?? 'idle')
-                    const roleId = String(member.role_id ?? '')
-                    const idleTimeoutHit =
-                      String((member as Json)['error_type'] ?? '') === 'idle_timeout' ||
-                      String((member as Json)['interrupt_reason'] ?? '') === 'idle_timeout'
-                    const streamTaskId = String(member.task_id || member.last_task_id || '')
-                    const assignedTasks = memberAssignedTasks(member)
-                    const interrupted = idleTimeoutHit || st === 'interrupted'
-                    const dotTone = interrupted ? 'bad' : memberToneOf(st)
-                    const statusText = interrupted ? '中断' : memberStatusLabel(st)
-                    const cardChildren: Array<React.ReactElement> = [
-                      React.createElement(
-                        'b',
-                        { key: 'name' },
-                        `${String(member.name ?? member.role_id ?? '成员')}`,
-                      ),
-                      React.createElement(
-                        'span',
-                        { className: 'weave-muted', key: 'status' },
-                        React.createElement('span', { className: 'weave-dot', 'data-tone': dotTone }),
-                        statusText,
-                      ),
-                      // 空闲超时细分提示（B0 死亡递送文案；红色警示，区别于普通失败）。
-                      idleTimeoutHit
-                        ? React.createElement('span', { className: 'weave-field-error', key: 'idle-note' }, '已被空闲超时中断：长时间无模型输出或工具活动，可重试恢复')
-                        : null,
-                      assignedTasks.length > 0
-                        ? React.createElement(
-                            'div',
-                            { className: 'weave-member-assignments', key: 'assignments', 'data-testid': `member-assignments-${roleId}` },
-                            ...assignedTasks.slice(0, 8).map((task: TaskRow) =>
-                              React.createElement(
-                                'span',
-                                {
-                                  className: 'weave-assignment-chip',
-                                  key: String(task.id ?? ''),
-                                  'data-state': sessionTaskStateOf(task.status),
-                                  title: `${String(task.id ?? '')} · ${labelOf(TASK_STATUS_LABELS, task.status)}`,
-                                },
-                                React.createElement('b', null, shortTaskId(task.id)),
-                              ),
-                            ),
-                          )
-                        : null,
-                    ]
-                    return React.createElement(
-                      'div',
-                      {
-                        className: 'weave-member',
-                        key: roleId,
-                        'data-testid': `member-card-${roleId}`,
-                        'data-status': st,
-                        'data-clickable': streamTaskId !== '' ? 'true' : undefined,
-                        onClick: () => {
-                          if (streamTaskId !== '') openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
-                        },
-                      },
-                      ...cardChildren,
-                    )
-                  }),
-                ),
-      )
-            )
-          : null,
-      ),
-        )
-          : React.createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'weave-side-collapsed',
-                'data-testid': 'session-expand-left',
-                title: '展开队员',
-                onClick: () => setShowLeft(true),
-              },
-              '▶',
-            ),
-      /* ---- 完整历史抽屉 ---- */
-      streamDrawer
-        ? React.createElement(RunEventsDrawer, {
-            taskId: streamDrawer.taskId,
-            title: streamDrawer.name,
-            onClose: () => setStreamDrawer(null),
-          } as never)
-        : null,
-        showRight
-          ? React.createElement(
-          'div',
-          { className: 'weave-session-right' },
-      /* ---- 底部 Tab 组（可折叠）：任务依赖图 + 队员输出 ---- */
-      React.createElement(
-        'div',
-        { className: 'weave-section' },
-        React.createElement(
-          'div',
-          { className: 'weave-section-head-row' },
-          React.createElement(
-            'button',
-            { className: 'weave-section-head', 'data-testid': 'session-tabs-toggle', onClick: () => setTabsOpen(!tabsOpen) },
-            tabsOpen ? '▾ 任务 / 输出' : '▸ 任务 / 输出',
-          ),
-          React.createElement(
-            'button',
-            { className: 'weave-section-collapse', 'data-testid': 'session-collapse-right', title: '收起右侧任务/输出区', onClick: () => setShowRight(false) },
-            '▶',
-          ),
-        ),
-        tabsOpen
-          ? React.createElement(
-              'div',
-              { className: 'weave-section-body' },
-      React.createElement(
-        'div',
-        { className: 'weave-panel-tabs', 'data-testid': 'weave-session-tabs' },
-        React.createElement(
-          'button',
-          {
-            type: 'button',
-            className: activeTab === 'dag' ? 'weave-tab weave-tab-active' : 'weave-tab',
-            'data-testid': 'session-tab-dag',
-            onClick: () => setActiveTab('dag'),
-          },
-          '任务依赖图',
-        ),
-        ...outputTabs.map((tab: { roleId: string; name: string; taskId: string; executor?: string }) =>
-          React.createElement(
-            'span',
-            { key: tab.roleId, className: activeTab === `member-${tab.roleId}` ? 'weave-tab weave-tab-active' : 'weave-tab', 'data-testid': `session-tab-${tab.roleId}` },
-            React.createElement(
-              'button',
-              { type: 'button', className: 'weave-tab-label', onClick: () => setActiveTab(`member-${tab.roleId}`) },
-              tab.name,
-            ),
-            React.createElement(
-              'button',
-              { type: 'button', className: 'weave-tab-close', 'data-testid': `session-tab-close-${tab.roleId}`, onClick: () => closeOutputTab(tab.roleId) },
-              '×',
-            ),
-          ),
-        ),
-      ),
-      React.createElement(
-        'div',
-        {
-          className: 'weave-panel-tab-body',
-          'data-testid': 'weave-session-tab-body',
-          // T-fix（Playwright 实测）：CSS :524 height:auto;min-height:0 会把页签体
-          // 塌缩成内容高度（283px），DAG 图被压成小图。dag 激活时给真实高度预算：
-          // 视口高减固定 chrome，下限 420px；fit 尺度由 RO 实测的大盒子驱动。
-          ...(activeTab === 'dag'
-            ? { style: { minHeight: 'max(calc(100vh - 300px), 420px)' } }
-            : {}),
-        },
-        activeTab === 'dag'
-          ? React.createElement(
-              'div',
-              null,
-              React.createElement(
-                'div',
-                { className: 'weave-list-head' },
-                React.createElement('b', { className: 'weave-subh' }, '任务依赖图'),
-                latestDagId !== ''
-                  ? React.createElement(Pill, { label: String(dag?.dag_id ?? latestDagId), title: '最近活跃任务图' })
-                  : null,
-              ),
-              list.loading || pendingDetail
-                ? React.createElement('span', { className: 'weave-muted' }, '加载中...')
-                : !status.data?.team
-                  ? null
-                  : latestDagId === ''
-                    ? null
-                    : !dag
-                      ? React.createElement('span', { className: 'weave-muted' }, `加载失败：${detail.error || '未知错误'}`)
-                      : React.createElement(
-                          React.Fragment,
-                          null,
-                          React.createElement(DagGraph, {
-                            dag: dag as TaskDagDetail,
-                            selectedId,
-                            // 默认派生选中只驱动下方详情区；聚焦暗化仅在用户显式点选后生效
-                            focusPinned: selectedId0 !== '',
-                            onSelect: (next: string) => setSelectedId0(next),
-                          }),
-                          selectedNode
-                            ? React.createElement(
-                                'div',
-                                { className: 'weave-graph-detail', 'data-testid': 'weave-session-task-detail' },
-                                React.createElement(
-                                  'div',
-                                  { className: 'weave-list-head' },
-                                  React.createElement('b', null, shortTaskId(selectedNode.id)),
-                                  React.createElement(Pill, {
-                                    label: labelOf(TASK_STATUS_LABELS, selectedNode.status),
-                                    tone: toneOf(String(selectedNode.status ?? '')),
-                                    title: String(selectedNode.status ?? ''),
-                                  }),
-                                  ...(nodeActions.map((entry) =>
-                                    React.createElement(
-                                      'button',
-                                      {
-                                        key: entry.action,
-                                        className: 'weave-button weave-button-secondary weave-button-small',
-                                        type: 'button',
-                                        disabled: actor.busy,
-                                        'data-testid': `session-task-action-${entry.action}-${String(selectedNode.id ?? '')}`,
-                                        onClick: () => void runTaskAction(String(selectedNode.id ?? ''), entry.action, entry.confirm === true, entry.label),
-                                      },
-                                      entry.label,
-                                    ),
-                                  )),
-                                ),
-                              )
-                            : null,
-                        ),
-            )
-          : (() => {
-              const tab = outputTabs.find((item: { roleId: string; name: string; taskId: string; executor?: string }) => `member-${item.roleId}` === activeTab)
-              if (!tab) return React.createElement('span', { className: 'weave-muted' }, '没有打开的输出')
-              return React.createElement(
-                'div',
-                { 'data-testid': `session-output-${tab.roleId}` },
-                React.createElement(
-                  'div',
-                  { className: 'weave-list-head' },
-                  React.createElement('b', null, `${tab.name} 输出`),
-                  React.createElement(Pill, { label: shortTaskId(tab.taskId), title: tab.taskId }),
-                ),
-                React.createElement(InlineRunEventsPane, {
-                  taskId: tab.taskId,
-                  onOpenDrawer: () => setStreamDrawer({ taskId: tab.taskId, name: tab.name }),
-                  showMeta: true,
-                  sessionLabel: isDshExecutor(tab.executor) ? '子代理会话' : 'sessionId',
-                  onOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator
-                    ? (childSessionId: string) => void openSubagentSession(sid, childSessionId)
-                    : undefined,
-                  autoOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator ? true : undefined,
-                } as never),
-              )
-            })(),
-      )
-            )
-          : null,
-      ),
-        )
-          : React.createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'weave-side-collapsed',
-                'data-testid': 'session-expand-right',
-                title: '展开任务/输出',
-                onClick: () => setShowRight(true),
-              },
-              '◀',
-            ),
-      ),
-      actor.note && actor.ok === true ? Note({ text: actor.note }) : null,
-      confirmTask
-        ? React.createElement(ConfirmDialog, {
-            open: true,
-            title: '确认操作',
-            body: `确认对任务 ${shortTaskId(confirmTask.taskId)} 执行「${confirmTask.label}」？`,
-            confirmText: '确认',
-            cancelText: '取消',
-            danger: confirmTask.action === 'cancel' || confirmTask.action === 'skip',
-            busy: actor.busy,
-            testId: 'session-confirm-action',
-            onConfirm: () => {
-              const target = confirmTask
-              setConfirmTask(null)
-              if (target) void performTaskAction(target.taskId, target.action)
-            },
-            onCancel: () => setConfirmTask(null),
-          } as never)
-        : null,
-      reviseTask
-        ? React.createElement(PromptDialog, {
-            open: true,
-            title: `返工反馈 · ${shortTaskId(reviseTask.taskId)}`,
-            placeholder: '例如：把登录校验改成邮箱验证码',
-            testId: 'session-revise-dialog',
-            confirmTestId: 'session-revise-confirm',
-            onConfirm: (value: string) => {
-              const target = reviseTask
-              setReviseTask(null)
-              if (target) void performTaskAction(target.taskId, 'revise', value)
-            },
-            onCancel: () => setReviseTask(null),
-          } as never)
-        : null,
-    )
-  }
+  /* 会话即团队面板已迁移到 dsh-agent-teams ActivityPanel。 */
 
   function WeaveSidebarAction({ wide }: { wide?: boolean }) {
     const [open, setOpen] = useState(false)
@@ -6067,7 +5264,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     )
   }
 
-  return { WeaveSidebarAction, WeaveSessionPanel }
+  return { WeaveSidebarAction }
 }
 
 const moduleLoader = (
@@ -6115,23 +5312,6 @@ moduleLoader.load({
             ),
           ),
         'dsh-weave sidebar action',
-      )
-
-      const sessionPanel = app.WeaveSessionPanel
-      ctx.effect(
-        () =>
-          ctx.slots.inject('conversation.view', () =>
-            ctx.slots.register(
-              {
-                name: 'conversation.view',
-                id: PLUGIN_ID,
-                order: 70,
-                label: () => 'Weave 团队',
-              },
-              sessionPanel,
-            ),
-          ),
-        'dsh-weave conversation session panel',
       )
 
     }

@@ -12,7 +12,7 @@ import { WeaveError } from './state/weave-error.js'
 import type { TeamManager } from './team-manager.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import type { AuditLog } from './audit/audit-log.js'
-import type { AffectedFlowsResult, GraphQueryOptions, GraphService } from './graph/graph-service.js'
+import { GraphService, type AffectedFlowsResult, type GraphQueryOptions } from './graph/graph-service.js'
 import type {
   DocumentConverter,
   DocumentConvertInput,
@@ -376,7 +376,14 @@ export class WeaveMcp {
   /* ------------------- 图谱工具（doc/09 §2.4，T2） ------------------- */
 
   /** weave_graph_build：构建/更新代码图谱与执行流（Graphify extract + flows build）。 */
-  async graphBuild(): Promise<{ graphPath: string; flowsPath: string }> {
+  async graphBuild(input: { projectRoot?: string; sourceDir?: string } = {}): Promise<{ graphPath: string; flowsPath: string }> {
+    if (input.projectRoot || input.sourceDir) {
+      const graph = new GraphService({
+        projectRoot: input.projectRoot || process.cwd(),
+        ...(input.sourceDir ? { sourceDir: input.sourceDir } : {}),
+      })
+      return graph.build()
+    }
     return this.#requireGraph().build()
   }
 
@@ -762,6 +769,15 @@ export class WeaveCli {
           const [knowledgeId, ...reasonParts] = rest
           const data = await this.#mcp.knowledgeReject(knowledgeId ?? '', reasonParts.join(' '))
           return { json: `知识 ${data.id} → ${data.status}`, data }
+        }
+        break
+      }
+      case 'code': {
+        if (command === 'build') {
+          const [projectRoot, sourceDir] = rest
+          const data = await this.#mcp.graphBuild({ projectRoot, sourceDir })
+          return { json: `代码图谱已构建: ${data.graphPath}
+执行流: ${data.flowsPath}`, data }
         }
         break
       }
