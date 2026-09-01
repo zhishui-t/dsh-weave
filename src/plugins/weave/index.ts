@@ -6,7 +6,7 @@ import { KnowledgeEngine } from './knowledge-engine.js'
 import { ReflectionService } from './reflection-service.js'
 import { ReflectionBridge, type AgentTeamsTaskSettledLike } from './reflection-bridge.js'
 import { KnowledgeBridge } from './knowledge-bridge.js'
-import { resolveAgentTeamsHost, type AgentTeamsAssignmentLike } from './agent-teams-host.js'
+import { resolveAgentTeamsHost, type AgentTeamsAssignmentLike, type AgentTeamsHost } from './agent-teams-host.js'
 import { bootstrapSessionTeam } from './session-bootstrap.js'
 import { teamConfigToAgentTeamsProfile } from './team-profile-mapper.js'
 import { ExecutorSessionStore } from './executor-session-store.js'
@@ -146,54 +146,67 @@ export function apply(ctx: Context): void {
 
     const reflection = new ReflectionService({ knowledge: deps.knowledgeStore, audit: deps.audit })
     const reflectionBridge = new ReflectionBridge(reflection)
-    const agentTeamsHost = resolveAgentTeamsHost(runtime)
-
-    if (agentTeamsHost?.registerProfile) {
-      for (const team of deps.teamManager.listTeams()) {
-        const mapped = teamConfigToAgentTeamsProfile(team)
-        agentTeamsHost.registerProfile(mapped.profileName, mapped.profile)
-      }
-    }
-    agentTeamsHost?.hostHooks?.add({
-      onTaskSettled: (input: AgentTeamsTaskSettledLike) => {
-        void reflectionBridge.onTaskSettled(input)
-        // Keep the code graph fresh after team work completes.
-        void refreshCodeGraph().catch((error) => {
-          console.warn('[dsh-weave] code graph refresh after task settled failed:', error)
-        })
-      },
-    })
     const knowledgeBridge = new KnowledgeBridge({ engine: new KnowledgeEngine(deps.knowledgeStore) })
-    agentTeamsHost?.hostHooks?.add({
-      enrichAssignment: async (input: AgentTeamsAssignmentLike) => {
-        const team = input.teamProfileName ? deps.teamManager.loadTeam(input.teamProfileName) : null
-        if (!team) return input.prompt
-        return knowledgeBridge.enrichAssignment({
-          team,
-          teamId: input.teamId,
-          roleId: input.memberName,
-          taskId: input.taskId,
-          prompt: input.prompt,
-        })
-      },
-    })
-    const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
-    if (agentTeamsHost?.memberTransports && zcodeProvider) {
-      if (agentTeamsHost.memberTransports.has?.('acp')) {
-        // The fork default-registered the acp transport; weave must not duplicate it.
-      } else {
-        try {
-          agentTeamsHost.memberTransports.register('acp', new AcpMemberTransport(
-            zcodeProvider as never,
-            new ExecutorSessionStore(),
-          ))
-        } catch (error) {
-          // The fork may have registered between the has() check and this call;
-          // a duplicate registration means fork already owns it, which is fine.
-          console.warn('[dsh-weave] acp transport already registered by dsh-agent-teams:', String(error))
+    let agentTeamsHostReady = false
+    const ensureAgentTeamsHost = (host: AgentTeamsHost): void => {
+      if (agentTeamsHostReady) return
+      agentTeamsHostReady = true
+      if (host.registerProfile) {
+        for (const team of deps.teamManager.listTeams()) {
+          const mapped = teamConfigToAgentTeamsProfile(team)
+          host.registerProfile(mapped.profileName, mapped.profile)
+        }
+      }
+      host.hostHooks?.add({
+        onTaskSettled: (input: AgentTeamsTaskSettledLike) => {
+          void reflectionBridge.onTaskSettled(input)
+          // Keep the code graph fresh after team work completes.
+          void refreshCodeGraph().catch((error) => {
+            console.warn('[dsh-weave] code graph refresh after task settled failed:', error)
+          })
+        },
+      })
+      host.hostHooks?.add({
+        enrichAssignment: async (input: AgentTeamsAssignmentLike) => {
+          const team = input.teamProfileName ? deps.teamManager.loadTeam(input.teamProfileName) : null
+          if (!team) return input.prompt
+          return knowledgeBridge.enrichAssignment({
+            team,
+            teamId: input.teamId,
+            roleId: input.memberName,
+            taskId: input.taskId,
+            prompt: input.prompt,
+          })
+        },
+      })
+      const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
+      if (host.memberTransports && zcodeProvider) {
+        if (host.memberTransports.has?.('acp')) {
+          // The fork default-registered the acp transport; weave must not duplicate it.
+        } else {
+          try {
+            host.memberTransports.register('acp', new AcpMemberTransport(
+              zcodeProvider as never,
+              new ExecutorSessionStore(),
+            ))
+          } catch (error) {
+            // The fork may have registered between the has() check and this call;
+            // a duplicate registration means fork already owns it, which is fine.
+            console.warn('[dsh-weave] acp transport already registered by dsh-agent-teams:', String(error))
+          }
         }
       }
     }
+
+    const initialHost = resolveAgentTeamsHost(runtime)
+    if (initialHost) ensureAgentTeamsHost(initialHost)
+    const serviceEvented = runtime as Context & { on?(name: string, listener: unknown): unknown }
+    serviceEvented.on?.('internal/service', (name: string) => {
+      if (name === 'agentTeams/runtime' || name === 'agentTeams/hostHooks' || name === 'agentTeams/memberTransports') {
+        const nowHost = resolveAgentTeamsHost(runtime)
+        if (nowHost) ensureAgentTeamsHost(nowHost)
+      }
+    })
 
     try {
       const hook = createPreStepDelegationHook({
@@ -205,6 +218,7 @@ export function apply(ctx: Context): void {
         onTeamEnabled: async (sessionId, team, agent) => {
           const host = resolveAgentTeamsHost(runtime)
           if (!host) return
+          ensureAgentTeamsHost(host)
           const mapped = teamConfigToAgentTeamsProfile(team)
           if (host.registerProfile) host.registerProfile(mapped.profileName, mapped.profile)
           await bootstrapSessionTeam({ host }, { sessionId, team, captain: agent })
