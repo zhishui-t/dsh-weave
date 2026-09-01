@@ -38,7 +38,7 @@ export async function bootstrapSessionTeam(
     teamId,
     profileName: mapping.profileName,
     ...input.team.description ? { description: input.team.description } : {},
-    approval: 'automatic',
+    approval: 'required',
   })
   return {
     created: result.created,
