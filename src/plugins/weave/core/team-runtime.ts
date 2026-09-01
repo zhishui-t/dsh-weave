@@ -7,8 +7,9 @@ import { KnowledgeEngine } from '../knowledge-engine.js'
 import { createExecutorEventNotifier, type StreamOptions } from '../session-stream.js'
 import { TaskStatusNotifier } from '../task-status-notifier.js'
 import { WeaveScheduler, subjectLabel } from '../scheduler.js'
-import { ReflectionService } from '../reflection-service.js'
-import { AuditLog } from '../audit/audit-log.js'
+import type { WeaveCapabilities } from './capabilities.js'
+import type { AuditLog } from '../audit/audit-log.js'
+import type { ReflectionService } from '../reflection-service.js'
 import { TeamPlanner, createPlanTasksHandler } from '../planner.js'
 import { CaptainTurnGuard } from '../captain-turn-guard.js'
 import {
@@ -26,7 +27,7 @@ export interface TeamRuntimeOptions {
   weaveSettingsFile: string
   executionStream: StreamOptions
   idleTimeoutMs: number
-  effectiveAuditDir: string
+  capabilities: WeaveCapabilities
 }
 
 export interface TeamRuntime {
@@ -44,7 +45,7 @@ export interface TeamRuntime {
 }
 
 export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
-  const { runtime, deps, executorProviders, weaveSettingsFile, executionStream, idleTimeoutMs, effectiveAuditDir } = options
+  const { runtime, deps, executorProviders, weaveSettingsFile, executionStream, idleTimeoutMs, capabilities } = options
 
   let agentsRegistry: { get(id: string): unknown } | undefined
   try {
@@ -77,11 +78,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     }
   }
 
-  const auditLog = new AuditLog({ dir: effectiveAuditDir })
-  const reflection = new ReflectionService({
-    knowledge: deps.knowledgeStore!,
-    audit: auditLog,
-  })
+  const { auditLog, reflection } = capabilities
 
   const statusNotifier = new TaskStatusNotifier({
     notify: (sessionId, text) => {

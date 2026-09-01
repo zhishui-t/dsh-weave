@@ -2,6 +2,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
 import { createTeamRuntime } from './core/team-runtime.js'
+import { createCapabilities } from './core/capabilities.js'
 import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
@@ -160,6 +161,10 @@ export function apply(ctx: Context): void {
       // 队长调度模式：weave_plan_tasks 是唯一的任务下发路径（对话即派发），
       // planner 校验落库 → scheduler 按依赖自动调度成员执行并回灌会话。
       // 委托唯一出口仍是 DelegationService.executeTask（内部 ctx.subagents.start）。
+      const capabilities = createCapabilities({
+        auditDir: effectiveAuditDir,
+        knowledgeStore: deps.knowledgeStore!,
+      })
       const teamRuntime = createTeamRuntime({
         runtime,
         deps,
@@ -167,7 +172,7 @@ export function apply(ctx: Context): void {
         weaveSettingsFile,
         executionStream,
         idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
-        effectiveAuditDir,
+        capabilities,
       })
       const {
         delegation,
