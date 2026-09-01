@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import { createTeamRuntime } from './core/team-runtime.js'
 import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
@@ -159,122 +160,27 @@ export function apply(ctx: Context): void {
       // 队长调度模式：weave_plan_tasks 是唯一的任务下发路径（对话即派发），
       // planner 校验落库 → scheduler 按依赖自动调度成员执行并回灌会话。
       // 委托唯一出口仍是 DelegationService.executeTask（内部 ctx.subagents.start）。
-      const delegation = new DelegationService(
-        { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
-        {
-          executorRegistry: deps.executorRegistry,
-          // iso-1：生产必须走统一 Provider 注册表（ZcodeAcpExecutorProvider），
-          // 该路径按 ExecutorStartRequest.sessionKey 顶层传键，角色会话严格隔离。
-          executorProviders: service.executorProviders,
-          sessionTracker: new SessionTracker(deps.persistence.feedback),
-          knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
-          // 活动感知空闲超时（idle_timeout 误杀修复）：zcode 长工具执行/长思考段实测
-          // 可超 10 分钟，600s 已 4 次误杀"文件在写但事件静默"的健康任务 → 缺省提至
-          // 20 分钟（settings.execution_idle_timeout_ms 可覆盖）；绝对墙钟 60min 仍是
-          // 挂死兜底，长任务仍可被队长人工取消。
-          idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
-          delegationMaxWallClockMs: 0,
-          // 执行实时输出回灌会话（doc/05 §6.2 P1-B）：T9 节流器低频下发；
-          // notifyWeaveSession/resolveNoticeSession 在下方定义，事件只在其任务执行期
-          // 异步到达，闭包引用安全。
-          onExecutorEvent: createExecutorEventNotifier({
-            ...executionStream,
-            notify: (sessionId, text) => {
-              notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
-            },
-          }),
-        },
-      )
-      const notifyWeaveSession = (sessionId: string, text: string, session?: NoticeSessionLike): void => {
-        if (!session) {
-          console.warn('[dsh-weave] cannot notify session', sessionId, '- session surface unavailable')
-          return
-        }
-        try {
-          // 工具执行期间直接 append 会把 user notice 插入 tool_calls 与 tool/result
-          // 之间，使后续 provider 请求永久报 “tool_calls must be followed by tool
-          // messages”。有真实 Agent 时改走 inbox next-step 安全边界，等工具结果落账后
-          // 再在下一步作为普通用户消息进入模型历史。
-          const agent = agentsRegistry?.get(sessionId) as
-            | { inject?: (message: WeaveNoticeMessage) => void }
-            | undefined
-          if (hasPendingToolCall(session) && typeof agent?.inject === 'function') {
-            agent.inject(createWeaveNoticeMessage(text))
-            return
-          }
-          notifySession(session, text)
-        } catch (error) {
-          console.warn('[dsh-weave] notify session failed:', error)
-        }
-      }
-      /**
-       * 会话面解析（T31/doc/05 §6.5 配套）：通知方未携带 session 面时（如冷启动
-       * 重建 run 的 parentAgent=undefined），经 agentsRegistry 按 sessionId 兜底
-       * 解析——与 P1-D statusNotifier 同一模式，重建组的进度/汇总通知不再丢弃。
-       */
-      const resolveNoticeSession = (sessionId: string): NoticeSessionLike | undefined =>
-        (agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined)?.session
-      const auditLog = new AuditLog({ dir: effectiveAuditDir })
-      const reflection = new ReflectionService({
-        knowledge: deps.knowledgeStore!,
-        audit: auditLog,
+      const teamRuntime = createTeamRuntime({
+        runtime,
+        deps,
+        executorProviders: service.executorProviders,
+        weaveSettingsFile,
+        executionStream,
+        idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
+        effectiveAuditDir,
       })
-      // 任务状态变更通知单出口（doc/05 §6.4 P1-D）：scheduler 旁路（外部取消/重试）
-      // 发电，会话面经 resolveNoticeSession 解析；echoSelfActions 缺省 false（不回声）。
-      const statusNotifier = new TaskStatusNotifier({
-        notify: (sessionId, text) => {
-          notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
-        },
-      })
-      const scheduler = new WeaveScheduler({
+      const {
         delegation,
-        persistence: deps.persistence,
-        loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
-        // T31（doc/05 §6.5 配套）：session 面缺省（冷启动重建 run 无 parentAgent）
-        // 时经 agentsRegistry 兜底解析，进度/汇总通知不再丢弃。
-        notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
+        scheduler,
         statusNotifier,
-        audit: auditLog,
-        onTaskSettledText: async ({ task, role, text }) => {
-          const result = await reflection.depositFromOutput({
-            taskId: task.id,
-            executor: role.executor,
-            roleId: role.id,
-            projectId: task.project_id,
-            version: task.version,
-            outputText: text,
-            // 兑底候选标题来源：输出无 WEAVE_KNOWLEDGE 标记时自动合成（ReflectionService 内）。
-            taskSubject: subjectLabel(task),
-          })
-          return result.deposited.length
-        },
-      })
-      runtime.effect(() => () => scheduler.dispose(), 'dsh-weave scheduler lifecycle')
-      // UI/MCP 的取消与重试动作联动真实运行中的子代理。
-      deps.executionHooks = {
-        cancelTask: async (taskId) => scheduler.onExternalCancel(taskId),
-        resumeTask: async (taskId) => scheduler.onExternalRetry(taskId),
-      }
-      const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
-      // 宿主会话真值回溯：exec.agent 可能是子代理会话（其 id ≠ 对话会话 id），
-      // 通过存活代理注册表沿 session.header.parentSession 向根回溯。
-      // cordis 要求服务通过 inject 访问；agents 不在 inject 列表，直接取会抛错。
-      // 安全捕获：不可用时跳过（会话归属追踪降级，不影响核心委派）。
-      let agentsRegistry: { get(id: string): unknown } | undefined
-      try {
-        // agents 不在 inject 列表，直接读属性会抛错；用 reflect 安全读取。
-        agentsRegistry = (runtime as Context & { reflect?: { get(name: string, fallback?: boolean): unknown } }).reflect?.get('agents', false) as
-          | { get(id: string): unknown }
-          | undefined
-      } catch {
-        // agents 服务未注入——跳过
-      }
-      const planTasks = createPlanTasksHandler({
-        planner,
-        schedulerStart: async (input) => scheduler.start(input),
-        log: console,
-        getAgentById: (id) => agentsRegistry?.get(id as never),
-      })
+        auditLog,
+        reflection,
+        agentsRegistry,
+        notifyWeaveSession,
+        resolveNoticeSession,
+        planTasks,
+      } = teamRuntime
+      runtime.effect(() => () => teamRuntime.disposeScheduler(), 'dsh-weave scheduler lifecycle')
 
       // 会话控制通道最先接线：自然语言团队启停短句（绑定=启用）拦截；其余消息放行。
       // 只依赖已构造好的 teamManager，无宿主服务依赖——后续 RPC/工具接线失败不得连坐。
