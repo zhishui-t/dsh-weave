@@ -2,6 +2,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
 import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
 import { createTeamRuntime } from './core/team-runtime.js'
+import { createExecutorLayer } from './core/executors.js'
 import { createCapabilities } from './core/capabilities.js'
 import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
@@ -82,7 +83,6 @@ export function apply(ctx: Context): void {
   ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
     const runtime = scoped as Context
 
-    const dynamicProviderDisposers = new Map<string, Array<() => void>>()
     const weaveSettingsFile = DEFAULT_WEAVE_SETTINGS_FILE
     const settingsOverrides = loadWeaveSettingsOverrides(weaveSettingsFile)
     const executionStream = loadExecutionStreamSettings(weaveSettingsFile)
@@ -92,26 +92,6 @@ export function apply(ctx: Context): void {
     const effectiveObsidianDir = settingsOverrides.obsidian_dir ?? DEFAULT_OBSIDIAN_DIR
     const effectiveKnowledgeDir = settingsOverrides.knowledge_dir ?? DEFAULT_KNOWLEDGE_DIR
     try {
-      service.executorProviders = createDefaultExecutorProviderRegistry(runtime)
-      // 启动即加载用户通过 /weave provider add 持久化的外部 harness。
-      const storedProviders = registerStoredAcpProviders({
-        providersFile: effectiveProvidersFile,
-        ...acpRegistryContextFrom(runtime),
-        registry: service.executorProviders,
-      })
-      for (const name of storedProviders.registered) {
-        dynamicProviderDisposers.set(name, storedProviders.disposersByName[name] ?? [])
-      }
-      runtime.effect(() => () => {
-        for (const disposers of dynamicProviderDisposers.values()) {
-          for (const dispose of disposers) dispose()
-        }
-      }, 'dsh-weave dynamic provider lifecycle')
-    } catch (error) {
-      console.warn('[dsh-weave] executor provider registration failed:', error)
-    }
-
-    try {
       const deps = createDefaultCliDeps(runtime, {
         ...(settingsOverrides.state_dir ? { stateDir: settingsOverrides.state_dir } : {}),
         ...(settingsOverrides.teams_dir ? { teamsDir: settingsOverrides.teams_dir } : {}),
@@ -119,31 +99,16 @@ export function apply(ctx: Context): void {
         ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
         ...(settingsOverrides.obsidian_dir ? { obsidianDir: settingsOverrides.obsidian_dir } : {}),
       })
-      const zcodeProvider = service.executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
-      const refreshExecutorSnapshot = () => deps.executorRegistry.load(runtime)
-      const providerCommands = createWeaveProviderCommandDefinitions({
+      const executorLayer = createExecutorLayer({
+        runtime,
+        deps,
+        target: service,
         providersFile: effectiveProvidersFile,
-        hotRegister: (config) => {
-          const result = registerStoredAcpProviders({
-            providersFile: effectiveProvidersFile,
-            ...acpRegistryContextFrom(runtime),
-            registry: service.executorProviders,
-            names: [config.name],
-          })
-          const failed = result.failed.find((item) => item.name === config.name)
-          if (failed) return failed.error
-          dynamicProviderDisposers.set(config.name, result.disposersByName[config.name] ?? [])
-          refreshExecutorSnapshot()
-          return null
-        },
-        onRemove: (name) => {
-          const disposers = dynamicProviderDisposers.get(name)
-          if (!disposers) return
-          dynamicProviderDisposers.delete(name)
-          for (const dispose of [...disposers].reverse()) dispose()
-          refreshExecutorSnapshot()
-        },
       })
+      const {
+        zcodeProvider,
+        providerCommands,
+      } = executorLayer
       const llmRuntime = (runtime as Context & { llm?: { listProviders(): Array<{ id: string; name: string }>; listModels(providerId: string): Promise<Array<{ id: string; name: string }>> } }).llm
       const llmCatalog = llmRuntime?.listProviders
         ? async (): Promise<Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>> => {

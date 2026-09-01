@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CliMcpDeps } from '../cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
+import type { ZcodeAcpExecutorProvider } from '../acp/acp-session-provider.js'
 import { createDefaultExecutorProviderRegistry } from '../host-wiring.js'
 import {
   acpRegistryContextFrom,
@@ -17,7 +18,7 @@ export interface ExecutorLayerOptions {
 
 export interface ExecutorLayer {
   executorProviders: ExecutorProviderRegistry | undefined
-  zcodeProvider: unknown
+  zcodeProvider: ZcodeAcpExecutorProvider | undefined
   providerCommands: ReturnType<typeof createWeaveProviderCommandDefinitions>
   refreshExecutorSnapshot: () => void
   dispose: () => void
@@ -48,7 +49,7 @@ export function createExecutorLayer(options: ExecutorLayerOptions): ExecutorLaye
     console.warn('[dsh-weave] executor provider registration failed:', error)
   }
 
-  const zcodeProvider = executorProviders?.get('zcode')
+  const zcodeProvider = executorProviders?.get('zcode') as ZcodeAcpExecutorProvider | undefined
 
   const refreshExecutorSnapshot = (): void => {
     deps.executorRegistry.load(runtime)
