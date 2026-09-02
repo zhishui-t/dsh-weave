@@ -17,15 +17,14 @@ weave/
 ├── package.json            # 包元信息、脚本、依赖（cordis 运行时 + vitest/ts/eslint 工具链）
 ├── tsconfig.json           # 开发/测试用 TS 配置（noEmit，bundler 解析，vitest/编辑器共用）
 ├── tsconfig.build.json     # 发布构建配置（tsc 产出 dist/，含 .d.ts）
-├── vitest.config.ts        # Vitest 配置（node 环境，include src/plugins/weave/__tests__/**）
+├── vitest.config.ts        # Vitest 配置（node 环境，include test/unit/**）
 ├── eslint.config.mjs       # ESLint 9 扁平配置（js + typescript-eslint 基础规则）
 ├── README.md               # 本文件
 ├── doc/                    # 架构与设计文档（doc/architecture 为当前有效设计）
-├── test/                   # e2e 与辅助脚本（test/e2e、test/scripts）
+├── test/                   # 测试与辅助脚本（test/unit、test/e2e、test/scripts）
 └── src/
     └── plugins/weave/      # 插件源码根（任务规划中所有测试命令的路径前缀）
         ├── index.ts        # cordis 插件入口：{ name, inject, apply } + WeaveService（ctx.weave）
-        ├── __tests__/      # Vitest 测试目录（*.test.ts）
         └── persistence/    # P0-DB-004：SQLite 持久化（按任务逐步填充）
 ```
 
@@ -86,14 +85,14 @@ pnpm test:e2e:harness
 | `pnpm install` | 安装依赖 |
 | `pnpm test` | 运行全部测试（`vitest run`） |
 | `pnpm test:watch` | 监视模式 |
-| `pnpm vitest run src/plugins/weave/__tests__/plugin-loading.test.ts` | 运行单个测试文件（与任务规划 `testCommand` 形态一致） |
+| `pnpm vitest run test/unit/plugins/weave/plugin-loading.test.ts` | 运行单个测试文件（与任务规划 `testCommand` 形态一致） |
 | `pnpm build` | 构建 npm 包产物到 `dist/`（`tsc -p tsconfig.build.json`） |
 | `pnpm typecheck` | 类型检查（`tsc --noEmit`） |
 | `pnpm lint` | ESLint 检查 |
 
 测试路径约定（与 doc/architecture/weave-team-task-plan.md 的 `testCommand` 对齐）：
-`pnpm vitest run src/plugins/weave/__tests__/<name>.test.ts`。
-Vitest 只收集 `src/plugins/weave/__tests__/**/*.test.ts`（见 `vitest.config.ts`），统一 node 环境。
+`pnpm vitest run test/unit/plugins/weave/<name>.test.ts`。
+Vitest 只收集 `test/unit/**/*.test.ts`（见 `vitest.config.ts`），统一 node 环境。
 
 ## 4. 插件加载方式
 
@@ -294,7 +293,7 @@ pnpm test         # vitest run
 
 - 开发/测试：`tsconfig.json`（bundler 解析 + noEmit），vitest 直接跑 TS 源码。
 - 发布：`tsconfig.build.json` 继承开发配置，改为产出 `dist/`（声明文件 + sourcemap），
-  排除 `__tests__`；源码对相对导入已使用 `.js` 扩展名（NodeNext ESM 兼容，node>=20 可直接运行）。
+  测试位于 `test/unit`；源码对相对导入已使用 `.js` 扩展名（NodeNext ESM 兼容，node>=20 可直接运行）。
 - `package.json` 的 `exports`：`"." → dist/plugins/weave/index.(js|d.ts)`（正式包入口），
   `"./src/*" → ./src/*`（开发期源码直载）。
 
@@ -303,5 +302,5 @@ pnpm test         # vitest run
 - E7：仓库无 package.json / src / tsconfig / vitest / eslint → 本脚手架补齐，且 `pnpm vitest run` 已可执行。
 - HI-1：DSH 插件交付形态未定义 → 定义为 npm 包 `@deepseek-ai/dsh-plugin-weave`（源码
   `src/plugins/weave/`，产物 `dist/`，cordis 配置方式加载）；任务规划中的
-  `pnpm vitest run src/plugins/weave/__tests__/...` 路径与目录布局一致，可直接作为后续任务的前置。
-- 冒烟测试：`src/plugins/weave/__tests__/plugin-loading.test.ts` 验证插件可被 cordis 加载。
+  `pnpm vitest run test/unit/plugins/weave/...` 路径与目录布局一致，可直接作为后续任务的前置。
+- 冒烟测试：`test/unit/plugins/weave/plugin-loading.test.ts` 验证插件可被 cordis 加载。

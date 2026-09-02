@@ -16,22 +16,14 @@ Weave 是 DSH 之上的多智能体协作框架。团队是核心，知识是资
 ## 当前坐标
 
 - 分支：`restore/own-team-engine`
-- 已有：旧团队引擎、代码图谱、RPC、Web 客户端
-- 缺：ProjectTeamStore / Mailbox / DispatchGuard / OnDutyController
+- 已接回自有团队引擎：delegation / planner / scheduler
+- 已实现：ProjectTeamStore、Mailbox、DispatchGuard、OnDutyController、ReflectionSink
+- 已恢复：会话内「Weave 团队」页签与 Dashboard
+- 已迁移：代码图谱、知识图谱、文档转换、Obsidian、RPC
+- 测试：单元 688 通过；Playwright harness/live 全绿
 
 ## 下一站
 
-1. ProjectTeamStore
-2. Mailbox
-3. DispatchGuard
-4. OnDutyController
-5. ReflectionSink
-6. Team Tab 稳定化
-7. deepseek-zcode-test 团队端到端测试
-
-## 禁止事项
-
-- 禁止再回 dsh-agent-teams fork 依赖。
-- 禁止把反思写入团队目录。
-- 禁止对同一任务重复 start 子代理。
-- 禁止用轮询代替事件唤醒。
+1. `deepseek-zcode-test` 真实任务端到端成功链路（等待模型配额）
+2. Web 团队页签继续向 ActivityPanel 观感对齐
+3. 发布前清理与文档冻结

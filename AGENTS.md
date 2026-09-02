@@ -36,8 +36,8 @@ Weave 仓库的开发与维护指南。先读本文件，再改代码。
 │       ├── team/                 # 团队配置、项目级运行时状态、邮箱、迁移
 │       ├── ui/                   # 独立 React UI 组件（dashboard / dag-panel）
 │       ├── web/                  # Web 查询服务（RPC 后端）
-│       └── __tests__/            # Vitest 单元/组件测试（与源码同构）
-├── test/
+│ ├── test/
+│   ├── unit/                  # Vitest 单元/组件测试
 │   ├── e2e/                      # Playwright 测试与 fixtures（harness + live）
 │   │   └── acceptance-plan.md
 │   └── scripts/                  # 环境检查、E2E 调试、队长任务模拟脚本
@@ -79,7 +79,7 @@ pnpm code:scan             # 生成根目录 .graphify
 3. `pnpm typecheck`。
 4. 运行对应 Vitest 测试：
    ```bash
-   pnpm vitest run src/plugins/weave/__tests__/<相关>.test.ts
+   pnpm vitest run test/unit/plugins/weave/<相关>.test.ts
    ```
 5. 涉及 Web 客户端时：`pnpm build`，再运行 harness 或 live E2E。
 6. 最后才全量 `pnpm test`。
