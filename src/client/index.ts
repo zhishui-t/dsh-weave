@@ -574,11 +574,13 @@ function ensureStyle(): void {
 /* 团队详情弹窗（.weave-dialog-wide）与抽屉内的队员卡固定网格：一行 4 个、同行等高；
    覆盖窄屏/竖屏单列媒体查询（其本意只作用于会话页 spanel） */
 .weave-dialog-wide .weave-members,.weave-drawer .weave-members{grid-template-columns:repeat(4,1fr);align-items:stretch}
-.weave-member{position:relative;display:flex;align-items:flex-start;gap:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:8px 9px;background:var(--dsw-specific-menu);box-shadow:0 1px 2px rgba(0,0,0,.04);transition:border-color .12s ease,background .12s ease,transform .12s ease}
-.weave-member:hover{transform:translateY(-1px)}
+.weave-member{position:relative;display:grid;gap:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;background:var(--dsw-specific-menu)}
+.weave-spanel .weave-member{display:flex;align-items:flex-start;gap:8px;border-radius:12px;padding:8px 9px;box-shadow:0 1px 2px rgba(0,0,0,.04);transition:border-color .12s ease,background .12s ease,transform .12s ease}
+.weave-spanel .weave-member:hover{transform:translateY(-1px)}
 .weave-member-avatar{display:inline-flex;flex:none;width:30px;height:30px;align-items:center;justify-content:center;border-radius:50%;color:#fff;font-size:12px;font-weight:650;line-height:1;box-shadow:0 2px 6px rgba(0,0,0,.14);user-select:none}
 .weave-member-main{display:grid;gap:2px;min-width:0;flex:1}
-.weave-member b{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);line-height:16px;overflow-wrap:anywhere}
+.weave-member b{font-size:12px;font-weight:550;color:var(--dsw-alias-label-primary);line-height:16px}
+.weave-spanel .weave-member b{font-weight:600;overflow-wrap:anywhere}
 .weave-member .weave-muted{font-size:11px;line-height:15px}
 .weave-member .weave-member-assignments{gap:3px}
 .weave-member[data-status="running"]{border-color:#1677ff;background:rgba(22,119,255,.08)}
@@ -589,7 +591,8 @@ function ensureStyle(): void {
 .weave-member[data-status="completed"]{border-left:3px solid #52c41a;border-color:#52c41a;background:rgba(82,196,26,.08)}
 .weave-member[data-status="ready"]{border-left:3px solid #52c41a;border-color:#52c41a;background:rgba(82,196,26,.08)}
 .weave-member[data-clickable="true"]{cursor:pointer}
-.weave-member[data-clickable="true"]:hover{border-color:var(--dsw-alias-label-tertiary);box-shadow:0 4px 12px rgba(0,0,0,.08)}
+.weave-member[data-clickable="true"]:hover{border-color:var(--dsw-alias-label-tertiary)}
+.weave-spanel .weave-member[data-clickable="true"]:hover{box-shadow:0 4px 12px rgba(0,0,0,.08)}
 .weave-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#8c8c8c;vertical-align:middle;flex:none}
 .weave-dot[data-tone="run"]{background:#1677ff}
 .weave-dot[data-tone="good"]{background:#52c41a}
@@ -5946,20 +5949,20 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           : null,
       ),
     ]
-return React.createElement(
-                      'div',
-                      {
-                        className: 'weave-member',
-                        key: roleId,
-                        'data-testid': `member-card-${roleId}`,
-                        'data-status': st,
-                        'data-clickable': streamTaskId !== '' ? 'true' : undefined,
-                        onClick: () => {
-                          if (streamTaskId !== '') openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
-                        },
-                      },
-                      ...cardChildren,
-                    )
+    return React.createElement(
+      'div',
+      {
+        className: 'weave-member',
+        key: roleId,
+        'data-testid': `member-card-${roleId}`,
+        'data-status': st,
+        'data-clickable': streamTaskId !== '' ? 'true' : undefined,
+        onClick: () => {
+          if (streamTaskId !== '') openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
+        },
+      },
+      ...cardChildren,
+    )
                   }),
                 ),
       )

@@ -276,10 +276,11 @@ export function createWeaveRpcHandler(
         const input = objectPayload(payload)
         const sessionId = requireString(input, 'sessionId')
         const selection = await resolvedDeps.teamManager.getSelection(sessionId)
-        const resolved = selection ? await resolvedDeps.teamManager.resolveSessionTeam(sessionId) : null
+        const resolved = await resolvedDeps.teamManager.resolveSessionTeam(sessionId)
         return success({
           selection,
-          ...(resolved ? { team: resolved.team, via: resolved.via } : {}),
+          via: resolved.via,
+          ...(resolved.team ? { team: serializeTeam(resolved.team) } : { team: null }),
         })
       }
 

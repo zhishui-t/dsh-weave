@@ -185,6 +185,31 @@ describe('Weave Connection RPC：团队查询与删除', () => {
     await expect(env.call('team/get', { teamId: 'ghost' })).resolves.toMatchObject({ ok: false, error: { code: 'bad-request', details: { original_code: 'invalid_team' } } })
   })
 
+  it('team/current 解析绑定或唯一团队并返回序列化团队', async () => {
+    const env = makeEnv()
+    await importTeam(env.call)
+
+    // 未绑定但当前只有一个团队 → via=single
+    const single = await env.call('team/current', { sessionId: 'sess-1' })
+    expect(single).toMatchObject({
+      ok: true,
+      value: { selection: null, via: 'single', team: { team_id: 'rpc-team', roles: [{ id: 'member', executor: 'zcode' }] } },
+    })
+
+    // 显式绑定后 → via=binding，selection 非空
+    await env.call('team/bind', { sessionId: 'sess-1', teamId: 'rpc-team' })
+    const bound = await env.call('team/current', { sessionId: 'sess-1' })
+    expect(bound).toMatchObject({
+      ok: true,
+      value: { selection: { session_id: 'sess-1', team_id: 'rpc-team' }, via: 'binding', team: { team_id: 'rpc-team' } },
+    })
+
+    await expect(env.call('team/current', {})).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
+    })
+  })
+
   it('team/delete 删除 YAML；重复删除 invalid_team；路径穿越拒绝', async () => {
     const env = makeEnv()
     await importTeam(env.call, 'del-team')
