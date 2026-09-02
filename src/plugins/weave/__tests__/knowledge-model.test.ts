@@ -11,7 +11,7 @@ import {
   validateFrontmatter,
   validateVisibility,
   type KnowledgeFrontmatter,
-} from '../knowledge-model.js'
+} from '../knowledge/knowledge-model.js'
 
 /** 合法 frontmatter（9 个必填字段）。 */
 const fm = (overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({

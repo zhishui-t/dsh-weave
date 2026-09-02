@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { KnowledgeStore, type CreateCandidateInput } from '../knowledge-model.js'
+import { KnowledgeStore, type CreateCandidateInput } from '../knowledge/knowledge-model.js'
 import { openPersistence } from '../persistence/index.js'
 import { WeaveError } from '../state/weave-error.js'
 import { buildKnowledgeGraph } from '../web/knowledge-graph.js'

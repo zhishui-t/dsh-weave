@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { DocumentConverter } from '../convert/document-converter'
-import type { AnyDocLikeConverter, ConvertInput } from '../import-pipeline'
+import type { AnyDocLikeConverter, ConvertInput } from '../knowledge/import-pipeline'
 import { WeaveCli, WeaveMcp } from '../cli-mcp'
 import type { CliMcpDeps } from '../cli-mcp'
 import { createWeaveRpcHandler } from '../rpc'

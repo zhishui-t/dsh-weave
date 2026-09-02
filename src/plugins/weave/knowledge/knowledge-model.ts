@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import type { WeaveDatabase } from './persistence/weave-database.js'
+import type { WeaveDatabase } from '../persistence/weave-database.js'
 
 /**
  * P0-KBLD-009 知识目录/元数据模型 — 对应 TDD 2.2（知识模型）、AC-KNOW-001/002/003。

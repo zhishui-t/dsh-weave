@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
 import { AuditLog } from '../audit/audit-log.js'
-import { KnowledgeStore } from '../knowledge-model.js'
+import { KnowledgeStore } from '../knowledge/knowledge-model.js'
 import { RecoveryService } from '../scheduling/recovery.js'
 import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 

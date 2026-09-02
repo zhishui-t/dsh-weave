@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { KnowledgeGraphService } from '../graph/knowledge-graph.js'
-import { KnowledgeStore, type CreateCandidateInput } from '../knowledge-model.js'
+import { KnowledgeStore, type CreateCandidateInput } from '../knowledge/knowledge-model.js'
 import { openPersistence } from '../persistence/index.js'
 import { WeaveQueryService } from '../web/query-service.js'
 

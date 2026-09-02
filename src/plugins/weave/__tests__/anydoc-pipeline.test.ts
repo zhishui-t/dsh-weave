@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
-import { KnowledgeStore } from '../knowledge-model.js'
+import { KnowledgeStore } from '../knowledge/knowledge-model.js'
 import {
   AnyDocLikeConverter,
   ConvertInput,
@@ -12,7 +12,7 @@ import {
   WHITELIST_EXTENSIONS,
   type ImportMeta,
   type UploadedFile,
-} from '../import-pipeline.js'
+} from '../knowledge/import-pipeline.js'
 
 class MockConverter implements AnyDocLikeConverter {
   calls: ConvertInput[] = []

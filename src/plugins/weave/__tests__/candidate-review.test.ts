@@ -13,9 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
-import { KnowledgeStore, type CreateCandidateInput } from '../knowledge-model.js'
+import { KnowledgeStore, type CreateCandidateInput } from '../knowledge/knowledge-model.js'
 import { AuditLog, type AuditEvent } from '../audit/audit-log.js'
-import { KnowledgeReviewService } from '../knowledge-review.js'
+import { KnowledgeReviewService } from '../knowledge/knowledge-review.js'
 
 interface Fixture {
   root: string

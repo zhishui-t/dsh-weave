@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { openPersistence } from '../persistence/persistence.js'
-import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta, type KnowledgeFile, type Visibility } from '../knowledge-model.js'
+import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta, type KnowledgeFile, type Visibility } from '../knowledge/knowledge-model.js'
 
 interface ToolResult {
   ok: boolean

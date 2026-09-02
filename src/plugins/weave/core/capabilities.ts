@@ -1,6 +1,6 @@
 import { AuditLog } from '../audit/audit-log.js'
-import { ReflectionService } from '../reflection-service.js'
-import type { KnowledgeStore } from '../knowledge-model.js'
+import { ReflectionService } from '../knowledge/reflection-service.js'
+import type { KnowledgeStore } from '../knowledge/knowledge-model.js'
 
 export interface WeaveCapabilities {
   auditLog: AuditLog

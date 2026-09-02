@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { IMPORT_JOBS_TABLE_DDL } from './persistence/schemas.js'
-import type { WeaveDatabase } from './persistence/weave-database.js'
+import { IMPORT_JOBS_TABLE_DDL } from '../persistence/schemas.js'
+import type { WeaveDatabase } from '../persistence/weave-database.js'
 import { KnowledgeStore, validateVisibility } from './knowledge-model.js'
 import type { KnowledgeType, KnowledgeLayer, Visibility } from './knowledge-model.js'
 

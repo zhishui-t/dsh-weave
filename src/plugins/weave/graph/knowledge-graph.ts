@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 
-import type { KnowledgeLayer, KnowledgeStatus, KnowledgeStore } from '../knowledge-model.js'
+import type { KnowledgeLayer, KnowledgeStatus, KnowledgeStore } from '../knowledge/knowledge-model.js'
 import { WeaveError } from '../state/weave-error.js'
 import { buildKnowledgeGraph, type KnowledgeGraphResult, type KnowledgeGraphNode } from '../web/knowledge-graph.js'
 

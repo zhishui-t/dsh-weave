@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 
-import { AnyDocConverterAdapter, WHITELIST_EXTENSIONS, type AnyDocLikeConverter } from '../import-pipeline.js'
+import { AnyDocConverterAdapter, WHITELIST_EXTENSIONS, type AnyDocLikeConverter } from '../knowledge/import-pipeline.js'
 import { WeaveError } from '../state/weave-error.js'
 
 /**

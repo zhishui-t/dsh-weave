@@ -17,8 +17,8 @@
  * frontmatter）由 KnowledgeStore 实现保证，本层以测试固化。
  */
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta } from './knowledge-model.js'
-import { AuditLog, type AuditQuery } from './audit/audit-log.js'
-import { WeaveError } from './state/weave-error.js'
+import { AuditLog, type AuditQuery } from '../audit/audit-log.js'
+import { WeaveError } from '../state/weave-error.js'
 
 /** 审核队列条目：元数据 + frontmatter 摘要（标题/标签）。 */
 export interface ReviewQueueItem {

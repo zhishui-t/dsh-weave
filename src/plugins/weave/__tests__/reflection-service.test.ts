@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { AuditLog } from '../audit/index'
-import { ReflectionService, type ReflectionDepositInput } from '../reflection-service'
-import { KnowledgeStore } from '../knowledge-model'
+import { ReflectionService, type ReflectionDepositInput } from '../knowledge/reflection-service'
+import { KnowledgeStore } from '../knowledge/knowledge-model'
 import { openPersistence } from '../persistence/index'
 
 interface TestEnv {

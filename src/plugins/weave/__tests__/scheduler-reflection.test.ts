@@ -9,8 +9,8 @@ import { openPersistence } from '../persistence/index'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
 import { TeamPlanner } from '../scheduling/planner'
 import { WeaveScheduler, subjectLabel, type SchedulerDelegationLike, type WeaveSchedulerOptions } from '../scheduling/scheduler'
-import { ReflectionService } from '../reflection-service'
-import { KnowledgeStore } from '../knowledge-model'
+import { ReflectionService } from '../knowledge/reflection-service'
+import { KnowledgeStore } from '../knowledge/knowledge-model'
 import type { SubagentTaskOutput } from '../scheduling/delegation-service'
 
 const lookup: ExecutorLookup = {

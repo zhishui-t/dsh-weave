@@ -1,4 +1,4 @@
-import type { ReflectionService } from '../reflection-service.js'
+import type { ReflectionService } from '../knowledge/reflection-service.js'
 
 export interface TaskSettledInput {
   taskId: string

@@ -1,4 +1,4 @@
-import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge-model.js'
+import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge/knowledge-model.js'
 import { WeaveError } from '../state/weave-error.js'
 
 export interface KnowledgeGraphNode {

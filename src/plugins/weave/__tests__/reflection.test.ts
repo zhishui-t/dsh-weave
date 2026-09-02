@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractKnowledgeBlocks } from '../reflection'
+import { extractKnowledgeBlocks } from '../knowledge/reflection'
 
 describe('extractKnowledgeBlocks（doc/05 §3.1 反思解析协议）', () => {
   it('解析 prompt 模板形态的单块（### 前缀 + JSON）', () => {

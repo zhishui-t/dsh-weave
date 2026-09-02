@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { KnowledgeMeta, KnowledgeStore } from '../knowledge-model.js'
-import { serializeKnowledgeFile } from '../knowledge-model.js'
+import type { KnowledgeMeta, KnowledgeStore } from '../knowledge/knowledge-model.js'
+import { serializeKnowledgeFile } from '../knowledge/knowledge-model.js'
 import { WeaveError } from '../state/weave-error.js'
 
 /**

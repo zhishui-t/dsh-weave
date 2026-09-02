@@ -9,8 +9,8 @@ import {
   KnowledgeEngine,
   scoreKnowledge,
   type InjectionSearchParams,
-} from '../knowledge-engine'
-import { KnowledgeStore, type KnowledgeLayer, type KnowledgeScope } from '../knowledge-model'
+} from '../knowledge/knowledge-engine'
+import { KnowledgeStore, type KnowledgeLayer, type KnowledgeScope } from '../knowledge/knowledge-model'
 import { openPersistence } from '../persistence/index'
 import { SessionTracker } from '../scheduling/session-tracker'
 import type { TaskRecord } from '../state/types'

@@ -5,7 +5,7 @@ import {
   type KnowledgeScope,
   type KnowledgeStore,
 } from './knowledge-model.js'
-import type { AuditLog } from './audit/audit-log.js'
+import type { AuditLog } from '../audit/audit-log.js'
 
 /**
  * 反思沉淀服务（SDD 增量 doc/05 §3.2）。

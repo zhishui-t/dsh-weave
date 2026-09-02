@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
-import { KnowledgeStore } from '../knowledge-model.js'
+import { KnowledgeStore } from '../knowledge/knowledge-model.js'
 import {
   AnyDocLikeConverter,
   ConvertInput,
@@ -21,8 +21,8 @@ import {
   ImportPipelineError,
   type ImportMeta,
   type UploadedFile,
-} from '../import-pipeline.js'
-import { ImportUiController, type EditableCandidate } from '../import-ui.js'
+} from '../knowledge/import-pipeline.js'
+import { ImportUiController, type EditableCandidate } from '../knowledge/import-ui.js'
 
 class MockConverter implements AnyDocLikeConverter {
   calls: ConvertInput[] = []

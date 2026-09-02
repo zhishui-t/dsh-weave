@@ -9,8 +9,8 @@ import { CircuitBreaker } from '../safety/circuit-breaker'
 import { DagRepository } from '../dag/repository'
 import { ExecutorRegistry } from '../executor-registry'
 import { FeedbackRouter } from '../scheduling/feedback-router'
-import { KnowledgeReviewService } from '../knowledge-review'
-import { KnowledgeStore } from '../knowledge-model'
+import { KnowledgeReviewService } from '../knowledge/knowledge-review'
+import { KnowledgeStore } from '../knowledge/knowledge-model'
 import {
   buildWeaveToolDefinitions,
   registerWeaveHost,
