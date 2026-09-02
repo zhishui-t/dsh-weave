@@ -1,9 +1,9 @@
 import { defineConfig } from '@playwright/test'
 
-import { ART, EXECUTABLE } from './e2e/helpers'
+import { ART, EXECUTABLE } from './test/e2e/helpers'
 
 export default defineConfig({
-  testDir: 'e2e',
+  testDir: 'test/e2e',
   outputDir: `${ART}/artifacts`,
   timeout: 90_000,
   expect: { timeout: 15_000 },

@@ -4,7 +4,7 @@ Weave 是部署在 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deeps
 多 Agent 团队协作（任务编排/状态机/执行器发现）、知识库（导入/审核/注入）与审计能力。
 Phase 0 目标为可验证地基：执行器发现、状态机、持久化、知识导入。
 
-设计文档见 `doc/`（功能设计 FDD / 软件设计 SDD / 软件规格 TDD / 架构设计 / 任务规划 / 评审报告）。
+设计文档见 `doc/architecture/`（当前团队运行时设计、分层重构方案、任务规划）。
 
 ## 1. 工程形态（P0-BOOTSTRAP 定义）
 
@@ -20,7 +20,8 @@ weave/
 ├── vitest.config.ts        # Vitest 配置（node 环境，include src/plugins/weave/__tests__/**）
 ├── eslint.config.mjs       # ESLint 9 扁平配置（js + typescript-eslint 基础规则）
 ├── README.md               # 本文件
-├── doc/                    # 设计文档（规格来源）
+├── doc/                    # 架构与设计文档（doc/architecture 为当前有效设计）
+├── test/                   # e2e 与辅助脚本（test/e2e、test/scripts）
 └── src/
     └── plugins/weave/      # 插件源码根（任务规划中所有测试命令的路径前缀）
         ├── index.ts        # cordis 插件入口：{ name, inject, apply } + WeaveService（ctx.weave）
@@ -90,7 +91,7 @@ pnpm test:e2e:harness
 | `pnpm typecheck` | 类型检查（`tsc --noEmit`） |
 | `pnpm lint` | ESLint 检查 |
 
-测试路径约定（与 doc/04-任务规划文档.md 的 `testCommand` 对齐）：
+测试路径约定（与 doc/architecture/weave-team-task-plan.md 的 `testCommand` 对齐）：
 `pnpm vitest run src/plugins/weave/__tests__/<name>.test.ts`。
 Vitest 只收集 `src/plugins/weave/__tests__/**/*.test.ts`（见 `vitest.config.ts`），统一 node 环境。
 

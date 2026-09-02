@@ -1,6 +1,6 @@
-import { openPersistence } from '../dist/plugins/weave/persistence/persistence.js'
-import { TeamManager, DEFAULT_TEAMS_DIR } from '../dist/plugins/weave/team-manager.js'
-import { TeamPlanner, createPlanTasksHandler } from '../dist/plugins/weave/planner.js'
+import { openPersistence } from '../../dist/plugins/weave/persistence/persistence.js'
+import { TeamManager, DEFAULT_TEAMS_DIR } from '../../dist/plugins/weave/team-manager.js'
+import { TeamPlanner, createPlanTasksHandler } from '../../dist/plugins/weave/planner.js'
 
 const sessionId = process.env.WEAVE_SESSION_ID ?? 'session-ffc1e711-bdef-4aef-8e47-9c7d5193cb19'
 const teamId = 'changan'

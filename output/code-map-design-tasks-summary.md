@@ -23,7 +23,7 @@
 | T61 | `code/graph` / `code/chain` RPC 端点 + 惰性兜底单飞 | developer-3 | T60 | `web/query-service.ts`、`rpc.ts`（如需）、query-service 测试（追加） | `pnpm vitest run .../query-service.test.ts .../code-graph-query.test.ts` + `pnpm typecheck` |
 | T62 | 知识摘要条目（type=doc/source:code-map，幂等单条） | developer-1 | T59 | `code-map/summary-entry.ts`（不碰 reflection-service/knowledge-model） | `pnpm vitest run .../code-map-summary.test.ts` + `pnpm typecheck` |
 | T63 | client「代码图谱」视图（SVG 分层+聚焦+过滤+链高亮） | frontend-1 | T61 | `src/client/index.ts`、client-bundle 测试（追加不改既有断言） | `pnpm build` + `pnpm vitest run .../client-bundle.ui.test.tsx` + `pnpm typecheck` |
-| T64 | e2e harness（真实页面渲染/聚焦/过滤锚定） | tester-1 | T63 | `e2e/harness/code-graph.spec.ts`（新增） | `pnpm test:e2e:harness` |
+| T64 | e2e harness（真实页面渲染/聚焦/过滤锚定） | tester-1 | T63 | `test/e2e/harness/code-graph.spec.ts`（新增） | `pnpm test:e2e:harness` |
 | T65 | QA 全量回归 + §8 设计-实现一致性检视（收尾闸门） | qa | T59–T64 | 新增 `doc/review-report-code-map.md` | `pnpm vitest run` + `pnpm typecheck && pnpm lint` + `pnpm test:ui` + `pnpm code:scan && pnpm test:e2e:harness` |
 
 并行度：T59/T60/T61 主干串行；T62 与 T59 同人不同文件（T59 后即可并行）；T63 等 T61；T64/T65 收尾。

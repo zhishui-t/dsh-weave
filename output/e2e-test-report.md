@@ -6,10 +6,10 @@
 
 | 项 | 说明 |
 | --- | --- |
-| `e2e/harness/`（6 spec + fixtures，54 用例） | stub RPC 确定性层：虚拟域 `https://weave.test` + ModuleLoader 桩 + `__WEAVE_RPC__` 信封注册表；被测对象为 `dist/client/index.js` 真实构建产物。CI 常驻，无需真实服务器。`pnpm test:e2e:harness` |
-| `e2e/live/console-live.spec.ts`（10 用例） | 真实 127.0.0.1:3080 无 mock 层；env 门控 `WEAVE_E2E_LIVE=1` + 服务器可达探测，未启用时 10 skipped（exit 0）。`WEAVE_E2E_LIVE=1 pnpm test:e2e:live` |
-| `e2e/helpers.ts` | 保留 BASE_URL/observe/shot/ROUTES 约定；截图/报告目录迁至 `.artifacts/weave-ui/e2e/`；新增 `LIVE_ENABLED`/`probeServer` |
-| `playwright.config.ts` | 新增 `forbidOnly`；outputDir 经 ART 迁至 `.artifacts/weave-ui/e2e/artifacts` |
+| `test/e2e/harness/`（6 spec + fixtures，54 用例） | stub RPC 确定性层：虚拟域 `https://weave.test` + ModuleLoader 桩 + `__WEAVE_RPC__` 信封注册表；被测对象为 `dist/client/index.js` 真实构建产物。CI 常驻，无需真实服务器。`pnpm test:e2e:harness` |
+| `test/e2e/live/console-live.spec.ts`（10 用例） | 真实 127.0.0.1:3080 无 mock 层；env 门控 `WEAVE_E2E_LIVE=1` + 服务器可达探测，未启用时 10 skipped（exit 0）。`WEAVE_E2E_LIVE=1 pnpm test:e2e:live` |
+| `test/e2e/helpers.ts` | 保留 BASE_URL/observe/shot/ROUTES 约定；截图/报告目录迁至 `.artifacts/weave-ui/test/e2e/`；新增 `LIVE_ENABLED`/`probeServer` |
+| `playwright.config.ts` | 新增 `forbidOnly`；outputDir 经 ART 迁至 `.artifacts/weave-ui/test/e2e/artifacts` |
 | 清理 | 删除 e2e 根目录 10 个零散探针（硬编码文案、一次性诊断，价值已收编进新套件）与旧 `harness/console-harness.spec.ts`（拆分为 6 个 spec） |
 
 ## 2. 覆盖范围（对照任务四项）
@@ -48,11 +48,11 @@
 | `pnpm test:e2e:harness` | ✅ **54/54**（41.4s，workers=1 确定性） |
 | `WEAVE_E2E_LIVE=1 pnpm test:e2e:live` | ✅ **10/10**（18.8s） |
 | `pnpm test:e2e:live`（无 env，门控关闭） | ✅ 10 skipped（exit 0） |
-| `pnpm exec eslint e2e/ playwright.config.ts` | ✅ 0 error 0 warning |
+| `pnpm exec eslint test/e2e/ playwright.config.ts` | ✅ 0 error 0 warning |
 
 live 完整性判据：HTTP≥400 = 0；RPC 失败 = 0；页面未捕获异常 = 0。
 RPC ok 统计：snapshot×39、provider/list×18、settings/describe×17、audit/list×15、knowledge/list×14、task/list×12、team/delete×8、knowledge/graph×8、session/revisions×6、team/import×3（全部 ok=true）。
-截图 15 张：`.artifacts/weave-ui/e2e/live-*.png`；明细报告：`.artifacts/weave-ui/e2e/live-report.json`。
+截图 15 张：`.artifacts/weave-ui/test/e2e/live-*.png`；明细报告：`.artifacts/weave-ui/test/e2e/live-report.json`。
 
 ## 4. 缺陷与测试性发现
 

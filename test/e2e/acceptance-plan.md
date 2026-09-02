@@ -29,7 +29,7 @@
 ### 目录规划（t5 时全部为新增文件）
 
 ```
-e2e/
+test/e2e/
   harness/host.js               # __ModuleLoader__ 桩 + moduleRequire(react/react-dom→window.UMD) + connection 桩
   fixtures/rpc-mock.ts          # 场景化 mock：endpoint→envelope 注册表（window.__WEAVE_RPC__）
   fixtures/seed.ts              # 八页共用假数据工厂（团队/任务 DAG/知识候选/绑定/审计事件）
@@ -52,8 +52,8 @@ playwright.config.ts            # testDir:'e2e'，无需 webServer
 | 用途 | 路径 | 入库策略 |
 | --- | --- | --- |
 | 失败诊断件（trace/video/failure screenshot） | `test-results/`（playwright 默认） | gitignore，不入库 |
-| 八页定妆照（人工验收比对） | `e2e/artifacts/gallery/<page>.png`（1280×900） | gallery.spec 每次运行覆盖输出 |
-| 像素 diff 基线（暂不启用） | `e2e/__screenshots__/`（playwright 默认） | t3 后界面仍会迭代，先不开 toHaveScreenshot；启用时单独 commit |
+| 八页定妆照（人工验收比对） | `test/e2e/artifacts/gallery/<page>.png`（1280×900） | gallery.spec 每次运行覆盖输出 |
+| 像素 diff 基线（暂不启用） | `test/e2e/__screenshots__/`（playwright 默认） | t3 后界面仍会迭代，先不开 toHaveScreenshot；启用时单独 commit |
 
 ## 4. 八页验收断言清单
 
@@ -92,14 +92,14 @@ status 过滤 4 态（candidate/active/deprecated/superseded）、layer 过滤 4
 ## 5. t5 启动前置条件（等 t4 completed 后执行）
 
 1. 新增 devDependencies：`@playwright/test`；首次运行前 `npx playwright install chromium`。
-2. package.json 增加 script `test:e2e`；`.gitignore` 增加 `test-results/`、`e2e/artifacts/`。
+2. package.json 增加 script `test:e2e`；`.gitignore` 增加 `test-results/`、`test/e2e/artifacts/`。
 3. 全部用例走 fixture mock 数据，不污染真实持久化状态；不修改 `src/client`、`rpc.ts`、`query-service.ts`。
 
 ## 6. 落地记录（t5 交付 @ 8e91d67）
 
 最终实现与预研方案的差异与结论：
 
-- **双层结构**：`e2e/harness/`（虚拟域 + ModuleLoader 桩 + `__WEAVE_RPC__` 信封注册表 stub，确定性验证 UI 逻辑）与 `e2e/live/`（真实 http://127.0.0.1:3080 真实 Connection RPC，无 mock）。两层均默认执行：`pnpm test:e2e:harness` / `pnpm test:e2e:live` / 合并 `pnpm test:e2e`。
+- **双层结构**：`test/e2e/harness/`（虚拟域 + ModuleLoader 桩 + `__WEAVE_RPC__` 信封注册表 stub，确定性验证 UI 逻辑）与 `test/e2e/live/`（真实 http://127.0.0.1:3080 真实 Connection RPC，无 mock）。两层均默认执行：`pnpm test:e2e:harness` / `pnpm test:e2e:live` / 合并 `pnpm test:e2e`。
 - **live 层为主验收**（队长要求），harness 层为稳定回归层；本机 Chromium 经 executablePath 指定，依赖固定 @playwright/test 1.62.1。
 - 截图/trace 落 `.artifacts/weave-ui/`（已 gitignore）；汇总报告 `.artifacts/weave-ui/live-report.json`。
 

@@ -41,8 +41,8 @@
     "test:client-ui": "pnpm build && pnpm vitest run src/plugins/weave/__tests__/client-bundle.ui.test.tsx",
     "test:ui": "pnpm vitest run src/plugins/weave/__tests__/dashboard.test.tsx src/plugins/weave/__tests__/dag-panel.test.tsx src/plugins/weave/__tests__/import-ui.test.tsx src/plugins/weave/__tests__/client-bundle.ui.test.tsx",
     "test:e2e": "playwright test",
-    "test:e2e:live": "playwright test e2e/live",
-    "test:e2e:harness": "playwright test e2e/harness"
+    "test:e2e:live": "playwright test test/e2e/live",
+    "test:e2e:harness": "playwright test test/e2e/harness"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
