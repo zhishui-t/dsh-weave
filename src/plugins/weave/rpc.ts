@@ -272,6 +272,17 @@ export function createWeaveRpcHandler(
         return success({ teams: resolvedDeps.teamManager.listTeams().map(serializeTeam) })
       }
 
+      if (endpoint === 'team/current') {
+        const input = objectPayload(payload)
+        const sessionId = requireString(input, 'sessionId')
+        const selection = await resolvedDeps.teamManager.getSelection(sessionId)
+        const resolved = selection ? await resolvedDeps.teamManager.resolveSessionTeam(sessionId) : null
+        return success({
+          selection,
+          ...(resolved ? { team: resolved.team, via: resolved.via } : {}),
+        })
+      }
+
       if (endpoint === 'team/set-default') {
         const input = objectPayload(payload)
         const teamId = requireString(input, 'teamId')
