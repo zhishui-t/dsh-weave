@@ -12,6 +12,10 @@ import type { AuditLog } from '../audit/audit-log.js'
 import type { ReflectionService } from '../reflection-service.js'
 import { TeamPlanner, createPlanTasksHandler } from '../planner.js'
 import { CaptainTurnGuard } from '../captain-turn-guard.js'
+import { ProjectTeamStore } from '../team/project-team-store.js'
+import { Mailbox } from '../team/mailbox.js'
+import { ReflectionSink } from '../team/reflection-sink.js'
+import { OnDutyController } from './on-duty.js'
 import {
   createWeaveNoticeMessage,
   hasPendingToolCall,
@@ -41,6 +45,10 @@ export interface TeamRuntime {
   notifyWeaveSession(sessionId: string, text: string, session?: NoticeSessionLike): void
   resolveNoticeSession(sessionId: string): NoticeSessionLike | undefined
   planTasks: ReturnType<typeof createPlanTasksHandler>
+  projectTeamStore: ProjectTeamStore
+  mailbox: Mailbox
+  reflectionSink: ReflectionSink
+  onDuty: OnDutyController
   disposeScheduler(): void
 }
 
@@ -125,6 +133,15 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     },
   })
 
+  const projectTeamStore = new ProjectTeamStore()
+  const mailbox = new Mailbox()
+  const reflectionSink = new ReflectionSink(reflection)
+  const onDuty = new OnDutyController({
+    hasActiveWork: async (sessionId) => scheduler.memberRuntime(sessionId).length > 0,
+    hasUnread: async (sessionId) => (await mailbox.unread(process.cwd(), sessionId, Mailbox.CAPTAIN)).length > 0,
+    notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
+  })
+
   deps.executionHooks = {
     cancelTask: async (taskId) => scheduler.onExternalCancel(taskId),
     resumeTask: async (taskId) => scheduler.onExternalRetry(taskId),
@@ -149,6 +166,10 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     notifyWeaveSession,
     resolveNoticeSession,
     planTasks,
+    projectTeamStore,
+    mailbox,
+    reflectionSink,
+    onDuty,
     disposeScheduler: () => scheduler.dispose(),
   }
 }
