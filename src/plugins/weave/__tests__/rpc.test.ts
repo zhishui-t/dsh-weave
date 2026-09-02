@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { WeavePersistence } from '../persistence/persistence'
-import { TeamManager, type ExecutorLookup } from '../team-manager'
+import { TeamManager, type ExecutorLookup } from '../team/team-manager.js'
 import { createWeaveRpcHandler, registerWeaveRpc, WEAVE_RPC_CHANNEL, type ExecutorRunsQuery } from '../rpc'
 import { AuditLog } from '../audit/audit-log'
 import { WeaveMcp } from '../cli-mcp'

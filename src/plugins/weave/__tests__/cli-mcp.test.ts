@@ -113,7 +113,7 @@ async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNo
     persistence: p,
     statusNotifier,
     audit,
-    teamManager: new (await import('../team-manager')).TeamManager(registry2, { teamsDir: rootDir, persistence: p }),
+    teamManager: new (await import('../team/team-manager')).TeamManager(registry2, { teamsDir: rootDir, persistence: p }),
     executorRegistry: registry2,
     feedbackRouter: router,
     dagRepository: new DagRepository(p),
@@ -223,7 +223,7 @@ describe('WeaveMcp（MCP Tool 层，治理面）', () => {
     // WeaveMcp 在动作时读取 deps.executionHooks —— 通过构建同款实例注入 spy。
     const hookMcp = new WeaveMcp({
       persistence: p,
-      teamManager: new (await import('../team-manager')).TeamManager(new ExecutorRegistry(), { teamsDir: '/nonexistent', persistence: p }),
+      teamManager: new (await import('../team/team-manager')).TeamManager(new ExecutorRegistry(), { teamsDir: '/nonexistent', persistence: p }),
       executorRegistry: new ExecutorRegistry(),
       feedbackRouter: new FeedbackRouter({ tasks: p.tasks, feedback: p.feedback, sessionTracker: new SessionTracker(p.feedback) }),
       dagRepository: new DagRepository(p),
@@ -469,7 +469,7 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
     registry.load({ subagents: ctx } as never)
     const mcp = new WeaveMcp({
       persistence: p,
-      teamManager: new (await import('../team-manager')).TeamManager(registry, { teamsDir: rootDir, persistence: p }),
+      teamManager: new (await import('../team/team-manager')).TeamManager(registry, { teamsDir: rootDir, persistence: p }),
       executorRegistry: registry,
       feedbackRouter: new FeedbackRouter({ tasks: p.tasks, feedback: p.feedback, sessionTracker: new SessionTracker(p.feedback) }),
       dagRepository: new DagRepository(p),

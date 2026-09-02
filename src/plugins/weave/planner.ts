@@ -1,5 +1,5 @@
 import type { WeavePersistence } from './persistence/persistence.js'
-import type { TeamConfig, TeamManager } from './team-manager.js'
+import type { TeamConfig, TeamManager } from './team/team-manager.js'
 import type { TaskStatus } from './state/types.js'
 import { WeaveError } from './state/weave-error.js'
 

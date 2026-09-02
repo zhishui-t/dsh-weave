@@ -22,7 +22,7 @@ import { KnowledgeStore, type CreateCandidateInput } from '../knowledge-model.js
 import { KnowledgeReviewService } from '../knowledge-review.js'
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
 import { SessionTracker } from '../session-tracker.js'
-import { TeamManager } from '../team-manager.js'
+import { TeamManager } from '../team/team-manager.js'
 import { WeaveError } from '../state/weave-error.js'
 import { createWeaveRpcHandler } from '../rpc.js'
 import { createWeaveQueryServiceFromCliDeps, WeaveQueryService } from '../web/query-service.js'

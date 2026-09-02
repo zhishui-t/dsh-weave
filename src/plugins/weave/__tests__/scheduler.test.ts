@@ -6,7 +6,7 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { SingleWriterQueue } from '../persistence/single-writer-queue'
-import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team-manager'
+import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
 import { TeamPlanner } from '../planner'
 import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduler'
 import { TaskStatusNotifier } from '../task-status-notifier'

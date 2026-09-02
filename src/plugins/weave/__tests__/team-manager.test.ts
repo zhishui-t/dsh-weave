@@ -11,7 +11,7 @@ import {
   TeamManager,
   type ExecutorLookup,
   type TeamConfig,
-} from '../team-manager'
+} from '../team/team-manager.js'
 
 /* ------------------------------- 夹具（与 doc 样例同构） ------------------------------- */
 

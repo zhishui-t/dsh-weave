@@ -27,7 +27,7 @@ import { WeaveMcp } from '../cli-mcp'
 import type { CliMcpDeps } from '../cli-mcp'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../session-tracker'
-import { TeamManager } from '../team-manager'
+import { TeamManager } from '../team/team-manager.js'
 import * as weavePlugin from '../index'
 
 /**

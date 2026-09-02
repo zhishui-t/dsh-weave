@@ -12,7 +12,7 @@ import type { WeaveQueryService } from './web/query-service.js'
 import { WeaveError } from './state/weave-error.js'
 import { DEFAULT_PROVIDERS_FILE, type StoredProviderConfig } from './acp/provider-store.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides, saveWeaveSettingsOverrides } from './settings-store.js'
-import type { TeamConfig } from './team-manager.js'
+import type { TeamConfig } from './team/team-manager.js'
 
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
 export const WEAVE_RPC_CHANNEL = '/dsh-weave'

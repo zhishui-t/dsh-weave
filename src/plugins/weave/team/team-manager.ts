@@ -4,11 +4,11 @@ import { join, resolve, sep } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
-import { WeaveError } from './state/weave-error.js'
-import { classifyProvider, type ExecutorInfo } from './executor-registry.js'
-import { ProviderStore } from './acp/provider-store.js'
-import type { WeavePersistence } from './persistence/persistence.js'
-import { TEAM_BINDINGS_TABLE_DDL } from './persistence/schemas.js'
+import { WeaveError } from '../state/weave-error.js'
+import { classifyProvider, type ExecutorInfo } from '../executor-registry.js'
+import { ProviderStore } from '../acp/provider-store.js'
+import type { WeavePersistence } from '../persistence/persistence.js'
+import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'
 export { TEAM_BINDINGS_TABLE_DDL } // 兼容旧导入路径
 
 /* ------------------------------------------------------------------ */

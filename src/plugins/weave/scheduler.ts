@@ -1,5 +1,5 @@
 import type { SubagentTaskOutput } from './delegation-service.js'
-import type { RoleConfig, TeamConfig } from './team-manager.js'
+import type { RoleConfig, TeamConfig } from './team/team-manager.js'
 import type { WeavePersistence } from './persistence/persistence.js'
 import { toDagStatus } from './dag/repository.js'
 import { TaskStateMachine } from './state/task-state-machine.js'
