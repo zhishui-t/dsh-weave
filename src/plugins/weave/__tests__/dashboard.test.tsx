@@ -19,7 +19,7 @@ import {
   dshSettingsEntry,
   isKnownRoute,
   normalizePath,
-} from '../dashboard'
+} from '../ui/dashboard'
 
 describe('DASH：路由表与路径规范化（架构 12.1）', () => {
   it('路由表含 7 条且路径与架构 12.1 一致', () => {

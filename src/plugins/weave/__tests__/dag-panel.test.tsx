@@ -24,7 +24,7 @@ import {
   fitDagLayout,
   isCancelable,
   relatedTaskIds,
-} from '../dag/dag-panel'
+} from '../ui/dag-panel'
 import { DagRepository, type DagRepositoryOptions } from '../dag/repository'
 import { WeavePersistence } from '../persistence/persistence'
 import { SingleWriterQueue } from '../persistence/single-writer-queue'

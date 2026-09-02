@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
-import type { DagRepository } from './repository.js'
+import type { DagRepository } from '../dag/repository.js'
 
 /** 布局基准常量（轻量 SVG 视图）。作为 fitDagLayout 的缺省 base，保留导出供 client 侧同构对齐。 */
 export const CELL_W = 200
