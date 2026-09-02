@@ -155,7 +155,19 @@ test.describe.serial('live: Weave 控制台真实 Web 验收', () => {
       // 关闭控制台回会话视图：寻找「Weave 团队」页签（宿主渲染的 conversation.view 槽位）
       await page.getByTestId('weave-close').click()
       await page.getByTestId('weave-dashboard').waitFor({ state: 'detached', timeout: 10_000 })
-      const teamTab = page.getByText('Weave 团队', { exact: false }).first()
+      // If the current view is the empty/new-session view, open an existing
+      // conversation first so the conversation.view slot is actually mounted.
+      let teamTab = page.getByText('Weave 团队', { exact: false }).first()
+      if (!(await teamTab.isVisible().catch(() => false))) {
+        const sessionRows = page.locator('[role="treeitem"][class*="sessionRow"]')
+        const rowCount = await sessionRows.count()
+        console.log(`  会话行数: ${rowCount}`)
+        if (rowCount > 1) {
+          await sessionRows.nth(1).click()
+          await page.waitForTimeout(3000)
+          teamTab = page.getByText('Weave 团队', { exact: false }).first()
+        }
+      }
       if (await teamTab.isVisible().catch(() => false)) {
         await teamTab.click()
         await page.getByTestId('weave-session-panel').waitFor({ state: 'visible', timeout: 15_000 })
