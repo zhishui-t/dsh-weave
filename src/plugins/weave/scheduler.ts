@@ -141,6 +141,8 @@ export class WeaveScheduler {
   readonly #activeByRole = new Map<string, MemberRuntimeInfo>()
   /** dagId → 泵序列化链（避免同一 DAG 并发泵）。 */
   readonly #chains = new Map<string, Promise<void>>()
+  /** taskId → 派发守卫：同一任务未 settle 前禁止重复 start。 */
+  readonly #dispatchGuards = new Map<string, { settled: boolean }>()
 
   constructor(options: WeaveSchedulerOptions) {
     this.#opts = options
@@ -377,6 +379,18 @@ export class WeaveScheduler {
 
   /* ------------------------------- 调度主环 ------------------------------- */
 
+  #beginDispatch(taskId: string): boolean {
+    const existing = this.#dispatchGuards.get(taskId)
+    if (existing !== undefined && !existing.settled) return false
+    this.#dispatchGuards.set(taskId, { settled: false })
+    return true
+  }
+
+  #endDispatch(taskId: string): void {
+    this.#dispatchGuards.delete(taskId)
+  }
+
+
   #enqueue(dagId: string): void {
     const previous = this.#chains.get(dagId) ?? Promise.resolve()
     const next = previous
@@ -464,6 +478,9 @@ export class WeaveScheduler {
         await this.#updateTask(task.id, { status: 'RUNNING' })
       }
 
+      // 派发守卫：同一任务未 settle 前禁止再次 start。
+      if (!this.#beginDispatch(task.id)) continue
+
       this.#activeByRole.set(key, {
         role_id: role.id,
         task_id: task.id,
@@ -477,6 +494,7 @@ export class WeaveScheduler {
       // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
       // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
       void this.#executeReady(run, task, role, acquiredHook).finally(() => {
+        this.#endDispatch(task.id)
         this.#activeByRole.delete(key)
         for (const activeDagId of this.#runs.keys()) {
           this.#enqueue(activeDagId)

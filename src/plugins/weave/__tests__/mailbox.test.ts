@@ -19,7 +19,7 @@ describe('Mailbox', () => {
     await box.append(projectRoot, 'session-a', 'captain', { id: 'm1', from: 'dev', to: 'captain', content: 'done', ts: 1 })
     const unread = await box.unread(projectRoot, 'session-a', 'captain')
     expect(unread).toHaveLength(1)
-    expect(unread[0].content).toBe('done')
+    expect(unread[0]!.content).toBe('done')
   })
 
   it('claim then ack removes from unread', async () => {
