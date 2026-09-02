@@ -28,7 +28,7 @@ import {
 import { DagRepository, type DagRepositoryOptions } from '../dag/repository'
 import { WeavePersistence } from '../persistence/persistence'
 import { SingleWriterQueue } from '../persistence/single-writer-queue'
-import { TaskStatusNotifier } from '../task-status-notifier'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier'
 import { AuditLog } from '../audit/index'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types'
 

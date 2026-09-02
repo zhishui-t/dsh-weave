@@ -1,8 +1,8 @@
-import type { ExecutorRegistry } from './executor-registry.js'
+import type { ExecutorRegistry } from '../executor-registry.js'
 import type { SessionTracker } from './session-tracker.js'
-import type { TaskRecord } from './state/types.js'
-import { WeaveError } from './state/weave-error.js'
-import type { ExecutorProviderRegistry, ExecutorRuntimeOptions } from './executors/executor-provider.js'
+import type { TaskRecord } from '../state/types.js'
+import { WeaveError } from '../state/weave-error.js'
+import type { ExecutorProviderRegistry, ExecutorRuntimeOptions } from '../executors/executor-provider.js'
 
 /**
  * P0-DELEG-007 —— DelegationService：基于 `ctx.subagents.start` 的统一委托执行。

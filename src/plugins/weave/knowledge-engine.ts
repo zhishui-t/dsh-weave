@@ -1,4 +1,4 @@
-import type { KnowledgeInjectionLimits } from './delegation-service.js'
+import type { KnowledgeInjectionLimits } from './scheduling/delegation-service.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeMeta, type Visibility } from './knowledge-model.js'
 import { WeaveError } from './state/weave-error.js'
 

@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { WeaveDatabase } from './persistence/weave-database.js'
-import { AuditLog } from './audit/audit-log.js'
+import type { WeaveDatabase } from '../persistence/weave-database.js'
+import { AuditLog } from '../audit/audit-log.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
-import type { TaskStatus } from './state/types.js'
+import type { TaskStatus } from '../state/types.js'
 
 /**
  * P0-RECOVERY-018 崩溃恢复一致性 — 对应 SDD 6.6 / AC-RECOVERY-001。

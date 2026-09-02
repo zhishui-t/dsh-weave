@@ -1,5 +1,5 @@
-import type { ContentBlockLike } from '../delegation-service.js'
-import type { DelegationRunLike } from '../delegation-service.js'
+import type { ContentBlockLike } from '../scheduling/delegation-service.js'
+import type { DelegationRunLike } from '../scheduling/delegation-service.js'
 
 export type ExecutorStopReason =
   | 'completed'

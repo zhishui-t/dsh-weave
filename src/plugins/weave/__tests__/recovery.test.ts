@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
 import { AuditLog } from '../audit/audit-log.js'
 import { KnowledgeStore } from '../knowledge-model.js'
-import { RecoveryService } from '../recovery.js'
-import { TaskStatusNotifier } from '../task-status-notifier.js'
+import { RecoveryService } from '../scheduling/recovery.js'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 
 const insertTask = async (
   p: WeavePersistence,

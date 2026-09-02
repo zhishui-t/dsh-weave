@@ -7,10 +7,10 @@ import {
   FeedbackRouter,
   DEFAULT_FEEDBACK_CONFIG,
   recognizeIntent,
-} from '../feedback-router'
+} from '../scheduling/feedback-router'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
-import { SessionTracker } from '../session-tracker'
-import { TaskStatusNotifier } from '../task-status-notifier'
+import { SessionTracker } from '../scheduling/session-tracker'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier'
 import { AuditLog } from '../audit/audit-log'
 import type { TaskRecord } from '../state/types'
 

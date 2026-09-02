@@ -7,7 +7,7 @@ import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
 import { applyRuntimeIntents, BUILTIN_ACP_EXTENSIONS, negotiateExtensions, type AcpCapabilityApplication, type AcpExtensionCallContext, type AcpExtensionProbeInput, type AcpIntentKey, type AcpProviderExtension, type ExtensionNegotiationEntry } from './provider-extension.js'
 import type { ExecutorCapabilities, ExecutorProviderMetadata, ExecutorRun, ExecutorSessionConfig, ExecutorStartRequest } from '../executors/executor-provider.js'
-import type { DelegationRunLike } from '../delegation-service.js'
+import type { DelegationRunLike } from '../scheduling/delegation-service.js'
 
 export type AcpExecutorEventType =
   | 'status'

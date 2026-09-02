@@ -8,13 +8,13 @@ import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './rpc.js'
 import { KnowledgeEngine } from './knowledge-engine.js'
-import { DelegationService } from './delegation-service.js'
-import { SessionTracker } from './session-tracker.js'
-import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './planner.js'
-import { WeaveScheduler, subjectLabel } from './scheduler.js'
+import { DelegationService } from './scheduling/delegation-service.js'
+import { SessionTracker } from './scheduling/session-tracker.js'
+import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './scheduling/planner.js'
+import { WeaveScheduler, subjectLabel } from './scheduling/scheduler.js'
 import { ReflectionService } from './reflection-service.js'
-import { createExecutorEventNotifier } from './session-stream.js'
-import { TaskStatusNotifier } from './task-status-notifier.js'
+import { createExecutorEventNotifier } from './scheduling/session-stream.js'
+import { TaskStatusNotifier } from './scheduling/task-status-notifier.js'
 import {
   createPreStepDelegationHook,
   createWeaveNoticeMessage,
@@ -22,9 +22,9 @@ import {
   notifySession,
   type NoticeSessionLike,
   type WeaveNoticeMessage,
-} from './session-delegation.js'
+} from './scheduling/session-delegation.js'
 import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
-import { CaptainTurnGuard } from './captain-turn-guard.js'
+import { CaptainTurnGuard } from './scheduling/captain-turn-guard.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'

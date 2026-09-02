@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TaskStatusNotifier, type TaskStatusChange } from '../task-status-notifier.js'
+import { TaskStatusNotifier, type TaskStatusChange } from '../scheduling/task-status-notifier.js'
 
 const change = (overrides: Partial<TaskStatusChange> = {}): TaskStatusChange => ({
   taskId: 'task-1',

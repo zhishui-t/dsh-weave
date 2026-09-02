@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import type { WeavePersistence } from './persistence/persistence.js'
+import type { WeavePersistence } from '../persistence/persistence.js'
 
 /** 非终态任务集合：只要还有这些状态，队长回合就不应结束。 */
 const TERMINAL_STATUSES = [

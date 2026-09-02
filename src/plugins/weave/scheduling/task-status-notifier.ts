@@ -1,4 +1,4 @@
-import type { TaskStatus } from './state/types.js'
+import type { TaskStatus } from '../state/types.js'
 
 /**
  * 任务状态变更通知单出口（doc/05 §6.4 P1-D）。

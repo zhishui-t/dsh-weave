@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { DelegationService } from '../delegation-service'
+import { DelegationService } from '../scheduling/delegation-service'
 import { ExecutorRegistry } from '../executor-registry'
 import {
   KnowledgeEngine,
@@ -12,7 +12,7 @@ import {
 } from '../knowledge-engine'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeScope } from '../knowledge-model'
 import { openPersistence } from '../persistence/index'
-import { SessionTracker } from '../session-tracker'
+import { SessionTracker } from '../scheduling/session-tracker'
 import type { TaskRecord } from '../state/types'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 

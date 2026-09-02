@@ -1,4 +1,4 @@
-import type { WeaveDatabase } from './persistence/weave-database.js'
+import type { WeaveDatabase } from '../persistence/weave-database.js'
 
 /**
  * TDD 1.5.5 修订上下文记录。

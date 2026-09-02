@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import type { TeamConfig } from './team/team-manager.js'
+import type { TeamConfig } from '../team/team-manager.js'
 
 /* ------------------------------------------------------------------ */
 /* 会话控制通道：自然语言团队启停 + 会话 notice 通知。                  */

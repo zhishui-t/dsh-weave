@@ -1,13 +1,13 @@
 import type { SubagentTaskOutput } from './delegation-service.js'
-import type { RoleConfig, TeamConfig } from './team/team-manager.js'
-import type { WeavePersistence } from './persistence/persistence.js'
-import { toDagStatus } from './dag/repository.js'
-import { TaskStateMachine } from './state/task-state-machine.js'
-import type { TaskDag, TaskRecord, TaskStatus } from './state/types.js'
-import { WeaveError } from './state/weave-error.js'
+import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
+import type { WeavePersistence } from '../persistence/persistence.js'
+import { toDagStatus } from '../dag/repository.js'
+import { TaskStateMachine } from '../state/task-state-machine.js'
+import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
+import { WeaveError } from '../state/weave-error.js'
 import type { NoticeSessionLike } from './session-delegation.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
-import type { AuditLog } from './audit/audit-log.js'
+import type { AuditLog } from '../audit/audit-log.js'
 
 /**
  * 队长调度器（会话即团队·队长调度模式）：

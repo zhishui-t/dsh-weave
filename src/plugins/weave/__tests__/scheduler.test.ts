@@ -7,11 +7,11 @@ import { stringify as stringifyYaml } from 'yaml'
 import { WeavePersistence } from '../persistence/persistence'
 import { SingleWriterQueue } from '../persistence/single-writer-queue'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
-import { TeamPlanner } from '../planner'
-import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduler'
-import { TaskStatusNotifier } from '../task-status-notifier'
+import { TeamPlanner } from '../scheduling/planner'
+import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduling/scheduler'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier'
 import { AuditLog } from '../audit/index'
-import type { SubagentTaskOutput } from '../delegation-service'
+import type { SubagentTaskOutput } from '../scheduling/delegation-service'
 
 const lookup: ExecutorLookup = {
   get(id) {

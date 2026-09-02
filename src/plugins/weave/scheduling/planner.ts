@@ -1,7 +1,7 @@
-import type { WeavePersistence } from './persistence/persistence.js'
-import type { TeamConfig, TeamManager } from './team/team-manager.js'
-import type { TaskStatus } from './state/types.js'
-import { WeaveError } from './state/weave-error.js'
+import type { WeavePersistence } from '../persistence/persistence.js'
+import type { TeamConfig, TeamManager } from '../team/team-manager.js'
+import type { TaskStatus } from '../state/types.js'
+import { WeaveError } from '../state/weave-error.js'
 
 /**
  * 队长规划器（会话即团队·队长调度模式）：

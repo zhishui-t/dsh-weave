@@ -8,7 +8,7 @@ import { AuditLog } from '../audit/audit-log'
 import { CircuitBreaker } from '../safety/circuit-breaker'
 import { DagRepository } from '../dag/repository'
 import { ExecutorRegistry } from '../executor-registry'
-import { FeedbackRouter } from '../feedback-router'
+import { FeedbackRouter } from '../scheduling/feedback-router'
 import { KnowledgeReviewService } from '../knowledge-review'
 import { KnowledgeStore } from '../knowledge-model'
 import {
@@ -26,7 +26,7 @@ import {
 import { WeaveMcp } from '../cli-mcp'
 import type { CliMcpDeps } from '../cli-mcp'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
-import { SessionTracker } from '../session-tracker'
+import { SessionTracker } from '../scheduling/session-tracker'
 import { TeamManager } from '../team/team-manager.js'
 import * as weavePlugin from '../index'
 

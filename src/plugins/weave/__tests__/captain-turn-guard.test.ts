@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CaptainTurnGuard } from '../captain-turn-guard.js'
+import { CaptainTurnGuard } from '../scheduling/captain-turn-guard.js'
 import { WeavePersistence } from '../persistence/persistence.js'
 
 describe('CaptainTurnGuard', () => {

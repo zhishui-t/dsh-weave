@@ -3,7 +3,7 @@ import type { WeavePersistence } from '../persistence/persistence.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskEdge, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
-import type { TaskStatusNotifier } from '../task-status-notifier.js'
+import type { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 import type { AuditLog } from '../audit/audit-log.js'
 
 /**

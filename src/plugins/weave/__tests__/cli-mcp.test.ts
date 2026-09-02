@@ -9,12 +9,12 @@ import { WeaveMcp } from '../cli-mcp'
 import { CircuitBreaker } from '../safety/circuit-breaker'
 import { DagRepository } from '../dag/repository'
 import { ExecutorRegistry } from '../executor-registry'
-import { FeedbackRouter } from '../feedback-router'
+import { FeedbackRouter } from '../scheduling/feedback-router'
 import { KnowledgeReviewService } from '../knowledge-review'
 import { KnowledgeStore } from '../knowledge-model'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
-import { SessionTracker } from '../session-tracker'
-import { TaskStatusNotifier } from '../task-status-notifier'
+import { SessionTracker } from '../scheduling/session-tracker'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier'
 import type { GraphService } from '../graph/graph-service'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 
@@ -314,7 +314,7 @@ describe('WeaveCli（/weave 命令）', () => {
     const seeded = await seedTask(p, { description: '任务', project_id: 'proj-r', version: 'v1' })
     const taskId = seeded.tasks[0]!.id
     await p.tasks.run((db) => db.prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?").run(taskId))
-    const router = new (await import('../feedback-router')).FeedbackRouter({
+    const router = new (await import('../scheduling/feedback-router')).FeedbackRouter({
       tasks: p.tasks,
       feedback: p.feedback,
       sessionTracker: new SessionTracker(p.feedback),

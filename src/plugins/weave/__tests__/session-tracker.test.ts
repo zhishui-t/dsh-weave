@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPersistence, type WeavePersistence } from '../persistence/index.js'
-import { SessionTracker, type RevisionRecord } from '../session-tracker.js'
+import { SessionTracker, type RevisionRecord } from '../scheduling/session-tracker.js'
 
 const isoRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 

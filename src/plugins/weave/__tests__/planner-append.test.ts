@@ -6,9 +6,9 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
-import { TeamPlanner } from '../planner'
-import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduler'
-import type { SubagentTaskOutput } from '../delegation-service'
+import { TeamPlanner } from '../scheduling/planner'
+import { WeaveScheduler, type SchedulerDelegationLike } from '../scheduling/scheduler'
+import type { SubagentTaskOutput } from '../scheduling/delegation-service'
 
 const lookup: ExecutorLookup = {
   get(id) {

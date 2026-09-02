@@ -9,10 +9,10 @@ import { createWeaveRpcHandler, registerWeaveRpc, WEAVE_RPC_CHANNEL, type Execut
 import { AuditLog } from '../audit/audit-log'
 import { WeaveMcp } from '../cli-mcp'
 import { DagRepository } from '../dag/repository'
-import { FeedbackRouter } from '../feedback-router'
+import { FeedbackRouter } from '../scheduling/feedback-router'
 import { KnowledgeStore } from '../knowledge-model'
 import { KnowledgeReviewService } from '../knowledge-review'
-import { SessionTracker } from '../session-tracker'
+import { SessionTracker } from '../scheduling/session-tracker'
 import { WeaveQueryService } from '../web/query-service'
 
 const lookup: ExecutorLookup = {

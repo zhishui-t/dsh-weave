@@ -14,11 +14,11 @@ import {
   type RoleConfig,
   type TaskContext,
   type TeamConfigLike,
-} from '../delegation-service'
+} from '../scheduling/delegation-service'
 import { ExecutorProviderRegistry } from '../executors/executor-provider'
 import { ExecutorRegistry } from '../executor-registry'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
-import { SessionTracker } from '../session-tracker'
+import { SessionTracker } from '../scheduling/session-tracker'
 import type { TaskRecord } from '../state/types'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 

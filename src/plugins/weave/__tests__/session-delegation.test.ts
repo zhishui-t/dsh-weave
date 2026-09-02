@@ -13,7 +13,7 @@ import {
   hasPendingToolCall,
   notifySession,
   parseTeamSelectionCommand,
-} from '../session-delegation'
+} from '../scheduling/session-delegation'
 
 const lookup: ExecutorLookup = {
   get(id) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createExecutorEventNotifier, SessionStreamThrottle } from '../session-stream.js'
-import type { ExecutorRunEvent } from '../delegation-service.js'
+import { createExecutorEventNotifier, SessionStreamThrottle } from '../scheduling/session-stream.js'
+import type { ExecutorRunEvent } from '../scheduling/delegation-service.js'
 
 const evt = (overrides: Partial<ExecutorRunEvent>): ExecutorRunEvent => ({
   taskId: 't1',

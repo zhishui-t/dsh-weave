@@ -1,17 +1,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CliMcpDeps } from '../cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
-import { DelegationService } from '../delegation-service.js'
-import { SessionTracker } from '../session-tracker.js'
+import { DelegationService } from '../scheduling/delegation-service.js'
+import { SessionTracker } from '../scheduling/session-tracker.js'
 import { KnowledgeEngine } from '../knowledge-engine.js'
-import { createExecutorEventNotifier, type StreamOptions } from '../session-stream.js'
-import { TaskStatusNotifier } from '../task-status-notifier.js'
-import { WeaveScheduler, subjectLabel } from '../scheduler.js'
+import { createExecutorEventNotifier, type StreamOptions } from '../scheduling/session-stream.js'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
+import { WeaveScheduler, subjectLabel } from '../scheduling/scheduler.js'
 import type { WeaveCapabilities } from './capabilities.js'
 import type { AuditLog } from '../audit/audit-log.js'
 import type { ReflectionService } from '../reflection-service.js'
-import { TeamPlanner, createPlanTasksHandler } from '../planner.js'
-import { CaptainTurnGuard } from '../captain-turn-guard.js'
+import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
+import { CaptainTurnGuard } from '../scheduling/captain-turn-guard.js'
 import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
@@ -22,7 +22,7 @@ import {
   notifySession,
   type NoticeSessionLike,
   type WeaveNoticeMessage,
-} from '../session-delegation.js'
+} from '../scheduling/session-delegation.js'
 
 export interface TeamRuntimeOptions {
   runtime: Context

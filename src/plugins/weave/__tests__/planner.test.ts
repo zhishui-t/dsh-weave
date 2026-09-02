@@ -6,7 +6,7 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
-import { TeamPlanner, assertAcyclic, createPlanTasksHandler, type PlanTasksInput } from '../planner'
+import { TeamPlanner, assertAcyclic, createPlanTasksHandler, type PlanTasksInput } from '../scheduling/planner'
 
 const lookup: ExecutorLookup = {
   get(id) {

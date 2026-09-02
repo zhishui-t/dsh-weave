@@ -1,10 +1,10 @@
-import type { WeaveDatabase } from './persistence/weave-database.js'
+import type { WeaveDatabase } from '../persistence/weave-database.js'
 import type { SessionTracker } from './session-tracker.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
-import type { AuditLog } from './audit/audit-log.js'
-import { TaskStateMachine } from './state/task-state-machine.js'
-import type { TaskRecord, TaskStatus } from './state/types.js'
-import { WeaveError } from './state/weave-error.js'
+import type { AuditLog } from '../audit/audit-log.js'
+import { TaskStateMachine } from '../state/task-state-machine.js'
+import type { TaskRecord, TaskStatus } from '../state/types.js'
+import { WeaveError } from '../state/weave-error.js'
 
 /**
  * P0-FEEDBACK-008 —— FeedbackRouter：保温期反馈路由（TDD 1.5.6 + 2.1.5 #10-#17）。
