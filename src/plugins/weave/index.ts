@@ -1,12 +1,12 @@
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { WeaveCli, WeaveMcp } from './cli-mcp.js'
-import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host-wiring.js'
+import type { WeaveCli, WeaveMcp } from './host/cli-mcp.js'
+import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host/host-wiring.js'
 import { createTeamRuntime } from './core/team-runtime.js'
 import { createExecutorLayer } from './core/executors.js'
 import { createCapabilities } from './core/capabilities.js'
 import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
 import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
-import { registerWeaveRpc } from './rpc.js'
+import { registerWeaveRpc } from './host/rpc.js'
 import { KnowledgeEngine } from './knowledge/knowledge-engine.js'
 import { DelegationService } from './scheduling/delegation-service.js'
 import { SessionTracker } from './scheduling/session-tracker.js'
@@ -28,8 +28,8 @@ import { CaptainTurnGuard } from './scheduling/captain-turn-guard.js'
 import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
 import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
-import { DEFAULT_WEAVE_SETTINGS_FILE, loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides } from './settings-store.js'
-import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './rpc.js'
+import { DEFAULT_WEAVE_SETTINGS_FILE, loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides } from './host/settings-store.js'
+import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './host/rpc.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
@@ -275,7 +275,7 @@ export {
   createDefaultCliDeps,
   buildDefaultWeaveCli,
   SLASH_COMMAND_NAME,
-} from './host-wiring.js'
+} from './host/host-wiring.js'
 export {
   ExecutorProviderRegistry,
   type ExecutorCapabilities,
@@ -306,7 +306,7 @@ export type {
   HostCommandDefinition,
   HostCommandInvocation,
   HostCommandResult,
-} from './host-wiring.js'
+} from './host/host-wiring.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

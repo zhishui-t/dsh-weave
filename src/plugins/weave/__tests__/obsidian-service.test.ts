@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { KnowledgeFile, KnowledgeMeta, KnowledgeStore } from '../knowledge/knowledge-model.js'
-import { WeaveCli, WeaveMcp } from '../cli-mcp.js'
+import { WeaveCli, WeaveMcp } from '../host/cli-mcp.js'
 import { ObsidianCli, parseObsidianCliArgs } from '../obsidian/cli.js'
 import { ObsidianService } from '../obsidian/obsidian-service.js'
 import { WeavePersistence } from '../persistence/persistence.js'

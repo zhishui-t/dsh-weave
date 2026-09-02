@@ -6,7 +6,7 @@ import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../persistence/persistence'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../team/team-manager.js'
-import { createWeaveRpcHandler } from '../rpc'
+import { createWeaveRpcHandler } from '../host/rpc'
 import {
   createPreStepDelegationHook,
   createWeaveNoticeMessage,

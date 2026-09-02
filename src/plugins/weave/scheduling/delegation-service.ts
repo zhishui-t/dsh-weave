@@ -1,4 +1,4 @@
-import type { ExecutorRegistry } from '../executor-registry.js'
+import type { ExecutorRegistry } from '../executors/executor-registry.js'
 import type { SessionTracker } from './session-tracker.js'
 import type { TaskRecord } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'

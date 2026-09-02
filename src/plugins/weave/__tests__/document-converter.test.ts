@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { DocumentConverter } from '../convert/document-converter'
 import type { AnyDocLikeConverter, ConvertInput } from '../knowledge/import-pipeline'
-import { WeaveCli, WeaveMcp } from '../cli-mcp'
-import type { CliMcpDeps } from '../cli-mcp'
-import { createWeaveRpcHandler } from '../rpc'
+import { WeaveCli, WeaveMcp } from '../host/cli-mcp'
+import type { CliMcpDeps } from '../host/cli-mcp'
+import { createWeaveRpcHandler } from '../host/rpc'
 import { WeaveQueryService } from '../web/query-service'
 import { WeavePersistence } from '../persistence/persistence'
 

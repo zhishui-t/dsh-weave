@@ -6,7 +6,7 @@ import {
   ExecutorKind,
   ExecutorRegistry,
   classifyProvider,
-} from '../executor-registry'
+} from '../executors/executor-registry'
 import {
   MOCK_PROVIDER_LIST,
   MockSubagentsContext,

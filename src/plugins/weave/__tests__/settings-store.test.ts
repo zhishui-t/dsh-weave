@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides, saveWeaveSettingsOverrides } from '../settings-store'
+import { loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides, saveWeaveSettingsOverrides } from '../host/settings-store'
 
 const roots: string[] = []
 afterEach(() => {

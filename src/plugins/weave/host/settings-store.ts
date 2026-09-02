@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { WeaveError } from './state/weave-error.js'
-import type { ExecutorRunEventType } from './scheduling/delegation-service.js'
-import type { StreamOptions } from './scheduling/session-stream.js'
+import { WeaveError } from '../state/weave-error.js'
+import type { ExecutorRunEventType } from '../scheduling/delegation-service.js'
+import type { StreamOptions } from '../scheduling/session-stream.js'
 
 export const DEFAULT_WEAVE_SETTINGS_FILE = join(homedir(), '.dsh', 'weave', 'settings.json')
 

@@ -23,7 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { MOCK_PROVIDER_LIST, MockSubagentsContext } from './fixtures/mock-subagents';
-import { ExecutorRegistry, classifyProvider } from '../executor-registry';
+import { ExecutorRegistry, classifyProvider } from '../executors/executor-registry';
 
 /* ------------------------------------------------------------------ */
 /* 执行器 Bundle 定义与宿主探测                                          */

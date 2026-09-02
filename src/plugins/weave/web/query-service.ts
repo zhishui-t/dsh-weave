@@ -1,5 +1,5 @@
 import { AUDIT_EVENT_TYPES, DEFAULT_AUDIT_DIR, AuditLog, type AuditEventType, type AuditQuery } from '../audit/audit-log.js'
-import { WeaveMcp, type CliMcpDeps } from '../cli-mcp.js'
+import { WeaveMcp, type CliMcpDeps } from '../host/cli-mcp.js'
 import { DagRepository } from '../dag/repository.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'

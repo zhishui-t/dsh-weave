@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_EXECUTION_IDLE_TIMEOUT_MS,
   loadExecutionIdleTimeoutMs,
-} from '../settings-store'
+} from '../host/settings-store'
 
 import {
   DelegationService,
@@ -16,7 +16,7 @@ import {
   type TeamConfigLike,
 } from '../scheduling/delegation-service'
 import { ExecutorProviderRegistry } from '../executors/executor-provider'
-import { ExecutorRegistry } from '../executor-registry'
+import { ExecutorRegistry } from '../executors/executor-registry'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../scheduling/session-tracker'
 import type { TaskRecord } from '../state/types'

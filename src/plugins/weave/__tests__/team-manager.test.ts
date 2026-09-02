@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import type { ExecutorInfo } from '../executor-registry'
+import type { ExecutorInfo } from '../executors/executor-registry'
 import { WeavePersistence } from '../persistence/persistence'
 import { WeaveError } from '../state/weave-error'
 import {

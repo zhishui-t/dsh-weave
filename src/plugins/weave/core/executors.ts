@@ -1,8 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { CliMcpDeps } from '../cli-mcp.js'
+import type { CliMcpDeps } from '../host/cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import type { ZcodeAcpExecutorProvider } from '../acp/acp-session-provider.js'
-import { createDefaultExecutorProviderRegistry } from '../host-wiring.js'
+import { createDefaultExecutorProviderRegistry } from '../host/host-wiring.js'
 import {
   acpRegistryContextFrom,
   createWeaveProviderCommandDefinitions,

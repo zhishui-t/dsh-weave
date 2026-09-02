@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DelegationService } from '../scheduling/delegation-service'
-import { ExecutorRegistry } from '../executor-registry'
+import { ExecutorRegistry } from '../executors/executor-registry'
 import {
   KnowledgeEngine,
   scoreKnowledge,

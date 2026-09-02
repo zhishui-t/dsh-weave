@@ -7,7 +7,7 @@ import { Context, type Plugin } from '@deepseek-ai/cordis'
 import { AuditLog } from '../audit/audit-log'
 import { CircuitBreaker } from '../safety/circuit-breaker'
 import { DagRepository } from '../dag/repository'
-import { ExecutorRegistry } from '../executor-registry'
+import { ExecutorRegistry } from '../executors/executor-registry'
 import { FeedbackRouter } from '../scheduling/feedback-router'
 import { KnowledgeReviewService } from '../knowledge/knowledge-review'
 import { KnowledgeStore } from '../knowledge/knowledge-model'
@@ -22,9 +22,9 @@ import {
   type HostCommandInvocation,
   type HostCommandResult,
   type HostToolRuntime,
-} from '../host-wiring'
-import { WeaveMcp } from '../cli-mcp'
-import type { CliMcpDeps } from '../cli-mcp'
+} from '../host/host-wiring'
+import { WeaveMcp } from '../host/cli-mcp'
+import type { CliMcpDeps } from '../host/cli-mcp'
 import { openPersistence, type WeavePersistence } from '../persistence/index'
 import { SessionTracker } from '../scheduling/session-tracker'
 import { TeamManager } from '../team/team-manager.js'

@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { CliMcpDeps } from '../cli-mcp.js'
+import type { CliMcpDeps } from '../host/cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import { DelegationService } from '../scheduling/delegation-service.js'
 import { SessionTracker } from '../scheduling/session-tracker.js'

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { GraphService, type AffectedFlowsResult, type GraphFlow, type GraphSummary } from '../graph/graph-service'
 import { WeavePersistence } from '../persistence/persistence'
 import { WeaveQueryService } from '../web/query-service'
-import { createWeaveRpcHandler } from '../rpc'
+import { createWeaveRpcHandler } from '../host/rpc'
 import { WeaveError } from '../state/weave-error'
 
 const sampleFlow = (id: string): GraphFlow => ({

@@ -1,27 +1,27 @@
-import type { DagRepository } from './dag/repository.js'
-import type { ExecutorRegistry } from './executor-registry.js'
-import type { FeedbackRouter } from './scheduling/feedback-router.js'
-import type { KnowledgeReviewService } from './knowledge/knowledge-review.js'
-import type { KnowledgeStore, KnowledgeMeta, KnowledgeFile, KnowledgeLayer, KnowledgeStatus, Visibility } from './knowledge/knowledge-model.js'
-import type { ImportPipeline } from './knowledge/import-pipeline.js'
-import type { WeavePersistence } from './persistence/index.js'
-import { TaskStateMachine } from './state/task-state-machine.js'
-import type { CircuitBreaker, BreakerRecord } from './safety/circuit-breaker.js'
-import type { TaskRecord, TaskStatus } from './state/types.js'
-import { WeaveError } from './state/weave-error.js'
-import type { TeamManager } from './team/team-manager.js'
-import type { TaskStatusNotifier } from './scheduling/task-status-notifier.js'
-import type { AuditLog } from './audit/audit-log.js'
-import { GraphService, type AffectedFlowsResult, type GraphQueryOptions } from './graph/graph-service.js'
+import type { DagRepository } from '../dag/repository.js'
+import type { ExecutorRegistry } from '../executors/executor-registry.js'
+import type { FeedbackRouter } from '../scheduling/feedback-router.js'
+import type { KnowledgeReviewService } from '../knowledge/knowledge-review.js'
+import type { KnowledgeStore, KnowledgeMeta, KnowledgeFile, KnowledgeLayer, KnowledgeStatus, Visibility } from '../knowledge/knowledge-model.js'
+import type { ImportPipeline } from '../knowledge/import-pipeline.js'
+import type { WeavePersistence } from '../persistence/index.js'
+import { TaskStateMachine } from '../state/task-state-machine.js'
+import type { CircuitBreaker, BreakerRecord } from '../safety/circuit-breaker.js'
+import type { TaskRecord, TaskStatus } from '../state/types.js'
+import { WeaveError } from '../state/weave-error.js'
+import type { TeamManager } from '../team/team-manager.js'
+import type { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
+import type { AuditLog } from '../audit/audit-log.js'
+import { GraphService, type AffectedFlowsResult, type GraphQueryOptions } from '../graph/graph-service.js'
 import type {
   DocumentConverter,
   DocumentConvertInput,
   DocumentHistoryItem,
   DocumentPreviewResult,
   DocumentStatusResult,
-} from './convert/document-converter.js'
-import type { ObsidianService } from './obsidian/obsidian-service.js'
-import type { ObsidianCli } from './obsidian/cli.js'
+} from '../convert/document-converter.js'
+import type { ObsidianService } from '../obsidian/obsidian-service.js'
+import type { ObsidianCli } from '../obsidian/cli.js'
 
 /**
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
