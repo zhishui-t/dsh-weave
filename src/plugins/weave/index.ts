@@ -89,6 +89,14 @@ export function apply(ctx: Context): void {
         target: service,
         providersFile: effectiveProvidersFile,
       })
+      // 启动即刷新执行器快照：provider（含 zcode ACP）注册进 subagents 后，
+      // ExecutorRegistry 不刷新就不会包含它们——纯重启后 zcode 任务必现
+      // 「执行器未注册」(executor_unavailable)；热注册此前是唯一刷新点。
+      try {
+        executorLayer.refreshExecutorSnapshot()
+      } catch (error) {
+        console.warn('[dsh-weave] boot executor snapshot refresh failed:', error)
+      }
       const {
         zcodeProvider,
         providerCommands,
