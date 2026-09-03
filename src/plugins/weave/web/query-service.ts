@@ -536,7 +536,7 @@ export class WeaveQueryService {
     hasFlows: boolean
   }> {
     const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? WEAVE_DEFAULT_PROJECT_ROOT
+    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.env.WEAVE_GRAPH_PROJECT_ROOT ?? WEAVE_DEFAULT_PROJECT_ROOT
     const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
     const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
     return {
@@ -552,7 +552,7 @@ export class WeaveQueryService {
   /** code/build：构建/刷新代码图谱与执行流。 */
   async codeBuild(input: unknown = {}): Promise<{ graphPath: string; flowsPath: string }> {
     const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? WEAVE_DEFAULT_PROJECT_ROOT
+    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.env.WEAVE_GRAPH_PROJECT_ROOT ?? WEAVE_DEFAULT_PROJECT_ROOT
     const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
     const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
     return service.build()
