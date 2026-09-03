@@ -1,4 +1,7 @@
-// 派单全链路真实 E2E（live 层）：一条命令验证三个历史事故点不再复发。
+// 派单全链路真实 E2E（live 层）：一条命令端到端验证——
+//   会话启动（目标工作区新会话）→ 短句绑定团队 → 队长 weave_plan_tasks 分任务 →
+//   执行器产出落盘 → 知识沉淀（WEAVE_KNOWLEDGE/自动反思 → knowledge_meta）→ 代码图谱（Graphify）。
+// 覆盖三个历史事故点：
 //   1) 派单必须落在目标工作区（test）的新会话，而不是 weave 默认工作区；
 //   2) 「启动团队 <id>」短句必须经 pre-step hook 写入绑定（含团队感知注入能力存在性）；
 //   3) 队长必须在正确团队（deepseek-zcode-test）上调 weave_plan_tasks，
@@ -201,5 +204,68 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
     expect(allTerminal, `任务未全部终态: ${statuses.join(',')}`).toBe(true)
     expect(existsSync(game), `缺少 ${game}`).toBe(true)
     expect(existsSync(smoke), `缺少 ${smoke}`).toBe(true)
+  })
+
+  test('knowledge: 任务完成后知识沉淀入库', async () => {
+    test.setTimeout(6 * 60_000)
+    const deadline = Date.now() + 5 * 60_000
+    const KNOWLEDGE_DIR = join(homedir(), '.dsh', 'knowledge')
+    let hit = ''
+
+    const dbRows = (): Array<Record<string, unknown>> => {
+      const db = openReadOnly('knowledge_meta.db')
+      try {
+        return db.prepare('SELECT id, path, status, layer, created FROM knowledge_meta').all() as Array<Record<string, unknown>>
+      } catch { return [] } finally { db.close() }
+    }
+    const freshFile = (): string => {
+      if (!existsSync(KNOWLEDGE_DIR)) return ''
+      for (const dp of [KNOWLEDGE_DIR, ...readdirSync(KNOWLEDGE_DIR).map((d) => join(KNOWLEDGE_DIR, d))]) {
+        try {
+          for (const f of readdirSync(dp)) {
+            const p = join(dp, f)
+            if (statSync(p).isFile() && statSync(p).mtimeMs >= t0) return p
+          }
+        } catch { /* 非目录，忽略 */ }
+      }
+      return ''
+    }
+
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(15_000)
+      const rows = dbRows().filter((r) => {
+        const ts = Date.parse(String(r.created ?? '')) || Date.parse(String(r.updated ?? '')) || 0
+        return ts >= t0 - 60_000
+      })
+      if (rows.length > 0) { hit = rows.map((r) => `${r.status}:${String(r.path).slice(-60)}`).join(' | '); break }
+      const file = freshFile()
+      if (file) { hit = `file:${file.slice(-70)}`; break }
+    }
+    mark('知识沉淀（knowledge_meta 新条目或知识文件）', hit !== '', hit || '5 分钟窗口内无新知识——执行器未输出 WEAVE_KNOWLEDGE 块且自动反思未产生条目')
+    expect(hit, '任务完成后没有产生任何知识沉淀').not.toBe('')
+  })
+
+  test('graph: 代码图谱构建（Graphify extract + flows）', async () => {
+    test.setTimeout(5 * 60_000)
+    const { GraphService } = await import('../../../../dist/plugins/weave/graph/graph-service.js') as {
+      GraphService: new (options: { projectRoot: string }) => { build(): Promise<{ graphPath: string; flowsPath: string }> }
+    }
+    const svc = new GraphService({ projectRoot: WORK_DIR })
+    const built = await svc.build()
+    mark('GraphService.build() 完成', true, `${built.graphPath} | ${built.flowsPath}`)
+
+    const graphOk = existsSync(built.graphPath)
+    const flowsOk = existsSync(built.flowsPath)
+    mark('graph.json 落盘', graphOk, built.graphPath)
+    mark('flows.json 落盘', flowsOk, built.flowsPath)
+    if (graphOk) {
+      const parsed = JSON.parse(readFileSync(built.graphPath, 'utf-8')) as { nodes?: unknown[]; edges?: unknown[] }
+      const nodeCount = Array.isArray(parsed.nodes) ? parsed.nodes.length : -1
+      mark('graph.json 可解析（nodes 数组在位）', nodeCount >= 0, `nodes=${nodeCount}`)
+      expect(nodeCount, 'graph.json 缺少 nodes 数组').toBeGreaterThanOrEqual(0)
+    }
+    expect(graphOk, `缺少 ${built.graphPath}`).toBe(true)
+    expect(flowsOk, `缺少 ${built.flowsPath}`).toBe(true)
+    await shot(page, 'dispatch-chain-03-graph')
   })
 })
