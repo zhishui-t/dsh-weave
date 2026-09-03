@@ -93,6 +93,18 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
     mark('dist 含团队感知注入', distCode.includes('buildTeamAwarenessText'), dist)
     expect(existsSync(teamYaml), `缺少 ${teamYaml}`).toBe(true)
     expect(distCode.includes('buildTeamAwarenessText'), 'dist 未包含新 hook——先 pnpm build 并重启宿主').toBe(true)
+
+    // zcode provider 必须已注册进执行器注册表（enabled=false → 任务必现 executor_unavailable）
+    const rpc = await fetch(`${BASE_URL}/dsh-weave/provider/list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId: 'e2e-preflight', method: 'provider/list', payload: {} }),
+    }).then((r) => r.json() as { result?: { value?: { providers?: Array<{ name: string; enabled: boolean }> } } }).catch(() => undefined)
+    const providers = rpc?.result?.value?.providers ?? []
+    const zcode = providers.find((p) => p.name === 'zcode')
+    mark('zcode provider 注册且启用', !!zcode && zcode.enabled === true,
+      providers.map((p) => `${p.name}:${p.enabled}`).join(' ') || 'provider/list 无返回')
+    expect(zcode?.enabled, 'zcode provider 未注册（检查 ~/.dsh/weave/providers.json 路径并重启宿主）').toBe(true)
   })
 
   test('dispatch: 目标工作区新会话 + 短句绑定 + 派单正文', async () => {
@@ -192,8 +204,11 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
 
     const game = `${WORK_DIR}/game.html`
     const smoke = `${WORK_DIR}/tests/smoke_check.py`
-    mark('产物 game.html 落盘', existsSync(game), game)
-    mark('产物 tests/smoke_check.py 落盘', existsSync(smoke), smoke)
+    // 必须是本次执行更新的产物（防止历史文件污染断言）
+    const gameFresh = existsSync(game) && statSync(game).mtimeMs >= t0
+    const smokeFresh = existsSync(smoke) && statSync(smoke).mtimeMs >= t0
+    mark('产物 game.html 本次执行更新', gameFresh, game)
+    mark('产物 tests/smoke_check.py 本次执行更新', smokeFresh, smoke)
 
     const tab = page.getByText('Weave 团队', { exact: false }).first()
     if (await tab.isVisible().catch(() => false)) { await tab.click(); await page.waitForTimeout(6000) }
@@ -201,8 +216,8 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
 
     // 终态与产物是硬断言：失败即红，报告里保留全部过程信息
     expect(allTerminal, `任务未全部终态: ${statuses.join(',')}`).toBe(true)
-    expect(existsSync(game), `缺少 ${game}`).toBe(true)
-    expect(existsSync(smoke), `缺少 ${smoke}`).toBe(true)
+    expect(gameFresh, `game.html 未在本次执行中更新（${game}）`).toBe(true)
+    expect(smokeFresh, `smoke_check.py 未在本次执行中更新（${smoke}）`).toBe(true)
   })
 
   test('knowledge: 任务完成后知识沉淀入库', async () => {
