@@ -2,6 +2,23 @@ import { foldConsumedWork, installModelSelection } from '@deepseek-ai/dsh-agent'
 import { finalAssistantOutput } from '@deepseek-ai/dsh-subagent'
 import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun, ExecutorRuntimeOptions } from './executor-provider.js'
 
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+/** 执行器复用调试日志：WEAVE_EXEC_DEBUG=1 时追加到 ~/.dsh/weave/exec-debug.log（排障用，失败静默）。 */
+function debugLog(event: string, detail: Record<string, unknown>): void {
+  if (process.env.WEAVE_EXEC_DEBUG !== '1') return
+  try {
+    const dir = join(homedir(), '.dsh', 'weave')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'exec-debug.log'), `${new Date().toISOString()} ${event} ${JSON.stringify(detail)}
+`, 'utf-8')
+  } catch {
+    /* 调试日志失败不影响主链路 */
+  }
+}
+
 interface DshSubagentsContext {
   list(): string[]
   start(
@@ -154,12 +171,24 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
     }
 
     const sessionKey = request.sessionKey
-    if (sessionKey && this.#subagents.startContinuable && this.#subagents.followup && this.#subagents.agents?.get) {
+    const continuableReady = Boolean(sessionKey && this.#subagents.startContinuable && this.#subagents.followup && this.#subagents.agents?.get)
+    if (sessionKey && !continuableReady) {
+      debugLog('continuable API incomplete', {
+        executor: request.executor, sessionKey,
+        hasStartContinuable: Boolean(this.#subagents.startContinuable),
+        hasFollowup: Boolean(this.#subagents.followup),
+        hasAgentsGet: Boolean(this.#subagents.agents?.get),
+      })
+    }
+    if (continuableReady) {
       try {
         return await this.#startContinuable(request, sessionKey)
       } catch (error) {
         // fork 的会话连续性是业务约束：复用失败时不能静默再 fork 一个新子代理。
         if (request.executor === 'fork') throw error
+        debugLog('continuable reuse failed -> one-shot fallback', {
+          executor: request.executor, sessionKey, error: String(error).slice(0, 300),
+        })
         console.warn('[dsh-weave] dsh-subagent continuable reuse failed, falling back to one-shot:', error)
       }
     }
