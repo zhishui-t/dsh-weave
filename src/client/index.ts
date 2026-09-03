@@ -768,9 +768,15 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     const [error, setError] = useState('')
     const [tick, setTick] = useState(0)
 
+    // 换键（deps 变化）→ 重置进入 loading；同键静默刷新（tick）→ 保留旧数据原地换血，
+    // 不翻转 loading——否则任务执行期心跳/事件每次刷新都会把 DAG 面板卸载重挂（闪烁）。
+    const depsKey = JSON.stringify(deps)
+    const prevDepsKey = useRef(undefined as string | undefined)
     useEffect(() => {
       let alive = true
-      setLoading(true)
+      const keyChanged = prevDepsKey.current !== depsKey
+      prevDepsKey.current = depsKey
+      if (keyChanged) setLoading(true)
       setError('')
       fetcher()
         .then((next: T) => {
@@ -786,7 +792,7 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       return () => {
         alive = false
       }
-    }, [...deps, tick])
+    }, [depsKey, tick])
 
     const refresh = useCallback(() => setTick((value: number) => value + 1), [])
     return { data, loading, error, refresh }
