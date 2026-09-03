@@ -188,6 +188,7 @@ test.describe.serial('live: 派单全链路 v3（自然语言/自主拆解/增�
 
   test('increment: 自然语言增量下发 → 任务图在原图上生长', async () => {
     test.setTimeout(INCREMENTAL_MS + 120_000)
+    const sessionDirsBefore = readdirSync(join(SESSIONS_ROOT, SESSION_DIR)).length
     const input = page.locator('textarea').first()
     await input.waitFor({ state: 'visible', timeout: 20_000 })
     await input.fill('很好。在此基础上补一个自动冒烟检查：写个脚本能自动打开页面验证游戏真的能玩，并实际运行一次给出结果。')
@@ -229,6 +230,9 @@ test.describe.serial('live: 派单全链路 v3（自然语言/自主拆解/增�
       const detailTasks = det?.result?.value?.tasks ?? []
       mark(`task/get 图详情（${dagId}）`, detailTasks.length >= rows.length, `detail tasks=${detailTasks.length}`)
     }
+    const sessionDirsAfter = readdirSync(join(SESSIONS_ROOT, SESSION_DIR)).length
+    mark('增量波子会话复用观察（新增会话目录数）', true,
+      `${sessionDirsBefore} → ${sessionDirsAfter}（=0 则 spawn/fork 复用生效；>0 见 ~/.dsh/weave/exec-debug.log）`)
     await shot(page, 'dispatch-chain-wave2-final')
   })
 
