@@ -55,7 +55,9 @@ Weave 仓库的开发与维护指南。先读本文件，再改代码。
 3. **服务端入口固定**：`src/plugins/weave/index.ts` 的 `apply(ctx)` 是 Cordis 插件入口；`host/` 负责宿主接线，业务模块不得绕过 `core/team-runtime.ts` 自行组合运行时。
 4. **RPC channel 固定**：`/dsh-weave`。RPC handler 位于 `src/plugins/weave/host/rpc.ts`。
 5. **团队配置目录**：`~/.dsh/teams/*.yaml`；项目级团队运行态在 `<project>/.dsh/weave/team/`；知识库在 `~/.dsh/knowledge`。
-6. **不要提交**：`node_modules/`、`dist/`、`.artifacts/`、`subprojects/`、任何非根目录的 `.graphify/`。
+6. 团队面板过程输出只允许 ACP 执行器接入；DSH `spawn`/`fork` 输出不进 Team Tab。
+7. `fork` 首次创建 continuable 子会话后，同 sessionKey 后续任务必须 followup 同一会话，不得再次 fork。
+8. **不要提交**：`node_modules/`、`dist/`、`.artifacts/`、`subprojects/`、任何非根目录的 `.graphify/`。
 
 ## 4. 常用命令
 

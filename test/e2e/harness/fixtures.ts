@@ -103,8 +103,8 @@ export function defaultScenario(): Record<string, RpcEnvelope> {
         session_id: 'sess-h',
         team: { team_id: 'seed-team', name: '种子团队' },
         members: [
-          { role_id: 'coder', name: '程序员', executor: 'spawn', status: 'running', task_id: 'T-A', subject: '实现登录页' },
-          { role_id: 'reviewer', name: '审核员', executor: 'fork', status: 'idle' },
+          { role_id: 'coder', name: '程序员', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'running', task_id: 'T-A', subject: '实现登录页' },
+          { role_id: 'reviewer', name: '审核员', executor: 'fork', executor_kind: 'dsh_subagent', output_available: false, status: 'idle' },
         ],
       },
     },

@@ -297,8 +297,9 @@ describe('Weave Connection RPC：executor/run-events（E 块实时输出契约�
     startedAt: 1,
     sessionId: 'sid-1',
     events: [
-      { type: 'status' as const, text: 'streaming' },
-      { type: 'output' as const, text: 'live output' },
+      { type: 'status' as const, text: 'streaming', at: 101 },
+      { type: 'tool_call' as const, name: 'bash', text: 'ls', data: { command: 'ls' }, at: 102 },
+      { type: 'output' as const, text: 'live output', at: 103 },
     ],
   })
 
@@ -312,7 +313,14 @@ describe('Weave Connection RPC：executor/run-events（E 块实时输出契约�
       ok: true,
       value: {
         session_id: 'sid-1',
-        events: expect.arrayContaining([expect.objectContaining({ type: 'output', text: 'live output' })]),
+        structured: true,
+        source: 'acp',
+        available: true,
+        executor: 'zcode',
+        events: expect.arrayContaining([
+          expect.objectContaining({ seq: 2, ts: 102, type: 'tool_call', tool: 'bash', data: { command: 'ls' } }),
+          expect.objectContaining({ seq: 3, type: 'output', text: 'live output' }),
+        ]),
         runs: expect.arrayContaining([expect.objectContaining({ taskId: 'task-1' })]),
       },
     })
@@ -328,8 +336,43 @@ describe('Weave Connection RPC：executor/run-events（E 块实时输出契约�
       ok: true,
       value: {
         session_id: 'sid-1',
+        structured: true,
+        available: true,
+        executor: 'zcode',
         events: expect.arrayContaining([expect.objectContaining({ type: 'output', text: 'live output' })]),
       },
+    })
+  })
+
+  it('DSH spawn/fork 过程输出不接入团队面板：返回结构化 unavailable 且 events/runs 为空', async () => {
+    const spawnSnapshot = () => ({
+      ...runSnapshot(),
+      runId: 'child-spawn-1',
+      executor: 'spawn',
+      sessionId: 'child-session-1',
+    })
+    const executorRuns: ExecutorRunsQuery = {
+      getExecutorRun: () => spawnSnapshot(),
+      listExecutorRuns: () => [spawnSnapshot()],
+    }
+    const byTask = await makeEnv(undefined, {}, executorRuns).call('executor/run-events', { taskId: 'task-1' })
+    expect(byTask).toMatchObject({
+      ok: true,
+      value: {
+        structured: true,
+        source: 'acp',
+        available: false,
+        reason: 'executor_output_disabled',
+        executor: 'spawn',
+        events: [],
+        runs: [],
+      },
+    })
+
+    const byRun = await makeEnv(undefined, {}, executorRuns).call('executor/run-events', { runId: 'child-spawn-1' })
+    expect(byRun).toMatchObject({
+      ok: true,
+      value: { available: false, reason: 'executor_output_disabled', executor: 'spawn', events: [] },
     })
   })
 

@@ -189,15 +189,18 @@ ACTIVE
 ### fork
 
 - 可续会话；
-- 使用 mailbox 投递后续任务；
-- 任务未完成前不创建新 fork；
-- fork settle 后如任务仍非终态，只重泵一次并记录告警。
+- 首次派发用 `startContinuable` 创建带稳定 sessionKey label 的子会话；
+- 同一 role/project/version 后续派发必须 `followup` 该子会话；
+- 复用失败时失败该次派发，不允许静默回退为再次 fork；
+- fork/spawn 过程输出不接入团队面板。
 
 ### ACP/zcode
 
 - 使用 sessionKey 复用会话；
 - 同一 role/project/version 复用同一 session；
-- 不因任务拆解而重复创建 ACP session。
+- 不因任务拆解而重复创建 ACP session；
+- 团队面板过程输出仅接入 ACP；
+- ACP 事件结构化为 `seq/type/tool/text/data/at`，保留 Provider 原始 payload。
 
 ## 7. 迁移策略
 

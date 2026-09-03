@@ -688,14 +688,29 @@ describe('WeaveQueryService session 域：session/status', () => {
     const result = (await svc2.sessionStatus({ sessionId: 'sess-live' })) as {
       team: { team_id: string }
       resolved_via?: string | null
-      members: Array<{ role_id: string; status: string; subject?: string; last_status?: string }>
+      members: Array<{
+        role_id: string
+        status: string
+        subject?: string
+        last_status?: string
+        executor: string
+        executor_kind: string
+        output_available: boolean
+      }>
     }
     expect(result.team.team_id).toBe('alpha-squad')
     expect(result.resolved_via).toBe('binding')
     const byRole = new Map(result.members.map((m) => [m.role_id, m]))
-    expect(byRole.get('designer')).toMatchObject({ status: 'idle' })
-    expect(byRole.get('coder')).toMatchObject({ status: 'running', subject: '写登录页' })
+    expect(byRole.get('designer')).toMatchObject({ status: 'idle', executor_kind: 'codex', output_available: false })
+    expect(byRole.get('coder')).toMatchObject({
+      status: 'running',
+      subject: '写登录页',
+      executor: 'zcode',
+      executor_kind: 'acp',
+      output_available: true,
+    })
     expect(byRole.get('reviewer')!.status).toBe('failed')
+    expect(byRole.get('reviewer')).toMatchObject({ executor_kind: 'codex', output_available: false })
 
     // 无调度器占用时 coder 回落到最近结果
     const quiet = (await buildSvc(base).sessionStatus({ sessionId: 'sess-live' })) as {

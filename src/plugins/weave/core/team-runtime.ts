@@ -11,7 +11,6 @@ import type { WeaveCapabilities } from './capabilities.js'
 import type { AuditLog } from '../audit/audit-log.js'
 import type { ReflectionService } from '../knowledge/reflection-service.js'
 import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
-import { CaptainTurnGuard } from '../scheduling/captain-turn-guard.js'
 import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
@@ -53,7 +52,7 @@ export interface TeamRuntime {
 }
 
 export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
-  const { runtime, deps, executorProviders, weaveSettingsFile, executionStream, idleTimeoutMs, capabilities } = options
+  const { runtime, deps, executorProviders, executionStream, idleTimeoutMs, capabilities } = options
 
   let agentsRegistry: { get(id: string): unknown } | undefined
   try {

@@ -7,11 +7,12 @@ import { SessionTracker } from '../scheduling/session-tracker.js'
 import { TASK_STATUSES, type TaskRecord, type TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge/knowledge-model.js'
-import { mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, dirname } from 'node:path'
+import { join } from 'node:path'
 import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../knowledge/import-pipeline.js'
 import type { TeamManager } from '../team/team-manager.js'
+import { classifyProvider } from '../executors/executor-registry.js'
 import type { WeaveScheduler } from '../scheduling/scheduler.js'
 import { GraphService, type AffectedFlowsResult, type GraphFlow, type GraphSummary } from '../graph/graph-service.js'
 import { listDirectories, listGraphProjects, type DirectoryListing, type GraphProjectSummary } from '../graph/graph-service.js'
@@ -803,6 +804,10 @@ export class WeaveQueryService {
       role_id: string
       name: string
       executor: string
+      /** 执行器协议分类；ACP 才允许接入团队面板过程输出。 */
+      executor_kind: 'dsh_subagent' | 'codex' | 'claude_code' | 'acp'
+      /** 会话面板是否可打开过程输出；仅 ACP 为 true。 */
+      output_available: boolean
       status: 'idle' | 'running' | string
       task_id?: string
       subject?: string
@@ -863,10 +868,13 @@ export class WeaveQueryService {
       // 假并行修复：排队（已派发未拿到执行器槽）与真正执行分开呈现。
       if (active) status = active.phase === 'queued' ? 'queued' : 'running'
       else if (last) status = statusLabel(last.status)
+      const executorKind = classifyProvider(role.executor)
       return {
         role_id: role.id,
         name: role.name,
         executor: role.executor,
+        executor_kind: executorKind,
+        output_available: executorKind === 'acp',
         status,
         ...(active
           ? { task_id: active.task_id, subject: active.subject, started_at: active.started_at, phase: active.phase }

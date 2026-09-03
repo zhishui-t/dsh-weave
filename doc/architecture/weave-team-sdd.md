@@ -183,13 +183,16 @@ interface ReflectionSink {
 - 同一 taskId 不可重复 start。
 
 ### fork
-- 可续会话；
-- 后续任务走 mailbox；
-- 未完成前不创建新 fork。
+- 首次派发创建 continuable 子会话；
+- 同一 role/project/version 后续派发 followup 同一子会话；
+- 复用失败不得静默再次 fork；
+- fork/spawn 输出不接入团队面板。
 
 ### ACP/zcode
 - 使用 sessionKey 复用；
-- 同一 role/project/version 复用同一 session。
+- 同一 role/project/version 复用同一 session；
+- 仅 ACP 输出接入团队面板；
+- 输出事件结构化包含 seq/type/tool/text/data/at。
 
 ## 7. 团队页面
 

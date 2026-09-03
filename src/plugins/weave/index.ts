@@ -1,32 +1,16 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WeaveCli, WeaveMcp } from './host/cli-mcp.js'
-import { createDefaultCliDeps, createDefaultExecutorProviderRegistry, registerWeaveHost } from './host/host-wiring.js'
+import { createDefaultCliDeps, registerWeaveHost } from './host/host-wiring.js'
 import { createTeamRuntime } from './core/team-runtime.js'
 import { createExecutorLayer } from './core/executors.js'
 import { createCapabilities } from './core/capabilities.js'
 import { DEFAULT_PROVIDERS_FILE, ProviderStore } from './acp/provider-store.js'
-import { acpRegistryContextFrom, createWeaveProviderCommandDefinitions, registerStoredAcpProviders } from './acp/dynamic-provider.js'
 import { registerWeaveRpc } from './host/rpc.js'
-import { KnowledgeEngine } from './knowledge/knowledge-engine.js'
-import { DelegationService } from './scheduling/delegation-service.js'
-import { SessionTracker } from './scheduling/session-tracker.js'
-import { createPlanTasksHandler, resolveHostSessionId, TeamPlanner } from './scheduling/planner.js'
-import { WeaveScheduler, subjectLabel } from './scheduling/scheduler.js'
-import { ReflectionService } from './knowledge/reflection-service.js'
-import { createExecutorEventNotifier } from './scheduling/session-stream.js'
-import { TaskStatusNotifier } from './scheduling/task-status-notifier.js'
-import {
-  createPreStepDelegationHook,
-  createWeaveNoticeMessage,
-  hasPendingToolCall,
-  notifySession,
-  type NoticeSessionLike,
-  type WeaveNoticeMessage,
-} from './scheduling/session-delegation.js'
-import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
+import { createPreStepDelegationHook } from './scheduling/session-delegation.js'
+import { resolveHostSessionId } from './scheduling/planner.js'
 import { CaptainTurnGuard } from './scheduling/captain-turn-guard.js'
-import type { ZcodeAcpExecutorProvider } from './acp/acp-session-provider.js'
-import { AuditLog, DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
+import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
+import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides } from './host/settings-store.js'
 import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './host/rpc.js'
@@ -144,7 +128,6 @@ export function apply(ctx: Context): void {
         scheduler,
         statusNotifier,
         auditLog,
-        reflection,
         agentsRegistry,
         notifyWeaveSession,
         resolveNoticeSession,

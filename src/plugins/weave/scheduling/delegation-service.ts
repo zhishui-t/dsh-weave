@@ -62,6 +62,7 @@ export interface DelegationRunEventLike {
   text?: string
   name?: string
   data?: unknown
+  at?: number
   sessionId?: string
 }
 
@@ -283,6 +284,8 @@ export interface ExecutorRunEvent {
   text?: string
   name?: string
   data?: unknown
+  /** Provider 事件原始时间戳（ACP session/update）；缺省由 Delegation 补当前时间。 */
+  at?: number
 }
 
 export interface DelegationServiceOptions {
@@ -401,7 +404,8 @@ export class DelegationService {
     }
   }
 
-  #emitExecutorEvent(event: ExecutorRunEvent): void {
+  #emitExecutorEvent(rawEvent: ExecutorRunEvent): void {
+    const event = rawEvent.at === undefined ? { ...rawEvent, at: this.#now() } : rawEvent
     try {
       this.#recordExecutorEvent(event)
       this.#onExecutorEvent?.(event)
@@ -503,6 +507,7 @@ export class DelegationService {
           ...(event.text !== undefined ? { text: event.text } : {}),
           ...(event.name !== undefined ? { name: event.name } : {}),
           ...(event.data !== undefined ? { data: event.data } : {}),
+          ...(event.at !== undefined ? { at: event.at } : {}),
         })
       })
       this.#emitExecutorEvent({ taskId, executor, runId: run.id, sessionId: this.#eventSessionId(undefined), type: 'status', text: 'streaming' })
@@ -528,6 +533,7 @@ export class DelegationService {
               ...(event.text !== undefined ? { text: event.text } : {}),
               ...(event.name !== undefined ? { name: event.name } : {}),
               ...(event.data !== undefined ? { data: event.data } : {}),
+              ...(event.at !== undefined ? { at: event.at } : {}),
             })
           }
         } catch {

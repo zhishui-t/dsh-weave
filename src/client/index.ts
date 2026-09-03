@@ -305,6 +305,8 @@ interface SessionStatusMember {
   role_id?: string
   name?: string
   executor?: string
+  executor_kind?: 'dsh_subagent' | 'codex' | 'claude_code' | 'acp' | string
+  output_available?: boolean
   status?: string
   task_id?: string
   subject?: string
@@ -630,6 +632,7 @@ function ensureStyle(): void {
 .weave-eventline{display:flex;gap:6px;align-items:baseline;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);word-break:break-all}
 .weave-eventline time{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none}
 .weave-eventline b{font-weight:550;color:var(--dsw-alias-label-primary);flex:none}
+.weave-event-data{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
 .weave-event-meta{display:grid;gap:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 @media (max-width:600px){.weave-eventstream{max-height:140px}}
 .weave-split-toggle-row{display:flex;gap:8px;margin-top:4px}
@@ -752,26 +755,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return tail !== '' ? tail : raw
   }
 
-
-  /** 打开 DSH 子代理会话：优先走新版 openSubagent，旧版回退 open(childSessionId)。 */
-  const openSubagentSession = async (parentSessionId: string, childSessionId: string): Promise<void> => {
-    if (!sessionNavigator) return
-    if (sessionNavigator.openSubagent === undefined || sessionNavigator.refreshSubagents === undefined) {
-      sessionNavigator.open(childSessionId)
-      return
-    }
-    try {
-      await sessionNavigator.refreshSubagents(parentSessionId)
-    } catch {
-      // 刷新失败不阻断跳转尝试
-    }
-    const retained = sessionNavigator.subagentAddress?.(childSessionId)
-    sessionNavigator.openSubagent?.(
-      retained?.parentSessionId === parentSessionId
-        ? (retained as { parentSessionId: string; childSessionId: string; mode?: string })
-        : { parentSessionId, childSessionId, mode: 'continuable' },
-    )
-  }
 
   /* ----------------------------- 通用 Hooks ----------------------------- */
 
@@ -5258,15 +5241,24 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
   const RUN_EVENTS_DRAWER_CAP = 500
 
   interface ExecutorEventRow {
+    seq?: number
     ts: number
     type: string
     tool?: string
     text?: string
+    data?: unknown
   }
 
   interface RunEventsPayload {
     unavailable?: boolean
+    structured?: boolean
+    source?: 'acp' | string
+    available?: boolean
+    reason?: 'executor_output_disabled' | 'run_not_found' | string
     sessionId?: string
+    runId?: string
+    executor?: string
+    state?: string
     modelIoPath?: string
     events: ExecutorEventRow[]
     truncated?: boolean
@@ -5282,14 +5274,18 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
 
   const normalizeExecutorEvent = (raw: unknown): ExecutorEventRow => {
     const row = (typeof raw === 'object' && raw !== null ? raw : {}) as Json
-    const tsRaw = row['ts'] ?? row['timestamp']
+    const tsRaw = row['ts'] ?? row['timestamp'] ?? row['at']
     const ts = typeof tsRaw === 'number' && Number.isFinite(tsRaw) ? tsRaw : Date.parse(String(tsRaw ?? '')) || 0
+    const seqRaw = row['seq']
+    const data = row['data']
     return {
+      ...(typeof seqRaw === 'number' && Number.isFinite(seqRaw) ? { seq: seqRaw } : {}),
       ts,
       type: String(row['type'] ?? 'status'),
-      // RPC 侧 toClientEvent 输出键为 tool；mock 数据用 name，两者都兼容。
+      // RPC 侧结构化事件输出键为 tool；历史/mock 数据用 name，两者都兼容。
       ...((row['tool'] ?? row['name']) !== undefined ? { tool: String(row['tool'] ?? row['name']) } : {}),
       ...(row['text'] !== undefined ? { text: String(row['text']) } : {}),
+      ...(data !== undefined ? { data } : {}),
     }
   }
 
@@ -5339,9 +5335,17 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     try {
       const res = (await rpc('executor/run-events', { taskId })) as Json
       return {
+        structured: res['structured'] === true,
+        source: typeof res['source'] === 'string' ? res['source'] : undefined,
+        available: res['available'] === true,
+        reason: typeof res['reason'] === 'string' ? res['reason'] : undefined,
         sessionId: typeof res['session_id'] === 'string' && res['session_id'] !== '' ? res['session_id'] : undefined,
+        runId: typeof res['run_id'] === 'string' && res['run_id'] !== '' ? res['run_id'] : undefined,
+        executor: typeof res['executor'] === 'string' ? res['executor'] : undefined,
+        state: typeof res['state'] === 'string' ? res['state'] : undefined,
         modelIoPath: typeof res['model_io_path'] === 'string' ? res['model_io_path'] : undefined,
         events: Array.isArray(res['events']) ? (res.events as unknown[]).map(normalizeExecutorEvent) : [],
+        unavailable: res['available'] === false,
       }
     } catch {
       return { unavailable: true, events: [] }
@@ -5382,36 +5386,42 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return { rows, meta, loading }
   }
 
-  const eventLineOf = (row: ExecutorEventRow): React.ReactElement =>
-    React.createElement(
+  const eventLineOf = (row: ExecutorEventRow): React.ReactElement => {
+    const dataText = row.data === undefined ? '' : JSON.stringify(row.data)
+    return React.createElement(
       'div',
-      { className: 'weave-eventline', key: `${row.ts}-${row.type}-${row.tool ?? ''}` },
-      React.createElement('time', null, formatEventClock(row.ts)),
+      { className: 'weave-eventline', key: `${row.seq ?? 0}-${row.ts}-${row.type}-${row.tool ?? ''}` },
+      React.createElement(
+        'time',
+        { title: row.seq !== undefined ? `#${row.seq}` : undefined },
+        row.seq !== undefined ? `${formatEventClock(row.ts)} #${row.seq}` : formatEventClock(row.ts),
+      ),
       React.createElement('b', null, row.tool ? `${EVENT_TYPE_LABELS[row.type] ?? row.type}·${row.tool}` : (EVENT_TYPE_LABELS[row.type] ?? row.type)),
-      row.text ? React.createElement('span', null, row.text.length > 80 ? `${row.text.slice(0, 80)}…` : row.text) : null,
+      row.text ? React.createElement('span', null, row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text) : null,
+      dataText !== ''
+        ? React.createElement('code', { className: 'weave-event-data' }, dataText.length > 160 ? `${dataText.slice(0, 160)}…` : dataText)
+        : null,
     )
+  }
 
-  const eventStreamEmptyNote = (status: boolean): React.ReactElement =>
+  const eventStreamEmptyNote = (unavailable: boolean, reason?: string): React.ReactElement =>
     React.createElement(
       'div',
       { className: 'weave-adv-note' },
-      status
-        ? '该执行器未提供实时事件流（stream_unavailable）：无法查看过程输出，仅展示最终结果与状态变更。'
-        : '连接事件流…',
+      unavailable
+        ? reason === 'executor_output_disabled'
+          ? 'DSH spawn/fork 子代理不接入团队过程输出；请在成员会话树查看其完整记录。'
+          : reason === 'run_not_found'
+            ? '暂无 ACP 执行器输出快照。任务启动后此处会显示结构化过程事件。'
+            : '该执行器未提供实时事件流（stream_unavailable）：无法查看过程输出，仅展示最终结果与状态变更。'
+        : '连接 ACP 结构化事件流…',
     )
 
   /** 成员卡内联展开区：最近事件（限条数）+ 打开完整历史入口。 */
-  function InlineRunEventsPane(props: { taskId: string; onOpenDrawer: () => void; showMeta?: boolean; sessionLabel?: string; onOpenSubagent?: (childSessionId: string) => void; autoOpenSubagent?: boolean }): React.ReactElement | null {
+  function InlineRunEventsPane(props: { taskId: string; onOpenDrawer: () => void; showMeta?: boolean }): React.ReactElement | null {
     const { rows, meta, loading } = useRunEvents(props.taskId, RUN_EVENTS_INLINE_CAP)
-    const autoOpenedSubagent = useRef(false)
-    useEffect(() => {
-      if (props.autoOpenSubagent && props.onOpenSubagent && meta.sessionId && !autoOpenedSubagent.current) {
-        autoOpenedSubagent.current = true
-        props.onOpenSubagent(meta.sessionId)
-      }
-    }, [props.autoOpenSubagent, props.onOpenSubagent, meta.sessionId])
-    if (loading) return React.createElement('span', { className: 'weave-muted' }, '连接事件流...')
-    if (meta.unavailable) return eventStreamEmptyNote(true)
+    if (loading) return React.createElement('span', { className: 'weave-muted' }, '连接 ACP 结构化事件流...')
+    if (meta.unavailable) return eventStreamEmptyNote(true, meta.reason)
     return React.createElement(
       'div',
       null,
@@ -5420,20 +5430,9 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         ? React.createElement(
             'div',
             { className: 'weave-event-meta', style: { marginTop: 4 } },
-            React.createElement('span', null, `${props.sessionLabel ?? 'sessionId'}：${meta.sessionId ?? '—'}`),
-            React.createElement('span', null, `模型 IO：${meta.modelIoPath ?? '—'}`),
-            props.onOpenSubagent && meta.sessionId
-              ? React.createElement(
-                  'button',
-                  {
-                    className: 'weave-button weave-button-secondary weave-button-small',
-                    type: 'button',
-                    'data-testid': 'session-open-subagent',
-                    onClick: () => props.onOpenSubagent?.(meta.sessionId ?? ''),
-                  },
-                  '打开子代理会话',
-                )
-              : null,
+            React.createElement('span', null, `ACP sessionId：${meta.sessionId ?? '—'}`),
+            React.createElement('span', null, `执行器：${meta.executor ?? '—'} · 状态：${meta.state ?? '—'}`),
+            React.createElement('span', null, meta.structured ? '结构化事件：seq / type / tool / text / data' : '事件格式：兼容模式'),
           )
         : null,
     )
@@ -5466,13 +5465,13 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
           ),
         ),
         meta.unavailable
-          ? eventStreamEmptyNote(true)
+          ? eventStreamEmptyNote(true, meta.reason)
           : React.createElement('div', { className: 'weave-eventstream', style: { maxHeight: '50vh' }, role: 'log' }, rows.map(eventLineOf)),
         React.createElement(
           'div',
           { className: 'weave-event-meta' },
-          React.createElement('span', null, `sessionId：${meta.sessionId ?? '—'}（zcode 会话标识，只读）`),
-          React.createElement('span', null, `模型 IO：${meta.modelIoPath ?? '~/.dsh/state/executors/<task>.jsonl'}（只读展示）`),
+          React.createElement('span', null, `ACP sessionId：${meta.sessionId ?? '—'}（只读）`),
+          React.createElement('span', null, `执行器：${meta.executor ?? '—'} · 状态：${meta.state ?? '—'} · 结构化：${meta.structured === true ? '开启' : '兼容'}`),
           meta.truncated ? React.createElement('span', null, `事件过多，仅保留最近 ${RUN_EVENTS_DRAWER_CAP} 条`) : null,
         ),
       ),
@@ -5697,8 +5696,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
       return () => document.body.classList.remove('weave-session-active')
     }, [])
     const [streamDrawer, setStreamDrawer] = useState(null as null | { taskId: string; name: string })
-    const isDshExecutor = (executor?: string): boolean =>
-      executor === 'spawn' || executor === 'fork' || executor === 'dsh_subagent'
     const openOutputTab = (roleId: string, name: string, taskId: string, executor?: string): void => {
       setOutputTabs((current: Array<{ roleId: string; name: string; taskId: string; executor?: string }>) =>
         current.some((tab) => tab.roleId === roleId) ? current : [...current, { roleId, name, taskId, executor }],
@@ -5956,9 +5953,11 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
         key: roleId,
         'data-testid': `member-card-${roleId}`,
         'data-status': st,
-        'data-clickable': streamTaskId !== '' ? 'true' : undefined,
+        'data-clickable': streamTaskId !== '' && member.output_available === true ? 'true' : undefined,
         onClick: () => {
-          if (streamTaskId !== '') openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
+          if (streamTaskId !== '' && member.output_available === true) {
+            openOutputTab(roleId, String(member.name ?? roleId), streamTaskId, member.executor)
+          }
         },
       },
       ...cardChildren,
@@ -6140,11 +6139,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
                   taskId: tab.taskId,
                   onOpenDrawer: () => setStreamDrawer({ taskId: tab.taskId, name: tab.name }),
                   showMeta: true,
-                  sessionLabel: isDshExecutor(tab.executor) ? '子代理会话' : 'sessionId',
-                  onOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator
-                    ? (childSessionId: string) => void openSubagentSession(sid, childSessionId)
-                    : undefined,
-                  autoOpenSubagent: isDshExecutor(tab.executor) && sessionNavigator ? true : undefined,
                 } as never),
               )
             })(),

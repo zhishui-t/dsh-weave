@@ -414,6 +414,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     await screen.findByText('已保存：my-team（1 个角色）')
   })
 
+
   it('Dashboard 内部导航可切换 7 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
@@ -777,9 +778,9 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     session_id: 'sess-ui',
     team: { team_id: 'alpha', name: '阿尔法小队' },
     members: [
-      { role_id: 'designer', name: '设计师', executor: 'zcode', status: 'idle' },
-      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'running', task_id: 'T-A', subject: '根任务' },
-      { role_id: 'reviewer', name: '审核员', executor: 'codex', status: 'idle' },
+      { role_id: 'designer', name: '设计师', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'idle' },
+      { role_id: 'coder', name: '程序员', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'running', task_id: 'T-A', subject: '根任务' },
+      { role_id: 'reviewer', name: '审核员', executor: 'codex', executor_kind: 'codex', output_available: false, status: 'idle' },
     ],
   }
 
@@ -791,6 +792,38 @@ describe('t9 会话即团队面板（conversation.view 槽位）与 DAG 可视�
     if (!panel) throw new Error('conversation.view slot not registered')
     return { fixture, panel }
   }
+
+  it('ACP 输出页签渲染结构化 seq/tool/data，不再提供子代理会话跳转', async () => {
+    const { panel } = panelFixture({
+      'session/status': STATUS_OK,
+      'task/list': { total: 1, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', updated_at: '2025-01-05T09:00:00Z' }] },
+      'task/get': { dag_id: 'D1', status: 'running', tasks: [{ id: 'T-A', status: 'RUNNING', dependencies: [] }], edges: [] },
+      'executor/run-events': {
+        structured: true,
+        source: 'acp',
+        available: true,
+        session_id: 'acp-session-1',
+        run_id: 'acp-run-1',
+        executor: 'zcode',
+        state: 'running',
+        events: [
+          { seq: 1, ts: 1736073600000, type: 'tool_call', tool: 'bash', text: 'ls', data: { command: 'ls' } },
+        ],
+      },
+    })
+    render(createElement(panel!, { sessionId: 'sess-ui' }))
+    await screen.findByTestId('member-card-coder')
+    fireEvent.click(screen.getByTestId('member-card-coder'))
+    const output = await screen.findByTestId('session-output-coder')
+    expect(output.textContent).toContain('#1')
+    expect(output.textContent).toContain('bash')
+    expect(output.textContent).toContain('command')
+    expect(output.textContent).toContain('ACP sessionId：acp-session-1')
+    expect(output.textContent).toContain('seq / type / tool / text / data')
+    expect(screen.queryByTestId('session-open-subagent')).toBeNull()
+  })
+
+
 
   it('面板结构：团队头 + 成员卡片 + 本会话任务图；执行中成员带当前任务', async () => {
     const { panel } = panelFixture({
@@ -963,14 +996,14 @@ describe('t10 会话面板事件驱动刷新（ObservableSnapshot 订阅 + 活�
     session_id: 'sess-ui',
     team: { team_id: 'alpha', name: '阿尔法小队' },
     members: [
-      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'running', task_id: 'T-A', subject: '根任务' },
+      { role_id: 'coder', name: '程序员', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'running', task_id: 'T-A', subject: '根任务' },
     ],
   }
   const STATUS_DONE = {
     session_id: 'sess-ui',
     team: { team_id: 'alpha', name: '阿尔法小队' },
     members: [
-      { role_id: 'coder', name: '程序员', executor: 'zcode', status: 'idle', last_task_id: 'T-A', last_status: 'COMPLETED', last_subject: '根任务' },
+      { role_id: 'coder', name: '程序员', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'idle', last_task_id: 'T-A', last_status: 'COMPLETED', last_subject: '根任务' },
     ],
   }
   const LIST_RUNNING = { total: 1, tasks: [{ id: 'T-A', dag_id: 'D1', description: '根任务', status: 'RUNNING', team_id: 'alpha', project_id: 'demo', version: '0.1.0', updated_at: '2025-01-05T09:00:00Z' }] }

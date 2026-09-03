@@ -226,3 +226,74 @@ describe('DshSubagentExecutorProvider thoughtLevel', () => {
     })).rejects.toThrow(/without an in-process localAgent/)
   })
 })
+
+
+describe('DshSubagentExecutorProvider fork session reuse', () => {
+  function makeContinuableChild(id: string) {
+    return {
+      id,
+      whenIdle: async () => undefined,
+      session: { events: [] },
+      ctx: { on: () => () => undefined },
+      options: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+    }
+  }
+
+  it('fork 首次创建 continuable 子会话，后续同 sessionKey 只 followup 不再 fork', async () => {
+    const child = makeContinuableChild('fork-child-1')
+    const startContinuable = vi.fn().mockResolvedValue({ childId: 'fork-child-1' })
+    const followup = vi.fn().mockResolvedValue(undefined)
+    const subagents = {
+      list: () => ['fork'],
+      startContinuable,
+      followup,
+      listChildren: vi.fn().mockResolvedValue([]),
+      agents: { get: (id: string) => (id === 'fork-child-1' ? child : undefined) },
+    }
+    const provider = new DshSubagentExecutorProvider(subagents as never)
+
+    const first = await provider.start({
+      executor: 'fork',
+      sessionKey: 'team:fork:project:v1',
+      prompt: [{ type: 'text', text: 'first' }],
+      signal: new AbortController().signal,
+    })
+    await first.result
+
+    const second = await provider.start({
+      executor: 'fork',
+      sessionKey: 'team:fork:project:v1',
+      prompt: [{ type: 'text', text: 'second' }],
+      signal: new AbortController().signal,
+    })
+    await second.result
+
+    expect(startContinuable).toHaveBeenCalledTimes(1)
+    expect(followup).toHaveBeenCalledTimes(1)
+    expect(followup).toHaveBeenCalledWith(
+      undefined,
+      'fork-child-1',
+      [{ type: 'text', text: 'second' }],
+      expect.objectContaining({ source: expect.objectContaining({ kind: 'coordinator' }) }),
+    )
+    expect(first.sessionId).toBe('fork-child-1')
+    expect(second.sessionId).toBe('fork-child-1')
+    expect(second.id).toBe('fork-child-1')
+  })
+
+  it('宿主缺少 continuable API 时 fork 直接失败，不退回一次性 fork', async () => {
+    const start = vi.fn()
+    const provider = new DshSubagentExecutorProvider({
+      list: () => ['fork'],
+      start,
+    } as never)
+
+    await expect(provider.start({
+      executor: 'fork',
+      sessionKey: 'team:fork:project:v1',
+      prompt: [{ type: 'text', text: 'first' }],
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/requires continuable session APIs/)
+    expect(start).not.toHaveBeenCalled()
+  })
+})

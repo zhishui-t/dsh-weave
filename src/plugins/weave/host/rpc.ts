@@ -12,6 +12,7 @@ import type { WeaveQueryService } from '../web/query-service.js'
 import { WeaveError } from '../state/weave-error.js'
 import { DEFAULT_PROVIDERS_FILE, type StoredProviderConfig } from '../acp/provider-store.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadWeaveSettingsOverrides, saveWeaveSettingsOverrides } from './settings-store.js'
+import { classifyProvider } from '../executors/executor-registry.js'
 import type { TeamConfig } from '../team/team-manager.js'
 
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
@@ -92,8 +93,56 @@ export type ZcodeCatalog = () => Promise<ExecutorSessionConfig | undefined>
  * persistence 可选——存在时 team/bind* 与 overview.bindings、settings.state_dir 才可用。
  */
 export interface ExecutorRunsQuery {
-    getExecutorRun(runId: string): { events: Array<{ type: string; text?: string; name?: string }>; state: string; sessionId?: string } | undefined
-    listExecutorRuns(): Array<{ runId: string; taskId: string; executor: string; state: string; startedAt: number; sessionId?: string; events: Array<{ type: string; text?: string; name?: string }> }>
+    getExecutorRun(runId: string): {
+      taskId: string
+      executor: string
+      events: Array<{ type: string; text?: string; name?: string; data?: unknown; at?: number }>
+      state: string
+      sessionId?: string
+    } | undefined
+    listExecutorRuns(): Array<{
+      runId: string
+      taskId: string
+      executor: string
+      state: string
+      startedAt: number
+      sessionId?: string
+      events: Array<{ type: string; text?: string; name?: string; data?: unknown; at?: number }>
+    }>
+}
+
+/** 团队面板过程输出只允许 ACP 执行器接入。 */
+function executorOutputAvailable(executor: string): boolean {
+  return classifyProvider(executor) === 'acp'
+}
+
+/** RPC 输出事件保持 Provider 原始 data/at，并带稳定展示序号。 */
+function toStructuredRunEvent(
+  event: { type: string; text?: string; name?: string; data?: unknown; at?: number },
+  index: number,
+): Record<string, unknown> {
+  return {
+    seq: index + 1,
+    ts: event.at ?? 0,
+    type: event.type,
+    ...(event.name !== undefined ? { tool: event.name } : {}),
+    ...(event.text !== undefined ? { text: event.text } : {}),
+    ...(event.data !== undefined ? { data: event.data } : {}),
+  }
+}
+
+function runOutputUnavailable(reason: 'executor_output_disabled' | 'run_not_found', executor?: string): Record<string, unknown> {
+  return {
+    structured: true,
+    source: 'acp',
+    available: false,
+    reason,
+    ...(executor !== undefined ? { executor } : {}),
+    session_id: undefined,
+    run_id: undefined,
+    events: [],
+    runs: [],
+  }
 }
 export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> &
   Partial<Pick<CliMcpDeps, 'persistence'>> & {
@@ -293,32 +342,68 @@ export function createWeaveRpcHandler(
       if (endpoint === 'executor/run-events') {
         const input = objectPayload(payload)
         const runs = resolvedDeps.executorRuns
-        if (!runs) return success({ session_id: undefined, events: [], runs: [] })
+        if (!runs) return success(runOutputUnavailable('run_not_found'))
         const runId = typeof input.runId === 'string' ? input.runId : undefined
         const taskId = typeof input.taskId === 'string' ? input.taskId : undefined
         const tail = typeof input.tail === 'number' ? Math.min(input.tail, 200) : 50
-        const toClientEvent = (e: { type: string; text?: string; name?: string }, idx: number): Record<string, unknown> => ({
-            ts: Date.now() - (tail - idx) * 1000,
-            type: e.type === 'tool_call' ? 'tool_call' : e.type === 'tool_result' ? 'tool_result' : e.type,
-            tool: e.name,
-            text: e.text,
-        })
+
         if (runId) {
           const snap = runs.getExecutorRun(runId)
-          if (!snap) return success({ session_id: undefined, events: [], runs: [] })
-          return success({ session_id: snap.sessionId, events: snap.events.slice(-tail).map(toClientEvent), runs: [] })
+          if (!snap) return success(runOutputUnavailable('run_not_found'))
+          const executor = snap.executor
+          if (!executorOutputAvailable(executor)) return success(runOutputUnavailable('executor_output_disabled', executor))
+          const events = snap.events.slice(-tail).map(toStructuredRunEvent)
+          return success({
+            structured: true,
+            source: 'acp',
+            available: true,
+            session_id: snap.sessionId,
+            run_id: runId,
+            executor,
+            state: snap.state,
+            events,
+            runs: [],
+          })
         }
+
         const all = runs.listExecutorRuns()
-        const filtered = taskId ? all.filter((r) => r.taskId === taskId) : all
-        const withTails = filtered.map((r) => ({ ...r, events: r.events.slice(-tail).map(toClientEvent) }))
-        // E 块契约（doc/REDESIGN_UI_SPEC）：出参 ExecutorRunSnapshot 为顶层
-        // session_id/events；前端 fetchRunEvents 只读顶层。曾因包在 detail 内
-        // 导致 UI 拿到 events=[]（后端缓冲有数据但面板永远空白）。
-        if (taskId && withTails.length > 0) {
-          const first = withTails[0]!
-          return success({ session_id: first.sessionId, events: first.events, runs: withTails })
+        const scoped = taskId ? all.filter((run) => run.taskId === taskId) : all
+        // DSH spawn/fork 是会话树子代理，不是 ACP 过程流；团队面板不接入其输出。
+        const acpRuns = scoped.filter((run) => executorOutputAvailable(run.executor))
+        if (taskId && acpRuns.length === 0) {
+          const executor = scoped[0]?.executor
+          return success(runOutputUnavailable(
+            executor !== undefined && !executorOutputAvailable(executor) ? 'executor_output_disabled' : 'run_not_found',
+            executor,
+          ))
         }
-        return success({ session_id: undefined, events: [], runs: withTails })
+        const withTails = acpRuns.map((run) => ({
+          ...run,
+          events: run.events.slice(-tail).map(toStructuredRunEvent),
+        }))
+        if (taskId) {
+          const first = withTails[0]!
+          return success({
+            structured: true,
+            source: 'acp',
+            available: true,
+            session_id: first.sessionId,
+            run_id: first.runId,
+            executor: first.executor,
+            state: first.state,
+            events: first.events,
+            runs: withTails,
+          })
+        }
+        return success({
+          structured: true,
+          source: 'acp',
+          available: true,
+          session_id: undefined,
+          run_id: undefined,
+          events: [],
+          runs: withTails,
+        })
       }
 
       if (endpoint === 'debug/plan-tasks') {

@@ -158,8 +158,13 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       try {
         return await this.#startContinuable(request, sessionKey)
       } catch (error) {
+        // fork 的会话连续性是业务约束：复用失败时不能静默再 fork 一个新子代理。
+        if (request.executor === 'fork') throw error
         console.warn('[dsh-weave] dsh-subagent continuable reuse failed, falling back to one-shot:', error)
       }
+    }
+    if (request.executor === 'fork') {
+      throw new Error('dsh-subagent: fork executor requires continuable session APIs')
     }
     return this.#startOneShot(request)
   }
@@ -184,6 +189,7 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
 
   async #startContinuable(request: ExecutorStartRequest, sessionKey: string): Promise<ExecutorRun> {
     const prompt = [{ type: 'text' as const, text: request.prompt.map((block) => block.text).join('\n\n') }]
+
     const agentOptions = buildAgentOptions(request)
 
     let childId = this.#children.get(sessionKey)
@@ -204,6 +210,8 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
         // 会话树不可用时退回内存/新建路径；不阻断。
       }
     }
+
+    let boundary = 0
     if (childId === undefined) {
       const started = await this.#subagents.startContinuable!({
         provider: request.executor,
@@ -218,7 +226,18 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       })
       childId = started.childId
       this.#children.set(sessionKey, childId)
+      const initialChild = this.#subagents.agents!.get(childId) as ChildAgentLike | undefined
+      if (!initialChild || typeof initialChild.whenIdle !== 'function') {
+        throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
+      }
+      boundary = initialChild.session?.events?.length ?? 0
     } else {
+      const existingChild = this.#subagents.agents!.get(childId) as ChildAgentLike | undefined
+      if (!existingChild || typeof existingChild.whenIdle !== 'function') {
+        throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
+      }
+      // followup 可能同步触发事件；先记录边界，避免把本轮输出误算进上一轮/漏掉本轮。
+      boundary = existingChild.session?.events?.length ?? 0
       await this.#subagents.followup!(request.parent, childId, prompt, {
         source: {
           kind: 'coordinator',
@@ -235,8 +254,6 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
     }
 
     this.#applyThoughtLevel(child, request.runtime)
-
-    const boundary = child.session?.events?.length ?? 0
     this.#boundaries.set(childId, boundary)
 
     let cancelled = false
