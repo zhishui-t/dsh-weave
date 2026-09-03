@@ -14,6 +14,7 @@ import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
 import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
+import { GraphRefresher } from './graph-refresh.js'
 import { OnDutyController } from './on-duty.js'
 import {
   createWeaveNoticeMessage,
@@ -111,6 +112,13 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     },
   )
 
+  // 代码图谱自动刷新（团队启动先建/更新；任务完成后主会话侧更新，去抖合并）。
+  const graphRefresher = new GraphRefresher({
+    graphService: deps.graphService,
+    notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
+    log: console,
+  })
+
   const scheduler = new WeaveScheduler({
     delegation,
     persistence: deps.persistence,
@@ -118,7 +126,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
     statusNotifier,
     audit: auditLog,
-    onTaskSettledText: async ({ task, role, text }) => {
+    onTaskSettledText: async ({ task, role, text, status }) => {
       const result = await reflection.depositFromOutput({
         taskId: task.id,
         executor: role.executor,
@@ -128,6 +136,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
         outputText: text,
         taskSubject: subjectLabel(task),
       })
+      if (status === 'COMPLETED') graphRefresher.request('task-settled', task.session_id)
       return result.deposited.length
     },
   })
@@ -149,7 +158,11 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
   const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
   const planTasks = createPlanTasksHandler({
     planner,
-    schedulerStart: async (input) => scheduler.start(input),
+    schedulerStart: async (input) => {
+      // 团队启动：先新建/更新代码图谱（去抖合并，不阻塞派发）。
+      graphRefresher.request('team-start', input.sessionId)
+      await scheduler.start(input)
+    },
     log: console,
     getAgentById: (id) => agentsRegistry?.get(id as never),
   })
@@ -169,6 +182,9 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     mailbox,
     reflectionSink,
     onDuty,
-    disposeScheduler: () => scheduler.dispose(),
+    disposeScheduler: () => {
+      graphRefresher.dispose()
+      scheduler.dispose()
+    },
   }
 }
