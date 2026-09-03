@@ -78,7 +78,8 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
   test.skip(!LIVE_ENABLED, 'live 层 env 门控：需 WEAVE_E2E_LIVE=1')
 
   test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage()
+    // 1440 视口下侧边栏默认折叠，工作区按钮不可见——用宽视口保证侧边栏展开
+    page = await browser.newPage({ viewport: { width: 1680, height: 950 } })
   })
 
   test.afterAll(async () => {
@@ -117,6 +118,14 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
     await page.waitForTimeout(3500)
 
     const newInWs = page.getByRole('button', { name: `在“${WORKSPACE}”中新建会话` })
+    if (!(await newInWs.first().isVisible().catch(() => false))) {
+      // 窄视口下侧边栏可能折叠：先点「打开侧边栏」再找工作区入口
+      const openSide = page.getByRole('button', { name: '打开侧边栏' })
+      if (await openSide.isVisible().catch(() => false)) {
+        await openSide.click()
+        await page.waitForTimeout(1200)
+      }
+    }
     await newInWs.first().waitFor({ state: 'visible', timeout: 20_000 })
     await newInWs.first().click()
     await page.waitForTimeout(1500)
