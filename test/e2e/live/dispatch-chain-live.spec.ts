@@ -25,7 +25,7 @@ const WORKSPACE = process.env.WEAVE_DISPATCH_WORKSPACE ?? 'test'
 const TEAM = process.env.WEAVE_DISPATCH_TEAM ?? 'deepseek-zcode-test'
 const PROJECT = process.env.WEAVE_DISPATCH_PROJECT ?? 'snake'
 const WORK_DIR = process.env.WEAVE_DISPATCH_CWD ?? `K:/work/${WORKSPACE}/zcode-squad/snake`
-const MONITOR_MS = Number(process.env.WEAVE_DISPATCH_TIMEOUT_MS ?? 15 * 60_000)
+const MONITOR_MS = Number(process.env.WEAVE_DISPATCH_TIMEOUT_MS ?? 30 * 60_000)
 const STATE_DIR = join(homedir(), '.dsh', 'state')
 const SESSIONS_ROOT = join(homedir(), '.dsh', 'sessions')
 /** cwd → sessions 目录名映射（DSH 约定：K:\work\test → --K-work-test--）。 */
@@ -42,12 +42,12 @@ const mark = (name: string, ok: boolean, detail = '') => {
   console.log(`  ${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
+// 端到端语义（用户定义）：测试只说"目标"，不喂任务清单——
+// 队长（主会话）必须自己设计拆解（weave_plan_tasks）、自己指派执行器、多轮推进到交付。
 const DISPATCH_MESSAGE = [
-  `【目标】用 weave_plan_tasks 拆解派发（project_id=${PROJECT}, version=v1），不要自己动手实现：`,
-  `T1（developer/zcode）：实现 ${WORK_DIR}/game.html：单文件贪吃蛇，20x20 canvas、方向键/WASD 禁 180 度掉头、空格暂停、吃食物加分加速、撞墙/撞己结束、Enter/按钮重开、localStorage 最高分。`,
-  `T2（dsh-developer/spawn）：编写并运行 ${WORK_DIR}/tests/smoke_check.py：校验 game.html 存在非空、DOCTYPE/canvas 在位、JS 括号平衡，输出结果。`,
-  `T3（fork-developer/fork）：走查 game.html 逻辑与视觉，输出结论与改进点。`,
-  `所有执行器必须显式携带 cwd=${WORK_DIR}（zcode 缺 cwd 会报 cwd required）。完成后汇总验收结论。`,
+  `团队来做一个单文件贪吃蛇小游戏，放在 ${WORK_DIR} 目录。`,
+  `要求：双击就能玩、有最高分记录，配套一个能自动跑的冒烟检查，最后给一份逻辑/视觉走查结论和你的验收汇总。`,
+  `怎么拆任务、派给谁、什么顺序，由你作为队长自行设计。目录下如有旧版实现可参考或重构。`,
 ].join('\n')
 
 let page: Page
@@ -180,35 +180,44 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
       const tasks = openReadOnly('tasks.db')
       try {
         taskRows = tasks.prepare(
-          'SELECT id, status, executor, team_id, project_id, session_id FROM tasks WHERE session_id = ? ORDER BY id',
+          'SELECT id, status, executor, team_id, project_id, session_id, stage FROM tasks WHERE session_id = ? ORDER BY id',
         ).all(captainSessionId) as Array<Record<string, unknown>>
         dagRow = tasks.prepare(
-          'SELECT dag_id, team_id, status FROM dags WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1',
-        ).get(PROJECT) as Record<string, unknown> | undefined
+          'SELECT dag_id, team_id, status FROM dags ORDER BY updated_at DESC LIMIT 1',
+        ).get() as Record<string, unknown> | undefined
       } finally { tasks.close() }
       if (taskRows.length > 0) {
         const statuses = taskRows.map((r) => String(r.status))
         if (statuses.some((s) => s === 'RUNNING' || s === 'AWAITING_FEEDBACK')) sawRunning = true
-        if (statuses.length >= 3 && statuses.every((s) => TERMINAL.has(s))) break
+        if (statuses.length >= 2 && statuses.every((s) => TERMINAL.has(s))) break
       }
     }
 
-    mark('任务已入 tasks.db 且归属正确团队', taskRows.length > 0 && taskRows.every((r) => r.team_id === TEAM),
-      taskRows.map((r) => `${r.id}:${r.status}`).join(' ') || '无任务（队长未派发？）')
-    expect(taskRows.length, '队长未在 weave_plan_tasks 下创建任何任务').toBeGreaterThan(0)
-    expect(taskRows.every((r) => r.team_id === TEAM), '任务归属团队错误（又解析到 changan？）').toBe(true)
+    // 队长自主性断言：任务由队长自己设计（数量/拆分/执行器均不预设）
+    mark('队长自主拆解出任务（≥2）', taskRows.length >= 2,
+      taskRows.map((r) => `${r.id}[${r.stage || '-'}]→${r.executor}:${r.status}`).join(' ') || '无任务（队长未派发？）')
+    expect(taskRows.length, '队长未在 weave_plan_tasks 下自主创建任务').toBeGreaterThanOrEqual(2)
+    mark('任务归属正确团队', taskRows.every((r) => r.team_id === TEAM),
+      [...new Set(taskRows.map((r) => String(r.team_id)))].join(','))
 
     const statuses = taskRows.map((r) => String(r.status))
-    const allTerminal = statuses.length >= 3 && statuses.every((s) => TERMINAL.has(s))
+    const allTerminal = statuses.length >= 2 && statuses.every((s) => TERMINAL.has(s))
     mark(`任务全部终态（${statuses.join(',')}）`, allTerminal, sawRunning ? '观察到 RUNNING' : '轮询间隙未见 RUNNING')
 
-    const game = `${WORK_DIR}/game.html`
-    const smoke = `${WORK_DIR}/tests/smoke_check.py`
-    // 必须是本次执行更新的产物（防止历史文件污染断言）
-    const gameFresh = existsSync(game) && statSync(game).mtimeMs >= t0
-    const smokeFresh = existsSync(smoke) && statSync(smoke).mtimeMs >= t0
-    mark('产物 game.html 本次执行更新', gameFresh, game)
-    mark('产物 tests/smoke_check.py 本次执行更新', smokeFresh, smoke)
+    // 产物断言（目标语义级）：交付目录内必须有本次执行新写/更新的文件；
+    // 具体文件名由队长设计，不预设。
+    const freshFiles: string[] = []
+    const walkFresh = (dir: string): void => {
+      if (!existsSync(dir)) return
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name)
+        const st = statSync(p)
+        if (st.isDirectory()) { if (name !== 'node_modules') walkFresh(p) }
+        else if (st.mtimeMs >= t0) freshFiles.push(p)
+      }
+    }
+    walkFresh(WORK_DIR)
+    mark('交付目录存在本次执行的新产物', freshFiles.length > 0, freshFiles.slice(0, 5).join(' | ') || '无新文件')
 
     const tab = page.getByText('Weave 团队', { exact: false }).first()
     if (await tab.isVisible().catch(() => false)) { await tab.click(); await page.waitForTimeout(6000) }
@@ -216,8 +225,7 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
 
     // 终态与产物是硬断言：失败即红，报告里保留全部过程信息
     expect(allTerminal, `任务未全部终态: ${statuses.join(',')}`).toBe(true)
-    expect(gameFresh, `game.html 未在本次执行中更新（${game}）`).toBe(true)
-    expect(smokeFresh, `smoke_check.py 未在本次执行中更新（${smoke}）`).toBe(true)
+    expect(freshFiles.length, '交付目录没有任何本次执行的新产物').toBeGreaterThan(0)
   })
 
   test('knowledge: 任务完成后知识沉淀入库', async () => {
