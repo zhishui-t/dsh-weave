@@ -117,19 +117,38 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await page.waitForTimeout(3500)
 
-    const newInWs = page.getByRole('button', { name: `在“${WORKSPACE}”中新建会话` })
-    if (!(await newInWs.first().isVisible().catch(() => false))) {
-      // 窄视口下侧边栏可能折叠：先点「打开侧边栏」再找工作区入口
-      const openSide = page.getByRole('button', { name: '打开侧边栏' })
-      if (await openSide.isVisible().catch(() => false)) {
-        await openSide.click()
-        await page.waitForTimeout(1200)
+    // 工作区入口三重兜底（UI 语言/展开态无关）：
+    // A. hover 工作区行 → 行内“新建会话”按钮（hover 才渲染）
+    // B. 点击行展开后再 hover
+    // C. 输入框的 Choose workspace 菜单直接选目标工作区
+    const wsRow = page.getByRole('treeitem', { name: WORKSPACE, exact: true }).first()
+    await wsRow.waitFor({ state: 'visible', timeout: 20_000 })
+    const entryName = new RegExp(`在“${WORKSPACE}”中新建会话|New session in “${WORKSPACE}”`)
+    const entry = page.getByRole('button', { name: entryName }).first()
+    const chooseBtn = page.getByRole('button', { name: /Choose workspace|选择工作区/ }).first()
+    let viaEntry = false
+    for (let attempt = 0; attempt < 2 && !viaEntry; attempt += 1) {
+      await wsRow.hover()
+      await page.waitForTimeout(500)
+      if (await entry.isVisible().catch(() => false)) {
+        await entry.click()
+        viaEntry = true
+        break
       }
+      if (attempt === 0) { await wsRow.click(); await page.waitForTimeout(900) }
     }
-    await newInWs.first().waitFor({ state: 'visible', timeout: 20_000 })
-    await newInWs.first().click()
-    await page.waitForTimeout(1500)
-    mark(`工作区「${WORKSPACE}」新建会话入口可用`, true)
+    if (!viaEntry) {
+      await chooseBtn.click()
+      await page.waitForTimeout(800)
+      await page.locator('[role="option"], [role="menuitem"], [role="treeitem"]')
+        .filter({ hasText: new RegExp(`^\\s*${WORKSPACE}\\s*$`) }).first()
+        .click()
+      await page.waitForTimeout(800)
+    }
+    // 硬断言：composer 当前工作区必须是目标（否则会话又会落到默认 weave）
+    const chosenText = (await chooseBtn.innerText().catch(() => '')) + ' ' + (await chooseBtn.textContent().catch(() => ''))
+    mark(`composer 工作区 = ${WORKSPACE}`, chosenText.includes(WORKSPACE), chosenText.trim().slice(0, 60))
+    expect(chosenText.includes(WORKSPACE), `composer 仍指向 ${chosenText.trim()}——会话将落到错误 cwd`).toBe(true)
 
     const input = page.locator('textarea').first()
     await input.waitFor({ state: 'visible', timeout: 20_000 })
