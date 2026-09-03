@@ -62,6 +62,7 @@ function makeHookEnv() {
       if (teamId === null) await manager.unbindTeam(sessionId)
       else await manager.bindTeam(sessionId, teamId)
     },
+    getSelection: (sessionId) => manager.getSelection(sessionId),
     notify: (sessionId, text) => { notices.push({ sessionId, text }) },
   })
   return { manager, notices, hook }
@@ -262,5 +263,54 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
       ok: false,
       error: { code: 'bad-request', details: { original_code: 'invalid_argument' } },
     })
+  })
+})
+
+describe('团队感知提醒（非控制指令路径）', () => {
+  it('命中团队关键词时注入提醒并放行本回合', async () => {
+    const env = makeHookEnv()
+    const { payload } = makePayload('aw-1', '启动 deepseek zcode 测试小队开发个小游戏', 'aw-sess-1')
+    const decision = await env.hook(payload, nextOk)
+
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    expect(decision.messages).toHaveLength(1)
+    const injected = decision.messages[0] as { content?: Array<{ type: string; text: string }>; source?: { kind: string; plugin: string } }
+    expect(injected.source).toEqual({ kind: 'plugin', plugin: 'dsh-weave' })
+    const text = injected.content?.[0]?.text ?? ''
+    expect(text).toContain('pipe-team')
+    expect(text).toContain('weave_plan_tasks')
+    expect(text).toContain('唯一团队')
+    expect(text).toContain('不要凭空模拟团队成员')
+  })
+
+  it('同一会话同一团队清单只注入一次', async () => {
+    const env = makeHookEnv()
+    const first = await env.hook(makePayload('aw-2a', '用团队做个工具', 'aw-sess-2').payload, nextOk)
+    const second = await env.hook(makePayload('aw-2b', '再说一次团队派单', 'aw-sess-2').payload, nextOk)
+    expect(first.kind).toBe('enter')
+    expect(second.kind).toBe('enter')
+    if (first.kind !== 'enter' || second.kind !== 'enter') return
+    expect(first.messages).toHaveLength(1)
+    expect(second.messages).toHaveLength(0)
+  })
+
+  it('未命中关键词不注入', async () => {
+    const env = makeHookEnv()
+    const decision = await env.hook(makePayload('aw-3', '帮我写一个纯函数', 'aw-sess-3').payload, nextOk)
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    expect(decision.messages).toHaveLength(0)
+  })
+
+  it('已绑定会话注入绑定态文案', async () => {
+    const env = makeHookEnv()
+    await env.manager.bindTeam('aw-sess-4', 'pipe-team')
+    const decision = await env.hook(makePayload('aw-4', 'weave 派单：重构登录模块', 'aw-sess-4').payload, nextOk)
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    expect(decision.messages).toHaveLength(1)
+    const injected = decision.messages[0] as { content?: Array<{ type: string; text: string }> }
+    expect(injected.content?.[0]?.text).toContain('已绑定团队「pipe-team」')
   })
 })

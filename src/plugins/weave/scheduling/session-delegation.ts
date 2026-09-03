@@ -131,6 +131,11 @@ export interface PreStepHookDeps {
   setSelection(sessionId: string, teamId: string | null): Promise<void>
   /** 会话 notice 写入（prod 绑定 notifySession；session 缺席时实现方自行降级告警）。 */
   notify: (sessionId: string, text: string, session?: NoticeSessionLike) => void
+  /**
+   * 读取会话当前团队绑定（prod 绑定 teamManager.getSelection）。
+   * 可选：缺失或抛错时按「未绑定」降级，不影响主链路。
+   */
+  getSelection?: (sessionId: string) => Promise<{ team_id: string } | null>
   log?: { warn?: (...args: unknown[]) => void }
   /** 去重表容量上限（FIFO 淘汰；默认 512）。 */
   dedupeLimit?: number
@@ -172,6 +177,80 @@ export function parseTeamSelectionCommand(text: string, teams: readonly TeamConf
     teams.find((item) => item.team_id.toLowerCase().includes(needle)) ??
     teams.find((item) => item.name.toLowerCase().includes(needle))
   return team ? { action: 'enable', team } : null
+}
+
+/* ------------------------------ 团队感知提醒 ------------------------------ */
+
+/** 团队感知触发词：命中才注入，避免每回合刷屏。 */
+const TEAM_AWARENESS_PATTERN = /团队|小队|weave|派单|队长|多[名个]?\s*agent/i
+
+/** 会话级去重：sessionId → 已注入过的（团队清单#绑定）签名。 */
+const teamAwarenessNotified = new Map<string, string>()
+
+/**
+ * 构建团队感知提醒文本：列出已配置团队、当前绑定与解析去向、启停/派单入口。
+ * 目标是让任何 cwd 的会话在第一回合就知道「团队已配置、别自己模拟成员」。
+ */
+export function buildTeamAwarenessText(teams: readonly TeamConfig[], boundTeamId: string | null): string {
+  const lines = teams.map((team) => `- ${team.team_id}（${team.name}）${team.default ? '[默认]' : ''}`)
+  const fallback = teams.find((team) => team.default) ?? (teams.length === 1 ? teams[0] : undefined)
+  const bound = boundTeamId === null ? undefined : teams.find((team) => team.team_id === boundTeamId)
+  const binding = bound
+    ? `当前会话已绑定团队「${bound.team_id}」——直接描述目标，队长用 weave_plan_tasks 拆解并派发给成员执行。`
+    : `当前会话未绑定团队${fallback ? `，weave_plan_tasks 将解析到${fallback.default ? '默认' : '唯一'}团队「${fallback.team_id}」` : ''}。`
+  return [
+    '<system-reminder>',
+    `[weave] 本机已配置 ${teams.length} 个多 Agent 团队（~/.dsh/teams）：`,
+    ...lines,
+    binding,
+    '启用指定团队：回复“启动团队 <team_id>”；关闭：回复“关闭团队”。',
+    '队长派单工具：weave_plan_tasks（未解锁时先用 dev_tool_search 搜 weave 解锁）。',
+    '不要凭空模拟团队成员或代替成员产出。',
+    '</system-reminder>',
+  ].join('\n')
+}
+
+/** 是否命中团队感知触发词。 */
+export function shouldTriggerTeamAwareness(text: string): boolean {
+  return TEAM_AWARENESS_PATTERN.test(text)
+}
+
+/**
+ * 把团队感知提醒追加进 pre-step 决策：
+ * - enter → 追加进 messages（本回合模型可见）；
+ * - 其他（被拒等）→ 走 durable notice，不破坏原决策。
+ * 每个会话按（团队清单#绑定）签名只注入一次。
+ */
+async function appendTeamAwareness(
+  deps: PreStepHookDeps,
+  sessionId: string,
+  text: string,
+  decision: PreStepDecisionLike,
+  session?: NoticeSessionLike,
+): Promise<PreStepDecisionLike> {
+  try {
+    if (!shouldTriggerTeamAwareness(text)) return decision
+    const teams = deps.listTeams()
+    if (teams.length === 0) return decision
+    let boundTeamId: string | null = null
+    try {
+      boundTeamId = (await deps.getSelection?.(sessionId))?.team_id ?? null
+    } catch {
+      boundTeamId = null
+    }
+    const signature = `${teams.map((team) => team.team_id).join('|')}#${boundTeamId ?? 'none'}`
+    if (teamAwarenessNotified.get(sessionId) === signature) return decision
+    teamAwarenessNotified.set(sessionId, signature)
+    const reminderText = buildTeamAwarenessText(teams, boundTeamId)
+    if (decision.kind === 'enter') {
+      return { kind: 'enter', messages: [...decision.messages, createWeaveNoticeMessage(reminderText)] }
+    }
+    deps.notify(sessionId, reminderText, session)
+    return decision
+  } catch (error) {
+    deps.log?.warn?.('[dsh-weave] team awareness injection error:', error)
+    return decision
+  }
 }
 
 const DEFAULT_PROCESSED_MESSAGE_LIMIT = 2048
@@ -216,7 +295,10 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
       if (text === '') return await next()
 
       const command = parseTeamSelectionCommand(text, deps.listTeams())
-      if (!command) return await next()
+      if (!command) {
+        const downstream = await next()
+        return await appendTeamAwareness(deps, sessionId, text, downstream, payload.agent?.session)
+      }
 
       // 先占位再 await：同一消息并发投递/多 hook 实例共享模块级去重表，
       // 不会在 setSelection 完成前各自通过检查造成 3 条重复 notice。

@@ -144,6 +144,7 @@ export function apply(ctx: Context): void {
             if (teamId === null) await deps.teamManager.unbindTeam(sessionId)
             else await deps.teamManager.bindTeam(sessionId, teamId)
           },
+          getSelection: (sessionId) => deps.teamManager.getSelection(sessionId),
           notify: notifyWeaveSession,
         })
         const evented = runtime as Context & { on?(name: string, listener: unknown): unknown }
