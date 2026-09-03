@@ -187,6 +187,42 @@ const TEAM_AWARENESS_PATTERN = /团队|小队|weave|派单|队长|多[名个]?\s
 /** 会话级去重：sessionId → 已注入过的（团队清单#绑定）签名。 */
 const teamAwarenessNotified = new Map<string, string>()
 
+/** 目标类消息粗判：足够长，或含明确动作动词——避免把寒暄/短问句当成目标。 */
+function looksLikeGoalMessage(text: string): boolean {
+  if (text.length >= 20) return true
+  return /实现|开发|做一|写一|修复|重构|添加|新增|交付|搭建|制作|测试/.test(text)
+}
+
+/** 消息级去重：同一条目标消息只注入一次队长纪律（FIFO 上限 512）。 */
+const captainDirectiveSeen = new Map<string, true>()
+
+function markCaptainDirective(messageId: string): void {
+  captainDirectiveSeen.set(messageId, true)
+  while (captainDirectiveSeen.size > 512) {
+    const oldest = captainDirectiveSeen.keys().next().value
+    if (oldest === undefined) break
+    captainDirectiveSeen.delete(oldest)
+  }
+}
+
+/**
+ * 队长纪律指令：绑定团队后收到目标类消息时注入。
+ * 实测 glm-5.3(max) 会无视温和的感知提醒而亲自实现——此指令以硬约束口吻
+ * 强制「拆解派发给成员、只做汇总验收」。
+ */
+export function buildCaptainDirectiveText(boundTeamId: string): string {
+  return [
+    '<system-reminder>',
+    `【队长纪律 · 硬约束】当前会话已绑定团队「${boundTeamId}」，上面这条是给团队的目标指令。`,
+    '禁止你亲自实现/写代码/写测试——所有产出必须由成员完成：',
+    '1) 立即调用 weave_plan_tasks，把目标拆解为成员任务并指派（工具未解锁先用 dev_tool_search 搜 weave 解锁）；',
+    '2) 任务描述里给每个成员显式的工作目录（cwd）；',
+    '3) 成员执行期间你只跟踪进度与汇总，最终输出验收结论。',
+    '除非成员任务全部结束，否则不要宣布完成。',
+    '</system-reminder>',
+  ].join('\n')
+}
+
 /**
  * 构建团队感知提醒文本：列出已配置团队、当前绑定与解析去向、启停/派单入口。
  * 目标是让任何 cwd 的会话在第一回合就知道「团队已配置、别自己模拟成员」。
@@ -224,12 +260,12 @@ export function shouldTriggerTeamAwareness(text: string): boolean {
 async function appendTeamAwareness(
   deps: PreStepHookDeps,
   sessionId: string,
+  messageId: string,
   text: string,
   decision: PreStepDecisionLike,
   session?: NoticeSessionLike,
 ): Promise<PreStepDecisionLike> {
   try {
-    if (!shouldTriggerTeamAwareness(text)) return decision
     const teams = deps.listTeams()
     if (teams.length === 0) return decision
     let boundTeamId: string | null = null
@@ -238,6 +274,21 @@ async function appendTeamAwareness(
     } catch {
       boundTeamId = null
     }
+
+    // 绑定态 + 目标类消息 → 队长纪律硬指令（按消息 id 去重）
+    if (boundTeamId !== null && looksLikeGoalMessage(text)) {
+      if (captainDirectiveSeen.has(messageId)) return decision
+      markCaptainDirective(messageId)
+      const directiveText = buildCaptainDirectiveText(boundTeamId)
+      if (decision.kind === 'enter') {
+        return { kind: 'enter', messages: [...decision.messages, createWeaveNoticeMessage(directiveText)] }
+      }
+      deps.notify(sessionId, directiveText, session)
+      return decision
+    }
+
+    // 未绑定态 → 团队感知提醒（会话×签名只注入一次）
+    if (!shouldTriggerTeamAwareness(text)) return decision
     const signature = `${teams.map((team) => team.team_id).join('|')}#${boundTeamId ?? 'none'}`
     if (teamAwarenessNotified.get(sessionId) === signature) return decision
     teamAwarenessNotified.set(sessionId, signature)
@@ -297,7 +348,7 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
       const command = parseTeamSelectionCommand(text, deps.listTeams())
       if (!command) {
         const downstream = await next()
-        return await appendTeamAwareness(deps, sessionId, text, downstream, payload.agent?.session)
+        return await appendTeamAwareness(deps, sessionId, latest.id, text, downstream, payload.agent?.session)
       }
 
       // 先占位再 await：同一消息并发投递/多 hook 实例共享模块级去重表，

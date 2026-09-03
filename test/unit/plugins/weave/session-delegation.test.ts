@@ -124,12 +124,16 @@ describe('自然语言团队启停（会话控制通道）', () => {
     expect(env.notices.at(-1)?.text).toContain('已关闭当前会话的团队')
   })
 
-  it('普通任务消息直接放行（任务派发由队长模型经 weave_plan_tasks 完成）', async () => {
+  it('绑定态目标消息注入纪律后放行（派发仍由队长经 weave_plan_tasks 完成）', async () => {
     const env = makeHookEnv()
     await env.manager.bindTeam('sess-1', 'pipe-team')
     const payload = makePayload('m-task', '做一个新的登录页面')
     const decision = await env.hook(payload.payload, nextOk)
-    expect(decision).toEqual({ kind: 'enter', messages: [] })
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    expect(decision.messages).toHaveLength(1)
+    const injected = decision.messages[0] as { content?: Array<{ type: string; text: string }> }
+    expect(injected.content?.[0]?.text).toContain('队长纪律')
     expect(env.notices).toHaveLength(0)
   })
 
@@ -303,10 +307,30 @@ describe('团队感知提醒（非控制指令路径）', () => {
     expect(decision.messages).toHaveLength(0)
   })
 
-  it('已绑定会话注入绑定态文案', async () => {
+  it('已绑定会话的目标消息注入队长纪律硬指令（按消息 id 去重）', async () => {
     const env = makeHookEnv()
     await env.manager.bindTeam('aw-sess-4', 'pipe-team')
     const decision = await env.hook(makePayload('aw-4', 'weave 派单：重构登录模块', 'aw-sess-4').payload, nextOk)
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    expect(decision.messages).toHaveLength(1)
+    const injected = decision.messages[0] as { content?: Array<{ type: string; text: string }> }
+    const text = injected.content?.[0]?.text ?? ''
+    expect(text).toContain('队长纪律')
+    expect(text).toContain('pipe-team')
+    expect(text).toContain('weave_plan_tasks')
+    expect(text).toContain('禁止你亲自实现')
+
+    const replay = await env.hook(makePayload('aw-4', 'weave 派单：重构登录模块', 'aw-sess-4').payload, nextOk)
+    expect(replay.kind).toBe('enter')
+    if (replay.kind !== 'enter') return
+    expect(replay.messages).toHaveLength(0)
+  })
+
+  it('绑定态下的非目标短消息仍走团队感知提醒', async () => {
+    const env = makeHookEnv()
+    await env.manager.bindTeam('aw-sess-5', 'pipe-team')
+    const decision = await env.hook(makePayload('aw-5', '团队现在有哪些人', 'aw-sess-5').payload, nextOk)
     expect(decision.kind).toBe('enter')
     if (decision.kind !== 'enter') return
     expect(decision.messages).toHaveLength(1)
