@@ -1,5 +1,6 @@
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { AuditLog, DEFAULT_AUDIT_DIR } from '../audit/audit-log.js'
 import { WeaveCli, WeaveMcp, type CliMcpDeps } from './cli-mcp.js'
@@ -779,10 +780,12 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     knowledgeReview: kreview,
     knowledgeStore: kstore,
     importPipeline,
+    // 默认根链与 query-service 一致：显式 env > 插件仓根（src/dist 布局均四级向上）；
+    // 绝不落到宿主 cwd（profile 目录无 .graphify，无参调用必报「尚未构建」）。
     graphService: new GraphService(
       process.env.WEAVE_GRAPH_PROJECT_ROOT
         ? { projectRoot: process.env.WEAVE_GRAPH_PROJECT_ROOT }
-        : {}
+        : { projectRoot: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..') }
     ),
     documentConverter: new DocumentConverter({ outputDir: importsDir }),
     obsidianService: new ObsidianService({ defaultVaultPath: obsidianRoot, knowledgeStore: kstore }),
