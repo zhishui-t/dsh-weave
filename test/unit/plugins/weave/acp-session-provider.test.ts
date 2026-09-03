@@ -282,6 +282,31 @@ describe('AcpSessionProvider', () => {
       expect(persisted.keys['changan:frontend-1:session:v0']?.acpSid).toBe('acp-session-2')
     })
 
+    it('iso-2：staticPrompt 仅在新建会话时拼接，复用会话不重复注入', async () => {
+      const indexFile = join(dir, 'idx-static-inject.json')
+      const { provider, connections } = makeFixtures({ sessionIndexFile: indexFile })
+      const request = {
+        parent: { session: { header: { cwd: 'K:/work/project/weave' } } },
+        signal: new AbortController().signal,
+        prompt: [{ type: 'text', text: '## 任务描述\n干活' }],
+        staticPrompt: '你是 developer-1。\n## 角色人格\n沉稳\n## 执行纪律\n小步验证',
+      }
+
+      const first = await provider.start({ ...request, sessionKey: 'changan:developer-1:session:v0' })
+      await first.result
+      const firstBlocks = (connections[0]!.prompt as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls[0]![0] as { prompt: Array<{ type: string; text?: string }> }
+      expect(firstBlocks.prompt).toHaveLength(2)
+      expect(firstBlocks.prompt[0]!.text).toContain('## 角色人格')
+      expect(firstBlocks.prompt[1]!.text).toContain('## 任务描述')
+
+      const reused = await provider.start({ ...request, sessionKey: 'changan:developer-1:session:v0' })
+      await reused.result
+      const reuseBlocks = (connections[0]!.prompt as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls[1]![0] as { prompt: Array<{ type: string; text?: string }> }
+      expect(reuseBlocks.prompt).toHaveLength(1)
+      expect(reuseBlocks.prompt[0]!.text).not.toContain('## 角色人格')
+      expect(reuseBlocks.prompt[0]!.text).toContain('## 任务描述')
+    })
+
     it('治理：历史 "undefined" 脏键在下一次写入时被清除，合法键保留', async () => {
       const indexFile = join(dir, 'idx-legacy-cleanup.json')
       writeFileSync(

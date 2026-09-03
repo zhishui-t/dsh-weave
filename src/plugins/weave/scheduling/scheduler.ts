@@ -421,6 +421,19 @@ export class WeaveScheduler {
 
     // 依赖满足度晋升：BLOCKED 且上游全部成功终态 → WAITING（状态机无 BLOCKED→RUNNING 直达）
     const byId0 = new Map(dag.tasks.map((task) => [task.id, task]))
+    // 坏依赖图快速失败：edges 指向不存在的任务时该任务永无就绪日（就绪判定恒
+    // false），DAG 永不收敛且零日志。判 FAILED(bad_dependency) 并走既有失败
+    // 传播链向下游 SKIPPED——把"任务静默卡死"变成可观测的一次性收敛。
+    for (const task of dag.tasks) {
+      if (TERMINAL_STATUSES.has(task.status)) continue
+      if (!task.dependencies.some((dep) => !byId0.has(dep))) continue
+      this.#opts.log?.warn?.(
+        `[dsh-weave] task ${task.id} 依赖不存在的任务（${task.dependencies.join(',')}），判 FAILED(bad_dependency)`,
+      )
+      await this.#forceTransition(task, 'FAILED', { error_type: 'bad_dependency' })
+      await this.#afterTaskSettled(run, task, 'FAILED')
+      return
+    }
     const promoted: TaskRecord[] = []
     for (const task of dag.tasks) {
       if (task.status !== 'BLOCKED') continue
@@ -531,12 +544,14 @@ export class WeaveScheduler {
         }
       : undefined
 
-    const upstreamOutputs = await this.#collectUpstream(run, task)
     const requirement =
       `这是团队「${run.team.name}」任务「${subjectLabel(task)}」（队长拆解）。聚焦完成本任务目标；下游成员将基于你的产出继续。`
 
     let output: SubagentTaskOutput
     try {
+      // 上游产物采集挪入 try：持久层异常随执行失败路径收敛（此前是 unhandled
+      // rejection——角色槽虽经 .finally 释放，但错误无日志且可能告警到进程级）。
+      const upstreamOutputs = await this.#collectUpstream(run, task)
       try {
         output = await this.#opts.delegation.executeTask(
           task,
@@ -566,6 +581,14 @@ export class WeaveScheduler {
       }
     } catch (error) {
       this.#controllers.delete(task.id)
+      // 取消竞态收敛：abort 先于外部 CANCELLED 落库时按取消语义收敛，避免用户
+      // 取消被竞态误判成 FAILED（onExternalCancel 幂等，重复调用不重复发电）。
+      if (controller.signal.aborted) {
+        await this.#forceTransition(task, 'CANCELLED', { error_type: 'cancelled' })
+        this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」已取消`)
+        await this.#afterTaskSettled(run, task, 'CANCELLED')
+        return
+      }
       // 基础设施故障或取消：外部取消时 DB 已是 CANCELLED 则尊重现状
       const current = (await this.#currentStatus(task.id)) ?? task.status
       if (current === 'CANCELLED') {

@@ -329,6 +329,8 @@ export interface AcpSessionStartRequest {
   prompt: Array<{ type: string; text?: string }>
   parent?: unknown
   signal: AbortSignal
+  /** 角色静态注入段：仅真正新建会话（首次/自愈回退）时拼接到 prompt 前。 */
+  staticPrompt?: string
   weave?: StartOptions
 }
 
@@ -450,6 +452,7 @@ export class AcpSessionProvider {
     let sessionResponse: AcpSessionNewResponse | undefined
     const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
 
+    let createdNewSession = false
     if (sessionId === undefined || !knownInConnection) {
       if (sessionId !== undefined) {
         // 旧线索：索引记录里会话创建时声明的 cwd（resume 线索）；无记录时用当前 cwd。
@@ -469,6 +472,7 @@ export class AcpSessionProvider {
         const created = await connection.conn.newSession({ cwd, mcpServers: this.#mcpServers })
         sessionId = created.sessionId
         sessionResponse = created
+        createdNewSession = true
       }
       this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
       writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
@@ -523,11 +527,20 @@ export class AcpSessionProvider {
       }
     }
 
+    // iso-2 静态注入一致性：仅真正新建会话（首次或索引失效自愈回退）拼接委托层
+    // 携带的角色静态段；复用（内存/索引/恢复链命中）保持会话内去重不重复注入。
+    const staticPromptText =
+      createdNewSession && typeof request.staticPrompt === 'string' && request.staticPrompt.trim() !== ''
+        ? request.staticPrompt
+        : undefined
     const previous = this.#prompts.get(sessionKey) ?? Promise.resolve()
     const queuedPrompt = previous.catch(() => undefined).then(async () => {
       const result = await connection.conn.prompt({
         sessionId,
-        prompt: request.prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text'),
+        prompt: [
+          ...(staticPromptText !== undefined ? [{ type: 'text' as const, text: staticPromptText }] : []),
+          ...request.prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text'),
+        ],
       })
       return {
         output: [...controller.output],

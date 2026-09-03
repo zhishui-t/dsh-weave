@@ -680,20 +680,33 @@ export class DelegationService {
           : undefined
       const firstDispatch =
         sessionKnown === false || (sessionKnown === undefined && !this.#dispatchedSessionKeys.has(sessionKey))
-      const prompt = this.buildPrompt(task, role, context, knowledge, revisionContext, team.knowledge_injection, firstDispatch)
+      const promptParts = this.buildPromptParts(task, role, context, knowledge, revisionContext, team.knowledge_injection)
+      const prompt = firstDispatch
+        ? `${promptParts.staticText}\n\n${promptParts.taskText}`
+        : `${promptParts.reuseHeader}\n\n${promptParts.taskText}`
 
       const startedAt = this.#now()
       const runtime = this.#resolveRuntime(role, context)
 
       let run: DelegationRunLike
       if (provider) {
+        // iso-2 静态注入一致性：任务段固定发 taskText；静态段经 staticPrompt 携带，
+        // 由 provider 在「真正新建会话（含索引失效自愈回退）」时拼接——那是唯一
+        // 知道会话新旧的位置，杜绝自愈新建后角色人格/执行纪律静默丢失。
+        // 复用会话只发 reuseHeader+任务段（会话内去重语义不变）。
         run = await provider.start({
           executor,
           sessionKey,
-          prompt: [{ type: 'text', text: prompt }],
+          prompt: [
+            {
+              type: 'text',
+              text: firstDispatch ? promptParts.taskText : `${promptParts.reuseHeader}\n\n${promptParts.taskText}`,
+            },
+          ],
           parent: context.parentAgent,
           signal: cancelSignal,
           runtime,
+          staticPrompt: promptParts.staticText,
         }) as DelegationRunLike
       } else {
         const agentOptions = this.#buildAgentOptions(runtime)
@@ -862,20 +875,36 @@ export class DelegationService {
     limits: KnowledgeInjectionLimits,
     firstDispatch = true,
   ): string {
+    const parts = this.buildPromptParts(task, role, context, knowledge, revisionContext, limits)
+    return firstDispatch
+      ? `${parts.staticText}\n\n${parts.taskText}`
+      : `${parts.reuseHeader}\n\n${parts.taskText}`
+  }
+
+  /**
+   * iso-2 提示词分段：静态段（角色人格+执行纪律）/ 复用头 / 任务段。
+   * 静态段是否注入由会话所有者（ExecutorProvider 的 start）在新建会话时决定，
+   * 委托层不再以 firstDispatch 启发式猜测——自愈新建的会话也能拿到完整注入。
+   */
+  buildPromptParts(
+    task: TaskRecord,
+    role: RoleConfig,
+    context: TaskContext,
+    knowledge: KnowledgeInjectionEntryLike[],
+    revisionContext: string | null,
+    limits: KnowledgeInjectionLimits,
+  ): { staticText: string; taskText: string; reuseHeader: string } {
+    const staticText = [
+      `你是 ${role.name}，负责完成以下任务。`,
+      '',
+      '## 角色人格',
+      role.personality || '（无）',
+      '',
+      '## 执行纪律',
+      EXECUTION_DISCIPLINE,
+    ].join('\n')
+    const reuseHeader = `你是 ${role.name}，负责完成以下任务。\n（本会话已含你的角色与纪律约定。）`
     const lines: string[] = []
-    lines.push(`你是 ${role.name}，负责完成以下任务。`)
-    if (!firstDispatch) {
-      lines.push('（本会话已含你的角色与纪律约定。）')
-    }
-    lines.push('')
-    if (firstDispatch) {
-      lines.push('## 角色人格')
-      lines.push(role.personality || '（无）')
-      lines.push('')
-      lines.push('## 执行纪律')
-      lines.push(EXECUTION_DISCIPLINE)
-      lines.push('')
-    }
     lines.push('## 任务描述')
     lines.push(task.description)
     lines.push('')
@@ -908,7 +937,7 @@ export class DelegationService {
     lines.push('')
     lines.push('## 输出要求')
     lines.push(context.outputRequirements ?? '输出最终结果；并按「知识沉淀要求」输出至少一个 WEAVE_KNOWLEDGE 块。')
-    return lines.join('\n')
+    return { staticText, taskText: lines.join('\n'), reuseHeader }
   }
 
   /**

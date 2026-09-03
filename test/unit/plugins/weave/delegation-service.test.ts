@@ -237,7 +237,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
 
   it('provider.isSessionKnown：已知会话复用也跳过静态注入，新会话(true 判断)仍全量', async () => {
     const makeKnown = (known: boolean) => {
-      const requests: Array<{ prompt: Array<{ text: string }> }> = []
+      const requests: Array<{ prompt: Array<{ text: string }>; staticPrompt?: string }> = []
       const provider = {
         id: 'zcode',
         name: 'zcode',
@@ -245,7 +245,7 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
         capabilities: { liveOutput: true, sessionReuse: true, sessionResume: true, modelSelection: false, providerSelection: false, thoughtControl: false, thoughtLevels: [], modeControl: false, modes: [], tools: { externalRuntime: true, filtering: 'none', permission: 'reject' } },
         supports: () => true,
         isSessionKnown: () => known,
-        start: async (request: { prompt: Array<{ text: string }> }) => {
+        start: async (request: { prompt: Array<{ text: string }>; staticPrompt?: string }) => {
           requests.push(request)
           return {
             id: 'run-provider',
@@ -275,11 +275,17 @@ describe('DelegationService.executeTask（唯一出口 ctx.subagents.start）', 
     expect(known.requests[0]!.prompt[0]!.text).not.toContain('## 角色人格')
     expect(known.requests[0]!.prompt[0]!.text).not.toContain('## 执行纪律')
     expect(known.requests[0]!.prompt[0]!.text).toContain('本会话已含你的角色与纪律约定')
+    // iso-2：静态段始终随请求携带（是否注入由 provider 按会话新旧决定）。
+    expect(known.requests[0]!.staticPrompt).toContain('## 角色人格')
 
     const fresh = makeKnown(false)
     await fresh.service.executeTask(zcodeTask, { ...BASE_ROLE, executor: 'zcode' }, BASE_TEAM, BASE_CONTEXT, new AbortController().signal)
-    expect(fresh.requests[0]!.prompt[0]!.text).toContain('## 角色人格')
-    expect(fresh.requests[0]!.prompt[0]!.text).toContain('## 执行纪律')
+    // iso-2：provider 路径任务段固定 taskText；静态段经 staticPrompt 携带，
+    // 由 provider 在新建会话时拼接（拼接行为见 acp-session-provider iso-2 用例）。
+    expect(fresh.requests[0]!.staticPrompt).toContain('## 角色人格')
+    expect(fresh.requests[0]!.staticPrompt).toContain('## 执行纪律')
+    expect(fresh.requests[0]!.prompt[0]!.text).toContain('## 任务描述')
+    expect(fresh.requests[0]!.prompt[0]!.text).not.toContain('## 角色人格')
     expect(fresh.requests[0]!.prompt[0]!.text).not.toContain('本会话已含你的角色与纪律约定')
   })
 
