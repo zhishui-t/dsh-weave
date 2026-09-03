@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../../../../src/plugins/weave/persistence/persistence'
@@ -187,6 +187,47 @@ async function planChain(): Promise<{ dagId: string; ids: [string, string, strin
 }
 
 describe('WeaveScheduler（DAG 依赖调度）', () => {
+
+  it('知识审核闭环：收敛时候选 >0 提醒队长审核', async () => {
+    const delegation = new FakeDelegation()
+    const notices: Array<{ sessionId: string; text: string }> = []
+    const countCandidates = vi.fn(async () => 3)
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: (sessionId, text) => { notices.push({ sessionId, text }) },
+      countKnowledgeCandidates: countCandidates,
+    })
+    const { dagId } = await planChain()
+    await scheduler.start({ dagId, sessionId: 'sess-1' })
+    await waitUntil(async () => notices.some((n) => n.text.includes('候选待审')))
+    expect(notices.some((n) => n.text.includes('weave_knowledge_review'))).toBe(true)
+    expect(notices.some((n) => n.text.includes('weave_knowledge_approve'))).toBe(true)
+    expect(countCandidates).toHaveBeenCalled()
+    scheduler.dispose()
+  })
+
+  it('知识审核闭环：候选计数异常仅告警，不阻断收敛通知', async () => {
+    const delegation = new FakeDelegation()
+    const notices: Array<{ sessionId: string; text: string }> = []
+    const warn = vi.fn()
+    const scheduler = new WeaveScheduler({
+      delegation,
+      persistence,
+      loadTeam: (teamId) => manager.loadTeam(teamId),
+      notify: (sessionId, text) => { notices.push({ sessionId, text }) },
+      countKnowledgeCandidates: async () => { throw new Error('db down') },
+      log: { warn },
+    })
+    const { dagId } = await planChain()
+    await scheduler.start({ dagId, sessionId: 'sess-1' })
+    await waitUntil(async () => notices.some((n) => n.text.includes('任务图') && n.text.includes('已结束')))
+    expect(notices.some((n) => n.text.includes('候选待审'))).toBe(false)
+    expect(warn).toHaveBeenCalled()
+    scheduler.dispose()
+  })
+
   it('链式调度：a→b→c 依次执行，前序结果进入下游 upstreamOutputs', async () => {
     const { scheduler, delegation, notices } = await makeScheduler()
     const { dagId, ids } = await planChain()

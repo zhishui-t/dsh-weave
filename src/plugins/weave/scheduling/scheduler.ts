@@ -70,6 +70,8 @@ export interface WeaveSchedulerOptions {
   statusNotifier?: TaskStatusNotifier
   /** 审计（接线点同步补 task.status_changed）；未注入则只通知不审计。 */
   audit?: AuditLog
+  /** 知识候选计数：DAG 收敛时候选 >0 则提醒队长审核（未注入则不提醒）。 */
+  countKnowledgeCandidates?: () => Promise<number>
   log?: { warn?: (...args: unknown[]) => void }
 }
 
@@ -415,6 +417,7 @@ export class WeaveScheduler {
         run.settledNotified = true
         this.#notifySummary(run, dag)
         this.#runs.delete(dagId)
+        await this.#notifyKnowledgeReview(run)
       }
       return
     }
@@ -769,6 +772,26 @@ export class WeaveScheduler {
       this.#opts.notify(run.sessionId, text, noticeTargetOf(run.parentAgent))
     } catch (error) {
       this.#opts.log?.warn?.('[dsh-weave] notify failed:', error)
+    }
+  }
+
+  /**
+   * 知识审核闭环：DAG 收敛时候选 >0，给队长发可执行的审核指令——candidate
+   * 不转 active 不参与注入，无人审核即永久积压（孤儿环节修复）。
+   */
+  async #notifyKnowledgeReview(run: DagRunContext): Promise<void> {
+    const count = this.#opts.countKnowledgeCandidates
+    if (!count) return
+    try {
+      const pending = await count()
+      if (pending > 0) {
+        this.#notifySafe(
+          run,
+          `[weave] 知识库有 ${pending} 条候选待审：用 weave_knowledge_review 查看，值得保留的逐条 weave_knowledge_approve，无价值的 weave_knowledge_reject。candidate 未转 active 不参与注入，请审完防止积压。`,
+        )
+      }
+    } catch (error) {
+      this.#opts.log?.warn?.('[dsh-weave] knowledge candidate count failed:', error)
     }
   }
 

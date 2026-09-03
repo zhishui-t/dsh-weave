@@ -126,6 +126,10 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
     statusNotifier,
     audit: auditLog,
+    // 知识审核闭环：DAG 收敛时把候选数量交还队长（weave_knowledge_review/approve）。
+    countKnowledgeCandidates: deps.knowledgeStore
+      ? async () => (await deps.knowledgeStore!.listMeta({ status: 'candidate' })).length
+      : undefined,
     onTaskSettledText: async ({ task, role, text, status }) => {
       const result = await reflection.depositFromOutput({
         taskId: task.id,
