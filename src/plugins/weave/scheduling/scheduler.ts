@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs'
 import type { SubagentTaskOutput } from './delegation-service.js'
+import { GraphService } from '../graph/graph-service.js'
 import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { toDagStatus } from '../dag/repository.js'
@@ -418,6 +420,9 @@ export class WeaveScheduler {
         this.#notifySummary(run, dag)
         this.#runs.delete(dagId)
         await this.#notifyKnowledgeReview(run)
+        // DAG 收敛后自动为交付目录构建代码图谱并回灌主会话（此前图谱只建不用，
+        // 主对话完全感知不到）。后台执行，不阻塞收敛链路。
+        void this.#notifyGraphBuild(run, dag)
       }
       return
     }
@@ -795,6 +800,27 @@ export class WeaveScheduler {
     }
   }
 
+  /**
+   * DAG 收敛后自动为交付目录构建代码图谱，并回灌队长会话一条更新通知。
+   * 交付目录从任务描述中的首个绝对路径提取（队长派单 prompt 恒携带目标目录）；
+   * 提取不到/构建失败静默降级——图谱是增强信息，不得影响主链路。
+   */
+  async #notifyGraphBuild(run: DagRunContext, dag: TaskDag): Promise<void> {
+    try {
+      const texts = dag.tasks.map((task) => String(task.description ?? ''))
+      const root = firstDeliveryRoot(texts)
+      if (root === '' || !existsSync(root)) return
+      const graph = new GraphService({ projectRoot: root })
+      const built = await graph.build()
+      this.#notifySafe(
+        run,
+        `[weave] 代码图谱已更新：${built.graphPath.split(String.fromCharCode(92)).join('/')}（可用 weave_graph_query / weave_graph_path 查询变更影响）`,
+      )
+    } catch (error) {
+      this.#opts.log?.warn?.('[dsh-weave] auto graph build failed:', error)
+    }
+  }
+
   #notifySummary(run: DagRunContext, dag: TaskDag): void {
     const lines: string[] = []
     for (const task of dag.tasks) {
@@ -852,6 +878,15 @@ function roleNameOf(team: TeamConfig, task: TaskRecord): string {
 function excerptOf(text: string, maxChars: number): string {
   const trimmed = text.trim()
   return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}…` : trimmed
+}
+
+/** 从任务描述提取首个绝对路径作为交付根目录（win 形态；队长 prompt 恒带目标目录）。 */
+function firstDeliveryRoot(texts: string[]): string {
+  for (const text of texts) {
+    const match = text.match(/[A-Za-z]:[\\/][^\s"'，。；）)]+/)
+    if (match !== null) return match[0] ?? ''
+  }
+  return ''
 }
 
 /** 尽量从父 Agent 上取 durable log 追加面（pre-step 载荷同构；缺失时通知仅走日志）。 */
