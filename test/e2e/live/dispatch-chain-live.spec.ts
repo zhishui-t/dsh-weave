@@ -58,22 +58,6 @@ function openReadOnly(file: string): DatabaseSync {
   return new DatabaseSync(join(STATE_DIR, file), { readOnly: true })
 }
 
-function findCaptainSession(): string {
-  const dir = join(SESSIONS_ROOT, SESSION_DIR)
-  if (!existsSync(dir)) return ''
-  let best = ''
-  let bestMtime = t0 - 1
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    try {
-      const m = statSync(p).mtimeMs
-      if (m >= t0 - 1 && m >= bestMtime) { bestMtime = m; best = name }
-    } catch { /* 并发删除等，忽略 */ }
-  }
-  // 返回完整 session id（core.db / tasks.db 的 session_id 均含 session- 前缀）
-  return best
-}
-
 test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产物）', () => {
   test.skip(!LIVE_ENABLED, 'live 层 env 门控：需 WEAVE_E2E_LIVE=1')
 
@@ -136,22 +120,28 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
     await input.fill(`启动团队 ${TEAM}`)
     await input.press('Enter')
 
-    let acked = false
+    // 绑定确认的权威数据源是 core.db.team_bindings（UI 是否渲染 notice 不可靠）：
+    // 轮询 t0 之后写入的、指向目标团队的新绑定行，行里的 session_id 即队长会话。
+    let boundRow: { session_id: string; team_id: string; updated_at: string } | undefined
     const bindDeadline = Date.now() + 45_000
-    while (Date.now() < bindDeadline) {
+    while (Date.now() < bindDeadline && !boundRow) {
       await page.waitForTimeout(3000)
-      const body = await page.evaluate(() => document.body.innerText)
-      if (body.includes('已在当前会话启用团队')) { acked = true; break }
+      const core = openReadOnly('core.db')
+      try {
+        const rows = core.prepare('SELECT session_id, team_id, updated_at FROM team_bindings').all() as Array<{ session_id: string; team_id: string; updated_at: string }>
+        boundRow = rows.find((r) => r.team_id === TEAM && Date.parse(r.updated_at) >= t0 - 5_000)
+      } finally { core.close() }
     }
-    mark('绑定确认 notice（pre-step hook 生效）', acked, acked ? `启动团队 ${TEAM}` : '宿主可能未重启加载新插件')
-    expect(acked, '未检测到「已在当前会话启用团队」——weave 插件未随宿主生效，请重启宿主').toBe(true)
+    mark('绑定写入 team_bindings（pre-step hook 生效）', !!boundRow,
+      boundRow ? `${boundRow.session_id} @ ${boundRow.updated_at}` : '45s 内无新绑定——宿主可能未加载新插件')
+    expect(boundRow, '未检测到新绑定——weave 插件未随宿主生效，请重启宿主').toBeTruthy()
 
-    for (let i = 0; i < 10 && captainSessionId === ''; i += 1) {
-      captainSessionId = findCaptainSession()
-      if (captainSessionId === '') await page.waitForTimeout(1500)
-    }
-    mark('队长会话建立在目标工作区目录', captainSessionId !== '', `${SESSION_DIR}/${captainSessionId}`)
-    expect(captainSessionId, `未在 ${SESSION_DIR} 下发现新会话（cwd 又落错了？）`).not.toBe('')
+    captainSessionId = boundRow!.session_id
+    const sessDir = join(SESSIONS_ROOT, SESSION_DIR, `session-${captainSessionId.replace(/^session-/, '')}`)
+    const sessAlt = join(SESSIONS_ROOT, SESSION_DIR, captainSessionId)
+    const inRightDir = existsSync(sessDir) || existsSync(sessAlt)
+    mark('队长会话建立在目标工作区目录', inRightDir, `${SESSION_DIR}/${captainSessionId}`)
+    expect(inRightDir, `会话 ${captainSessionId} 不在 ${SESSION_DIR}（cwd 落错）`).toBe(true)
 
     const core = openReadOnly('core.db')
     const row = core.prepare('SELECT team_id FROM team_bindings WHERE session_id = ?').get(captainSessionId) as { team_id?: string } | undefined
