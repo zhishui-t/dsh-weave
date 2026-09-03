@@ -779,7 +779,11 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     knowledgeReview: kreview,
     knowledgeStore: kstore,
     importPipeline,
-    graphService: new GraphService(),
+    graphService: new GraphService(
+      process.env.WEAVE_GRAPH_PROJECT_ROOT
+        ? { projectRoot: process.env.WEAVE_GRAPH_PROJECT_ROOT }
+        : {}
+    ),
     documentConverter: new DocumentConverter({ outputDir: importsDir }),
     obsidianService: new ObsidianService({ defaultVaultPath: obsidianRoot, knowledgeStore: kstore }),
     circuitBreaker: new CircuitBreaker(),

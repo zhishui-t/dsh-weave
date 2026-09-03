@@ -9,7 +9,7 @@ import { WeaveError } from '../state/weave-error.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge/knowledge-model.js'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../knowledge/import-pipeline.js'
 import type { TeamManager } from '../team/team-manager.js'
 import { classifyProvider } from '../executors/executor-registry.js'
@@ -28,6 +28,15 @@ import type {
   ObsidianStatusResult,
 } from '../obsidian/obsidian-service.js'
 import { buildKnowledgeGraph, type KnowledgeGraphResult } from './knowledge-graph.js'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * code/* 端点的默认项目根：weave 插件自身所在仓库的根（src/dist 布局下
+ * 均为向上四级）。此前缺省 process.cwd()——宿主从 profile 目录启动时
+ * 图谱页会指向不存在的 .graphify 而报「尚未构建」。
+ */
+const WEAVE_DEFAULT_PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..')
+
 
 /**
  * Web 真实数据查询/操作服务（t2）——供 RPC 层（rpc.ts 由 weave-dev-api 接线）调用的
@@ -527,7 +536,7 @@ export class WeaveQueryService {
     hasFlows: boolean
   }> {
     const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.cwd()
+    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? WEAVE_DEFAULT_PROJECT_ROOT
     const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
     const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
     return {
@@ -543,7 +552,7 @@ export class WeaveQueryService {
   /** code/build：构建/刷新代码图谱与执行流。 */
   async codeBuild(input: unknown = {}): Promise<{ graphPath: string; flowsPath: string }> {
     const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.cwd()
+    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? WEAVE_DEFAULT_PROJECT_ROOT
     const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
     const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
     return service.build()
