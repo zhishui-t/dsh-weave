@@ -12,9 +12,9 @@
 //   WEAVE_E2E_LIVE=1 pnpm test:e2e:dispatch
 // 未重启宿主时 dispatch 用例会在「绑定确认」处快速失败并提示重启（不产生垃圾任务）。
 // 产物：.artifacts/weave-ui/e2e/dispatch-chain/report.json + 截图。
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { expect, test, type Page } from '@playwright/test'
@@ -109,6 +109,10 @@ test.describe.serial('live: 派单全链路（工作区/绑定/团队/任务/产
 
   test('dispatch: 目标工作区新会话 + 短句绑定 + 派单正文', async () => {
     test.setTimeout(120_000)
+    // 每次测试前清空交付目录：历史产物/旧团队看板文档会干扰队长判断与产物新鲜度断言
+    const squadRoot = dirname(WORK_DIR)
+    rmSync(squadRoot, { recursive: true, force: true })
+    mark('交付目录已清空', !existsSync(squadRoot), squadRoot)
     t0 = Date.now()
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await page.waitForTimeout(3500)
