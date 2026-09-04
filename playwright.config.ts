@@ -4,7 +4,6 @@ import { ART, EXECUTABLE } from './test/e2e/helpers'
 
 export default defineConfig({
   testDir: 'test/e2e',
-  testIgnore: '**/archive/**',
   outputDir: `${ART}/artifacts`,
   timeout: 90_000,
   expect: { timeout: 15_000 },

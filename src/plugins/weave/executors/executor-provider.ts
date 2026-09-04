@@ -1,4 +1,5 @@
-import type { ContentBlockLike, DelegationRunLike } from './executor-shared-types.js'
+import type { ContentBlockLike } from '../scheduling/delegation-service.js'
+import type { DelegationRunLike } from '../scheduling/delegation-service.js'
 
 export type ExecutorStopReason =
   | 'completed'
@@ -45,6 +46,8 @@ export interface ExecutorStartRequest {
   runtime?: ExecutorRuntimeOptions
   /** 显式恢复指定 ACP/远端会话；优先于 sessionKey 的默认映射。 */
   resumeSessionId?: string
+  /** 角色静态注入段（人格/纪律）；provider 仅在真正新建会话（含自愈回退）时拼接。 */
+  staticPrompt?: string
 }
 
 export interface ExecutorAppliedCapability {

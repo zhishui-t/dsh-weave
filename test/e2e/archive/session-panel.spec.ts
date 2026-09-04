@@ -111,6 +111,27 @@ test.describe(HARNESS_DESCRIBE, () => {
     await expect(page.getByTestId('dag-panel')).toBeVisible()
   })
 
+  test('output-gating: DSH spawn/fork 成员即使有任务也不打开过程输出页签', async ({ page }) => {
+    await openHarnessPage(page, {
+      'session/status': {
+        ok: true,
+        value: {
+          session_id: 'sess-h',
+          team: { team_id: 'seed-team', name: '种子团队' },
+          members: [
+            { role_id: 'coder', name: '程序员', executor: 'spawn', executor_kind: 'dsh_subagent', output_available: false, status: 'running', task_id: 'T-A' },
+          ],
+        },
+      },
+    })
+    await mountSessionPanel(page)
+    const card = page.getByTestId('member-card-coder')
+    await expect(card).toBeVisible()
+    await expect(card).not.toHaveAttribute('data-clickable', 'true')
+    await card.click()
+    await expect(page.getByTestId('session-tab-coder')).toHaveCount(0)
+  })
+
   test('layout: 左右分栏折叠后可再展开，任务区整体可折叠', async ({ page }) => {
     await openHarnessPage(page)
     await mountSessionPanel(page)

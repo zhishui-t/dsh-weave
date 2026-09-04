@@ -1,0 +1,194 @@
+import type { Context } from '@deepseek-ai/cordis'
+import type { CliMcpDeps } from '../host/cli-mcp.js'
+import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
+import { DelegationService } from '../scheduling/delegation-service.js'
+import { SessionTracker } from '../scheduling/session-tracker.js'
+import { KnowledgeEngine } from '../knowledge/knowledge-engine.js'
+import { createExecutorEventNotifier, type StreamOptions } from '../scheduling/session-stream.js'
+import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
+import { WeaveScheduler, subjectLabel } from '../scheduling/scheduler.js'
+import type { WeaveCapabilities } from './capabilities.js'
+import type { AuditLog } from '../audit/audit-log.js'
+import type { ReflectionService } from '../knowledge/reflection-service.js'
+import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
+import { ProjectTeamStore } from '../team/project-team-store.js'
+import { Mailbox } from '../team/mailbox.js'
+import { ReflectionSink } from '../team/reflection-sink.js'
+import { GraphRefresher } from './graph-refresh.js'
+import { OnDutyController } from './on-duty.js'
+import {
+  createWeaveNoticeMessage,
+  hasPendingToolCall,
+  notifySession,
+  type NoticeSessionLike,
+  type WeaveNoticeMessage,
+} from '../scheduling/session-delegation.js'
+
+export interface TeamRuntimeOptions {
+  runtime: Context
+  deps: CliMcpDeps
+  executorProviders?: ExecutorProviderRegistry
+  weaveSettingsFile: string
+  executionStream: StreamOptions
+  idleTimeoutMs: number
+  capabilities: WeaveCapabilities
+}
+
+export interface TeamRuntime {
+  delegation: DelegationService
+  scheduler: WeaveScheduler
+  planner: TeamPlanner
+  statusNotifier: TaskStatusNotifier
+  auditLog: AuditLog
+  reflection: ReflectionService
+  agentsRegistry: { get(id: string): unknown } | undefined
+  notifyWeaveSession(sessionId: string, text: string, session?: NoticeSessionLike): void
+  resolveNoticeSession(sessionId: string): NoticeSessionLike | undefined
+  planTasks: ReturnType<typeof createPlanTasksHandler>
+  projectTeamStore: ProjectTeamStore
+  mailbox: Mailbox
+  reflectionSink: ReflectionSink
+  onDuty: OnDutyController
+  disposeScheduler(): void
+}
+
+export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
+  const { runtime, deps, executorProviders, executionStream, idleTimeoutMs, capabilities } = options
+
+  let agentsRegistry: { get(id: string): unknown } | undefined
+  try {
+    agentsRegistry = (runtime as Context & { reflect?: { get(name: string, fallback?: boolean): unknown } }).reflect?.get('agents', false) as
+      | { get(id: string): unknown }
+      | undefined
+  } catch {
+    agentsRegistry = undefined
+  }
+
+  const resolveNoticeSession = (sessionId: string): NoticeSessionLike | undefined =>
+    (agentsRegistry?.get(sessionId) as { session?: NoticeSessionLike } | undefined)?.session
+
+  const notifyWeaveSession = (sessionId: string, text: string, session?: NoticeSessionLike): void => {
+    if (!session) {
+      console.warn('[dsh-weave] cannot notify session', sessionId, '- session surface unavailable')
+      return
+    }
+    try {
+      const agent = agentsRegistry?.get(sessionId) as
+        | { inject?: (message: WeaveNoticeMessage) => void }
+        | undefined
+      if (hasPendingToolCall(session) && typeof agent?.inject === 'function') {
+        agent.inject(createWeaveNoticeMessage(text))
+        return
+      }
+      notifySession(session, text)
+    } catch (error) {
+      console.warn('[dsh-weave] notify session failed:', error)
+    }
+  }
+
+  const { auditLog, reflection } = capabilities
+
+  const statusNotifier = new TaskStatusNotifier({
+    notify: (sessionId, text) => {
+      notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
+    },
+  })
+
+  const delegation = new DelegationService(
+    { subagents: (runtime as unknown as { subagents: unknown }).subagents } as never,
+    {
+      executorRegistry: deps.executorRegistry,
+      executorProviders,
+      sessionTracker: new SessionTracker(deps.persistence.feedback),
+      knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
+      idleTimeoutMs,
+      delegationMaxWallClockMs: 0,
+      onExecutorEvent: createExecutorEventNotifier({
+        ...executionStream,
+        notify: (sessionId, text) => {
+          notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
+        },
+      }),
+    },
+  )
+
+  // 代码图谱自动刷新（团队启动先建/更新；任务完成后主会话侧更新，去抖合并）。
+  const graphRefresher = new GraphRefresher({
+    graphService: deps.graphService,
+    notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
+    log: console,
+  })
+
+  const scheduler = new WeaveScheduler({
+    delegation,
+    persistence: deps.persistence,
+    loadTeam: (teamId) => deps.teamManager.loadTeam(teamId),
+    notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
+    statusNotifier,
+    audit: auditLog,
+    // 知识审核闭环：DAG 收敛时把候选数量交还队长（weave_knowledge_review/approve）。
+    countKnowledgeCandidates: deps.knowledgeStore
+      ? async () => (await deps.knowledgeStore!.listMeta({ status: 'candidate' })).length
+      : undefined,
+    onTaskSettledText: async ({ task, role, text, status }) => {
+      const result = await reflection.depositFromOutput({
+        taskId: task.id,
+        executor: role.executor,
+        roleId: role.id,
+        projectId: task.project_id,
+        version: task.version,
+        outputText: text,
+        taskSubject: subjectLabel(task),
+      })
+      if (status === 'COMPLETED') graphRefresher.request('task-settled', task.session_id)
+      return result.deposited.length
+    },
+  })
+
+  const projectTeamStore = new ProjectTeamStore()
+  const mailbox = new Mailbox()
+  const reflectionSink = new ReflectionSink(reflection)
+  const onDuty = new OnDutyController({
+    hasActiveWork: async (sessionId) => scheduler.memberRuntime(sessionId).length > 0,
+    hasUnread: async (sessionId) => (await mailbox.unread(process.cwd(), sessionId, Mailbox.CAPTAIN)).length > 0,
+    notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
+  })
+
+  deps.executionHooks = {
+    cancelTask: async (taskId) => scheduler.onExternalCancel(taskId),
+    resumeTask: async (taskId) => scheduler.onExternalRetry(taskId),
+  }
+
+  const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
+  const planTasks = createPlanTasksHandler({
+    planner,
+    schedulerStart: async (input) => {
+      // 团队启动：先新建/更新代码图谱（去抖合并，不阻塞派发）。
+      graphRefresher.request('team-start', input.sessionId)
+      await scheduler.start(input)
+    },
+    log: console,
+    getAgentById: (id) => agentsRegistry?.get(id as never),
+  })
+
+  return {
+    delegation,
+    scheduler,
+    planner,
+    statusNotifier,
+    auditLog,
+    reflection,
+    agentsRegistry,
+    notifyWeaveSession,
+    resolveNoticeSession,
+    planTasks,
+    projectTeamStore,
+    mailbox,
+    reflectionSink,
+    onDuty,
+    disposeScheduler: () => {
+      graphRefresher.dispose()
+      scheduler.dispose()
+    },
+  }
+}

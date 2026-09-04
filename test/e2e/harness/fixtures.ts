@@ -1,6 +1,6 @@
 // harness 层共享设施：虚拟域 + ModuleLoader 桩 + __WEAVE_RPC__ 信封注册表 stub。
 // 被测对象是 dist/client/index.js 真实构建产物与真实 DOM 行为，仅 RPC 数据层可控可断言。
-// 运行前提：pnpm build（dist 与 src 同步）；GBK 坑见 doc/reports/e2e-acceptance-plan.md（charset 必须 utf-8）。
+// 运行前提：pnpm build（dist 与 src 同步）；GBK 坑见 doc/e2e-acceptance-plan.md（charset 必须 utf-8）。
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { expect, type Page } from '@playwright/test'
@@ -103,8 +103,8 @@ export function defaultScenario(): Record<string, RpcEnvelope> {
         session_id: 'sess-h',
         team: { team_id: 'seed-team', name: '种子团队' },
         members: [
-          { role_id: 'coder', name: '程序员', executor: 'spawn', status: 'running', task_id: 'T-A', subject: '实现登录页' },
-          { role_id: 'reviewer', name: '审核员', executor: 'fork', status: 'idle' },
+          { role_id: 'coder', name: '程序员', executor: 'zcode', executor_kind: 'acp', output_available: true, status: 'running', task_id: 'T-A', subject: '实现登录页' },
+          { role_id: 'reviewer', name: '审核员', executor: 'fork', executor_kind: 'dsh_subagent', output_available: false, status: 'idle' },
         ],
       },
     },

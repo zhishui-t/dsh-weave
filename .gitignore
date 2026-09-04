@@ -8,3 +8,9 @@ coverage/
 .artifacts/
 .graphify/
 test-results/
+
+# Local reference/side projects are not part of this plugin repository.
+subprojects/
+
+# Local ZCode planning artifacts.
+.zcode/
