@@ -841,3 +841,74 @@ describe('WeaveScheduler 假并行修复（RUNNING 时点后移到槽位获得�
     await waitUntil(() => taskStatusOf(taskId).then((s) => s === 'COMPLETED'))
   })
 })
+
+describe('WeaveScheduler（写域重叠提醒：advisory，只警告不阻断）', () => {
+  it('就绪任务与执行中任务写域重叠：notify 告警且派发不阻断', async () => {
+    await manager.bindTeam('sess-scope', 'alpha')
+    const { scheduler, delegation, notices } = await makeScheduler()
+    const plan = await planner.plan({
+      session_id: 'sess-scope',
+      tasks: [
+        { id: 'w1', description: '改共享模块 A 面', assignee: 'designer' },
+        { id: 'w2', description: '改共享模块 B 面', assignee: 'coder' },
+      ],
+    })
+    const idA = plan.tasks[0]!.id
+    const idB = plan.tasks[1]!.id
+    // 规划面尚未接 write_scopes 入参（下游任务）：测试直接为两任务写重叠域
+    await persistence.tasks.run((db) => {
+      const stmt = db.prepare('UPDATE tasks SET write_scopes = ? WHERE id = ?')
+      stmt.run(JSON.stringify(['src/shared']), idA)
+      stmt.run(JSON.stringify(['src/shared/ui']), idB)
+    })
+    // 钉住 A/B 都在执行中：B 的重叠告警有真实 in-progress 对象，且二者保持 RUNNING 可断言
+    delegation.gate(idA)
+    delegation.gate(idB)
+
+    await scheduler.start({ dagId: plan.dag_id, sessionId: 'sess-scope' })
+    await waitUntil(async () =>
+      (await Promise.all([taskStatusOf(idA), taskStatusOf(idB)])).every((s) => s === 'RUNNING'))
+
+    const warning = notices.find((notice) => notice.text.includes('写域重叠提醒'))
+    expect(warning).toBeDefined()
+    expect(warning!.text).toContain(idB)
+    expect(warning!.text).toContain(idA)
+    expect(warning!.text).toContain('src/shared')
+    // advisory：两个任务都真实派发了
+    expect(delegation.calls.map((call) => call.taskId).sort()).toEqual([idA, idB].sort())
+
+    delegation.release(idA)
+    delegation.release(idB)
+    scheduler.dispose()
+  })
+
+  it('写域不相交：同批并行派发不发重叠告警', async () => {
+    await manager.bindTeam('sess-scope-clean', 'alpha')
+    const { scheduler, delegation, notices } = await makeScheduler()
+    const plan = await planner.plan({
+      session_id: 'sess-scope-clean',
+      tasks: [
+        { id: 'c1', description: '改文档', assignee: 'designer' },
+        { id: 'c2', description: '改实现', assignee: 'coder' },
+      ],
+    })
+    await persistence.tasks.run((db) => {
+      const stmt = db.prepare('UPDATE tasks SET write_scopes = ? WHERE id = ?')
+      stmt.run(JSON.stringify(['docs']), plan.tasks[0]!.id)
+      stmt.run(JSON.stringify(['src/impl']), plan.tasks[1]!.id)
+    })
+    delegation.gate(plan.tasks[0]!.id)
+    delegation.gate(plan.tasks[1]!.id)
+
+    await scheduler.start({ dagId: plan.dag_id, sessionId: 'sess-scope-clean' })
+    await waitUntil(async () =>
+      (await Promise.all([taskStatusOf(plan.tasks[0]!.id), taskStatusOf(plan.tasks[1]!.id)])).every((s) => s === 'RUNNING'))
+
+    expect(notices.some((notice) => notice.text.includes('写域重叠提醒'))).toBe(false)
+    expect(delegation.calls).toHaveLength(2)
+
+    delegation.release(plan.tasks[0]!.id)
+    delegation.release(plan.tasks[1]!.id)
+    scheduler.dispose()
+  })
+})

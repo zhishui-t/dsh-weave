@@ -5,6 +5,7 @@ import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { toDagStatus } from '../dag/repository.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
+import { newAttemptToken, TASK_STALE_REVISION, type AttemptGuard } from '../state/attempt-token.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { parseWriteScopes, scopeSetsOverlap } from '../state/write-scope.js'
@@ -381,9 +382,16 @@ export class WeaveScheduler {
     return row?.dag_id ?? null
   }
 
+  /**
+   * 任务写入统一漏斗。`guard` 缺省为调度器内部无主写入（晋升/派发前写），行为不变；
+   * attempt 侧回写必须携带 { token, expectedRevision } 双验证（token 匹配 + revision 未过期），
+   * 任一不符即拒绝并抛 WeaveError('task_stale_revision')——重派/取消后旧 attempt 的
+   * 迟到回写不得覆写新 generation 的状态（参照官方 activateTaskAttempt/invalidateTaskAttempt）。
+   */
   async #updateTask(
     taskId: string,
     patch: Partial<Pick<TaskRecord, 'status' | 'result' | 'error_type'>>,
+    guard?: AttemptGuard,
   ): Promise<void> {
     const dagId = await this.#persistence.tasks.run((db) => {
       const sets = ['updated_at = ?']
@@ -392,8 +400,31 @@ export class WeaveScheduler {
         sets.push(`${field} = ?`)
         params.push(value === undefined ? null : String(value))
       }
-      params.push(taskId)
-      db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+      let sql = `UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`
+      const tail: Array<string | number> = [taskId]
+      if (guard !== undefined) {
+        sql += ' AND attempt_token = ? AND revision = ?'
+        tail.push(guard.token, guard.expectedRevision)
+      }
+      const info = db.prepare(sql).run(...params, ...tail)
+      if (guard !== undefined && info.changes === 0) {
+        const current = db.prepare('SELECT status, attempt_token, revision FROM tasks WHERE id = ?').get(taskId) as
+          | { status: TaskStatus; attempt_token: string | null; revision: number | null }
+          | undefined
+        throw new WeaveError(
+          TASK_STALE_REVISION,
+          `任务 ${taskId} 回写被拒（attempt 句柄失效或 revision 过期；当前 ${current?.status ?? '不存在'}）`,
+          {
+            taskId,
+            expected: { token: guard.token, revision: guard.expectedRevision },
+            current: current ?? null,
+          },
+        )
+      }
+      if (guard !== undefined) {
+        // 守卫写成功即推进版本号：同 attempt 的并发双写只有携带最新 revision 的一方胜出。
+        db.prepare('UPDATE tasks SET revision = revision + 1 WHERE id = ?').run(taskId)
+      }
       const row = db.prepare('SELECT dag_id FROM tasks WHERE id = ?').get(taskId) as
         | { dag_id: string }
         | undefined
@@ -401,6 +432,35 @@ export class WeaveScheduler {
     })
     // 状态变更边沿：唤醒该 DAG 的 waitForChange 等待者（无等待者时零开销）。
     if (dagId) this.#activity.notify(dagId)
+  }
+
+  /**
+   * claim（→RUNNING）并签发 attempt 句柄（activateTaskAttempt 语义）：单事务读改写——
+   * 状态机校验 → 写 RUNNING + 新 token + revision+1。签发即轮换：旧 attempt 的句柄同帧作废。
+   * 幂等：已 RUNNING 且持有句柄时返回现有句柄（重入 claim 不换代，恢复/retry 同规则）。
+   */
+  async #claimTask(taskId: string): Promise<AttemptGuard> {
+    return this.#persistence.tasks.run((db) => {
+      const row = db.prepare('SELECT status, revision, attempt_token FROM tasks WHERE id = ?').get(taskId) as
+        | { status: TaskStatus; revision: number | null; attempt_token: string | null }
+        | undefined
+      if (!row) throw new WeaveError('task_not_found', `任务不存在: ${taskId}`, { taskId })
+      if (row.status === 'RUNNING' && row.attempt_token !== null) {
+        return { token: row.attempt_token, expectedRevision: Number(row.revision ?? 0) }
+      }
+      if (!TaskStateMachine.canTransition(row.status, 'RUNNING')) {
+        throw new WeaveError('invalid_status_transition', `任务 ${taskId} 状态 ${row.status} 不可 claim 为 RUNNING`, {
+          taskId,
+          status: row.status,
+        })
+      }
+      const token = newAttemptToken()
+      const revision = Number(row.revision ?? 0) + 1
+      db.prepare(
+        "UPDATE tasks SET status = 'RUNNING', attempt_token = ?, revision = ?, updated_at = ? WHERE id = ?",
+      ).run(token, revision, new Date().toISOString(), taskId)
+      return { token, expectedRevision: revision }
+    })
   }
 
   async #persistSkipped(skippedIds: string[]): Promise<void> {
@@ -558,12 +618,15 @@ export class WeaveScheduler {
 
       // 状态机无 BLOCKED→RUNNING 直达：先升 WAITING 再 RUNNING（TDD §2.1.5）。
       // 假并行修复：委托方声明支持槽位回调时，排队期任务保持 WAITING——
-      // 真正拿到执行器槽后经 context.onAcquired 才写 RUNNING；未声明（历史
+      // 真正拿到执行器槽后经 context.onAcquired 才 claim RUNNING；未声明（历史
       // 委托实现/测试替身）保持派发点直写 RUNNING 的现状。
       const acquiredHook = this.#opts.delegation.supportsSlotAcquiredHook === true
       if (!TaskStateMachine.canTransition(task.status, 'RUNNING')) continue
+      // attempt 句柄：派发点（非槽位回调路径）即 claim 签发；槽位回调路径由
+      // onAcquired 签发。句柄随 #executeReady 穿引到终态回写做双验证。
+      const attemptRef: { current?: AttemptGuard } = {}
       if (!acquiredHook) {
-        await this.#updateTask(task.id, { status: 'RUNNING' })
+        attemptRef.current = await this.#claimTask(task.id)
       }
 
       // 派发守卫：同一任务未 settle 前禁止再次 start。
@@ -586,7 +649,7 @@ export class WeaveScheduler {
       // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
       // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
       // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
-      void this.#executeReady(run, task, role, acquiredHook).finally(() => {
+      void this.#executeReady(run, task, role, acquiredHook, attemptRef).finally(() => {
         this.#endDispatch(task.id)
         this.#activeByRole.delete(key)
         for (const activeDagId of this.#runs.keys()) {
