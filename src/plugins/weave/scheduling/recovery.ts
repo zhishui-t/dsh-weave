@@ -95,7 +95,8 @@ export class RecoveryService {
         const result = this.#options.tasksDb.raw
           .prepare(
             `UPDATE tasks
-             SET status = 'FAILED', error_type = COALESCE(error_type, 'crash_recovery'), updated_at = ?
+             SET status = 'FAILED', error_type = COALESCE(error_type, 'crash_recovery'),
+                 attempt_token = NULL, revision = revision + 1, updated_at = ?
              WHERE id = ? AND status = ?`,
           )
           .run(now, taskId, from)

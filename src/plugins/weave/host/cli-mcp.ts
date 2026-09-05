@@ -317,7 +317,8 @@ export class WeaveMcp {
     }
     void TaskStateMachine.transition(task.status, 'SKIPPED')
     await this.#deps.persistence.tasks.run((db) => {
-      db.prepare("UPDATE tasks SET status = 'SKIPPED', skip_override = 1, skip_reason = ?, updated_at = ? WHERE id = ?")
+      // 人工跳过同属治理取消语义：作废在途 attempt 句柄，迟到回写被拒。
+      db.prepare("UPDATE tasks SET status = 'SKIPPED', skip_override = 1, skip_reason = ?, attempt_token = NULL, revision = revision + 1, updated_at = ? WHERE id = ?")
         .run('人工跳过', new Date().toISOString(), taskId)
     })
     // 接线点 3（doc/05 §6.4）：跳过发电，actor=captain（缺省回声抑制不通知）。
@@ -567,9 +568,16 @@ export class WeaveMcp {
     return graph
   }
 
+  /**
+   * 治理写入即 invalidateTaskAttempt（参照官方 state.ts）：作废旧 attempt 句柄
+   * （attempt_token=NULL）并推进 revision——在途 attempt 的迟到回写因 token 失效被
+   * task_stale_revision 拒绝；retry（→WAITING）后的下一次 claim 重新签发新句柄。
+   */
   async #updateTask(taskId: string, patch: { status: TaskStatus }): Promise<void> {
     await this.#deps.persistence.tasks.run((db) => {
-      db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(patch.status, new Date().toISOString(), taskId)
+      db.prepare(
+        'UPDATE tasks SET status = ?, attempt_token = NULL, revision = revision + 1, updated_at = ? WHERE id = ?',
+      ).run(patch.status, new Date().toISOString(), taskId)
     })
   }
 

@@ -661,11 +661,20 @@ export class WeaveScheduler {
 
   /**
    * 执行单个就绪任务：fallback 重试一次；按映射写终态并广播通知。
-   * `deferRunning`（假并行修复）：true 时「写 RUNNING + 开始通知」后移到
+   * `deferRunning`（假并行修复）：true 时「claim RUNNING + 开始通知」后移到
    * context.onAcquired（DelegationService 拿到执行器槽后触发）；false 保持
    * 派发点立即通知的历史行为。
+   * `attemptRef`（乐观并发）：claim 签发的 { token, expectedRevision } 句柄，
+   * 终态回写双验证——任务在执行期间被重派/取消（句柄作废）时，本 attempt 的
+   * 迟到回写按 task_stale_revision 拒绝，不覆写新 generation。
    */
-  async #executeReady(run: DagRunContext, task: TaskRecord, role: RoleConfig, deferRunning: boolean): Promise<void> {
+  async #executeReady(
+    run: DagRunContext,
+    task: TaskRecord,
+    role: RoleConfig,
+    deferRunning: boolean,
+    attemptRef: { current?: AttemptGuard },
+  ): Promise<void> {
     if (!deferRunning) {
       this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
     }
@@ -674,18 +683,37 @@ export class WeaveScheduler {
     if (!deferRunning) this.#startHeartbeat(task.id)
 
     // 真·RUNNING 时点（槽位回调）：排队期被外部取消/治理（终态）时不覆写；
-    // memberRuntime 阶段同点翻转 queued → running。
+    // memberRuntime 阶段同点翻转 queued → running。claim 抛错（任务已被治理
+    // 转移）说明本 attempt 从未真正拿到执行权，直接以取消语义收敛。
     const onAcquired = deferRunning
       ? async (): Promise<void> => {
-          const current = (await this.#currentStatus(task.id)) ?? task.status
-          if (current !== 'WAITING' && current !== 'RUNNING') return
-          await this.#updateTask(task.id, { status: 'RUNNING' })
+          attemptRef.current = await this.#claimTask(task.id)
           this.#startHeartbeat(task.id)
           const info = this.#activeByRole.get(activeKey(run.sessionId, role.id, task.id))
           if (info) info.phase = 'running'
           this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」开始 → ${role.name}`)
         }
       : undefined
+
+    /** 终态回写统一入口：携带 attempt 守卫；迟到回写（句柄失效/revision 过期）拒绝并收敛。 */
+    const settleWrite = async (
+      target: TaskStatus,
+      extra: { result?: string; error_type?: string | null },
+    ): Promise<boolean> => {
+      try {
+        await this.#updateTask(task.id, { status: target, ...extra }, attemptRef.current)
+        return true
+      } catch (error) {
+        if (error instanceof WeaveError && error.code === TASK_STALE_REVISION) {
+          this.#opts.log?.warn?.(
+            `[dsh-weave] task ${task.id} 迟到回写被拒（${target}）：attempt 句柄失效，新 generation 已接管`,
+          )
+          this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」的迟到回写被拒绝（任务已被重派/取消）`)
+          return false
+        }
+        throw error
+      }
+    }
 
     const requirement =
       `这是团队「${run.team.name}」任务「${subjectLabel(task)}」（队长拆解）。聚焦完成本任务目标；下游成员将基于你的产出继续。`
@@ -727,9 +755,10 @@ export class WeaveScheduler {
       // 取消竞态收敛：abort 先于外部 CANCELLED 落库时按取消语义收敛，避免用户
       // 取消被竞态误判成 FAILED（onExternalCancel 幂等，重复调用不重复发电）。
       if (controller.signal.aborted) {
-        await this.#forceTransition(task, 'CANCELLED', { error_type: 'cancelled' })
-        this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」已取消`)
-        await this.#afterTaskSettled(run, task, 'CANCELLED')
+        if (await settleWrite('CANCELLED', { error_type: 'cancelled' })) {
+          this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」已取消`)
+          await this.#afterTaskSettled(run, task, 'CANCELLED')
+        }
         return
       }
       // 基础设施故障或取消：外部取消时 DB 已是 CANCELLED 则尊重现状
@@ -739,12 +768,13 @@ export class WeaveScheduler {
         await this.#afterTaskSettled(run, task, 'CANCELLED')
         return
       }
-      await this.#forceTransition(task, 'FAILED', { error_type: 'execution_failed' })
-      this.#notifySafe(
-        run,
-        `[weave] 任务「${subjectLabel(task)}」执行失败 ✗：${error instanceof Error ? error.message : String(error)}`,
-      )
-      await this.#afterTaskSettled(run, task, 'FAILED')
+      if (await settleWrite('FAILED', { error_type: 'execution_failed' })) {
+        this.#notifySafe(
+          run,
+          `[weave] 任务「${subjectLabel(task)}」执行失败 ✗：${error instanceof Error ? error.message : String(error)}`,
+        )
+        await this.#afterTaskSettled(run, task, 'FAILED')
+      }
       return
     }
     this.#controllers.delete(task.id)
@@ -761,37 +791,39 @@ export class WeaveScheduler {
     const text = outputTextOf(output)
 
     if (mapped.status === 'COMPLETED') {
-      await this.#updateTask(task.id, { status: 'COMPLETED', result: text, error_type: null })
-      this.#notifySafe(
-        run,
-        `[weave] 任务「${subjectLabel(task)}」完成 ✓（${role.name}）\n${excerptOf(text, 600)}`,
-      )
-      await this.#runSettledTextHook(run, task, role, text, 'COMPLETED')
-      await this.#afterTaskSettled(run, task, 'COMPLETED')
+      if (await settleWrite('COMPLETED', { result: text, error_type: null })) {
+        this.#notifySafe(
+          run,
+          `[weave] 任务「${subjectLabel(task)}」完成 ✓（${role.name}）\n${excerptOf(text, 600)}`,
+        )
+        await this.#runSettledTextHook(run, task, role, text, 'COMPLETED')
+        await this.#afterTaskSettled(run, task, 'COMPLETED')
+      }
       return
     }
 
     if (mapped.status === 'CANCELLED') {
-      await this.#forceTransition(task, 'CANCELLED', { error_type: mapped.errorType ?? 'aborted' })
-      this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」已中断（${output.stopReason}）`)
-      await this.#afterTaskSettled(run, task, 'CANCELLED')
+      if (await settleWrite('CANCELLED', { error_type: mapped.errorType ?? 'aborted' })) {
+        this.#notifySafe(run, `[weave] 任务「${subjectLabel(task)}」已中断（${output.stopReason}）`)
+        await this.#afterTaskSettled(run, task, 'CANCELLED')
+      }
       return
     }
 
     // FAILED：权威状态机向下游传播 SKIPPED
-    await this.#forceTransition(task, 'FAILED', {
+    if (await settleWrite('FAILED', {
       result: text,
       error_type: mapped.errorType ?? output.stopReason,
-    })
-    const diagnostic = output.diagnostic ? `：${output.diagnostic}` : ''
-    this.#notifySafe(
-      run,
-      `[weave] 任务「${subjectLabel(task)}」失败 ✗（${mapped.errorType ?? output.stopReason}${diagnostic}）`,
-    )
-    await this.#runSettledTextHook(run, task, role, text, 'FAILED')
-    await this.#afterTaskSettled(run, task, 'FAILED')
+    })) {
+      const diagnostic = output.diagnostic ? `：${output.diagnostic}` : ''
+      this.#notifySafe(
+        run,
+        `[weave] 任务「${subjectLabel(task)}」失败 ✗（${mapped.errorType ?? output.stopReason}${diagnostic}）`,
+      )
+      await this.#runSettledTextHook(run, task, role, text, 'FAILED')
+      await this.#afterTaskSettled(run, task, 'FAILED')
+    }
   }
-
   fallbackEnabled(role: RoleConfig): boolean {
     return (this.#opts.retryWithFallback ?? true) && Boolean(role.fallback_provider && role.fallback_model)
   }

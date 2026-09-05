@@ -204,7 +204,11 @@ export class DagRepository {
     const preStatuses = new Map(dag.tasks.map((t) => [t.id, t.status]))
     const now = new Date().toISOString()
     await this.persistence.tasks.run((db) => {
-      db.prepare(`UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE id = ?`).run(
+      // 取消即 invalidateTaskAttempt：作废在途 attempt 句柄 + 推进 revision，
+      // 迟到的 attempt 回写因 token 失效被拒（乐观并发，参照官方 state.ts）。
+      db.prepare(
+        `UPDATE tasks SET status = 'CANCELLED', attempt_token = NULL, revision = revision + 1, updated_at = ? WHERE id = ?`,
+      ).run(
         now,
         taskId,
       )
