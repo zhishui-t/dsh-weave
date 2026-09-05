@@ -19,6 +19,7 @@ export const AUDIT_EVENT_TYPES = [
   'team.switched',
   'recovery.task_repaired',
   'recovery.import_repaired',
+  'recovery.task_reconciled',
 ] as const
 
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number]
@@ -44,6 +45,7 @@ export type AuditEvent =
   | (AuditEventBase & { type: 'team.switched'; session_id: string; from_team: string; to_team: string })
   | (AuditEventBase & { type: 'recovery.task_repaired'; task_id: string; from: string; to: string; reason: string })
   | (AuditEventBase & { type: 'recovery.import_repaired'; job_id: string; from: string; to: string; reason: string })
+  | (AuditEventBase & { type: 'recovery.task_reconciled'; task_id: string; verdict: string; detail: string })
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
@@ -62,6 +64,7 @@ export const AUDIT_EVENT_REQUIRED_FIELDS: Record<AuditEventType, readonly string
   'team.switched': ['session_id', 'from_team', 'to_team'],
   'recovery.task_repaired': ['task_id', 'from', 'to', 'reason'],
   'recovery.import_repaired': ['job_id', 'from', 'to', 'reason'],
+  'recovery.task_reconciled': ['task_id', 'verdict', 'detail'],
 }
 
 export interface AuditLogOptions {
