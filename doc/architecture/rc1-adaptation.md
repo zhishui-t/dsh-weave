@@ -35,8 +35,18 @@
 另有一处消息语义面：`dsh-subagent-executor-provider.ts:270-277` `followup(..., { source: { kind: 'coordinator', form: 'relay', senderSessionId } })`——relay 语义正是 0.1.2 send_message 正式化的方向；调用形状由宿主 `subagents.followup` 承接，weave 侧无工具名硬编码。
 
 **策略**：不改码。宿主升级时联动升级 devDeps（见 §3 演练清单），跑
-`pnpm vitest run src/plugins/weave/__tests__/`（executor/session 家族）回归。
+`pnpm vitest run test/unit/plugins/weave/`（executor/session 家族）回归。
 特性探测不适用于本点——weave 从不主动调用该工具。
+
+**实施核验（t3，2026-09-05）**：按本节裁定执行为「不改码」，实施时点独立复核证据——
+`src/` 对 `send_message`/`sendMessage` 零命中；适配任务点名的三文件均无 report 工具按名引用：
+`feedback-router.ts` 实为**用户反馈**保温期路由（accept/revise/cancel，与子代理回灌域不同、零交集）；
+`session-delegation.ts` / `delegation-service.ts` 的「回灌」仅存在于注释与通知性叙述（无工具名指令）；
+任务描述模板（`delegation-service.ts` `buildPromptParts`）与 `EXECUTION_DISCIPLINE` 只要求
+文本产出 + WEAVE_KNOWLEDGE 块，出现的工具名仅 weave 自有 `weave_knowledge_search` /
+`knowledge_search`；产出回收侧 `foldConsumedWork`（dsh-agent 0.1.1-rc.2 `consumed-work.js`）
+无 `'report'`/`'send_message'` 字符串耦合。send_message 双分支特性探测按 §2 裁定不落地
+（weave 无该工具调用点，预接即死代码开测试账）；0.1.2 升级日随 §3 演练第 1/3 步联动验证。
 
 ### b) Session.events → 按需 API（seq / eventAt() / snapshotEvents()）
 
