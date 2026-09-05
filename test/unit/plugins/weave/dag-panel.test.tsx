@@ -50,6 +50,8 @@ function task(
     description: `任务 ${id}`,
     dependencies: options.dependencies ?? [],
     write_scopes: [],
+    revision: 0,
+    attempt_token: null,
     assigned_agent: null,
     executor: null,
     status,

@@ -30,6 +30,8 @@ const BASE_TASK: TaskRecord = {
   version: 'v0.2.0',
   description: '实现 ExecutorRegistry 并补单元测试',
   write_scopes: [],
+  revision: 0,
+  attempt_token: null,
   dependencies: [],
   assigned_agent: 'coder',
   executor: 'spawn',

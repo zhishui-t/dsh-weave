@@ -226,6 +226,8 @@ describe('KnowledgeEngine.searchForInjection', () => {
       id: 'task-inj', session_id: 's-1', team_id: 'team-1', project_id: 'proj-a', version: 'v2',
       description: '实现检索排序', dependencies: [], assigned_agent: 'coder', executor: 'spawn',
       write_scopes: [],
+      revision: 0,
+      attempt_token: null,
       status: 'RUNNING', revision_count: 0, max_revisions: 5, feedback_timeout_seconds: 1800,
       feedback_expires_at: null, skip_override: false, skip_reason: null, fail_count: 0,
       result: null, error_type: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),

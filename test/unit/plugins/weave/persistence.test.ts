@@ -171,13 +171,13 @@ describe('WeaveDatabase（续）', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('tasks 表结构与 TDD 2.1.4 DDL 一致（24 列，v3 起含 write_scopes）', () => {
+  it('tasks 表结构与 TDD 2.1.4 DDL 一致（26 列，v3 起含 write_scopes/revision/attempt_token）', () => {
     const db = new WeaveDatabase({ path: join(dir, 'tasks-schema.db'), schema: DEFAULT_SCHEMAS.tasks })
     try {
       const cols = db.columns('tasks')
       expect(cols.map((c) => c.name)).toEqual([
         'id', 'dag_id', 'session_id', 'team_id', 'project_id', 'version', 'description',
-        'stage', 'dependencies', 'write_scopes', 'assigned_agent', 'executor', 'status', 'revision_count',
+        'stage', 'dependencies', 'write_scopes', 'revision', 'attempt_token', 'assigned_agent', 'executor', 'status', 'revision_count',
         'max_revisions', 'feedback_timeout_seconds', 'feedback_expires_at', 'skip_override',
         'skip_reason', 'fail_count', 'result', 'error_type', 'created_at', 'updated_at',
       ])
@@ -185,6 +185,7 @@ describe('WeaveDatabase（续）', () => {
       expect(cols.find((c) => c.name === 'status')?.notnull).toBe(1)
       expect(cols.find((c) => c.name === 'dependencies')?.dflt_value).toBe("'[]'")
       expect(cols.find((c) => c.name === 'write_scopes')?.dflt_value).toBe("'[]'")
+      expect(cols.find((c) => c.name === 'revision')?.dflt_value).toBe('0')
     } finally {
       db.close()
     }

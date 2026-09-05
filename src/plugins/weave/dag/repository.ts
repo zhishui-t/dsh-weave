@@ -24,6 +24,9 @@ interface TaskRow {
   dependencies: string
   /** v3 起存在；v1/v2 旧库经 ALTER 补列后同样有值（DEFAULT '[]'）。 */
   write_scopes: string | null
+  /** v3 乐观并发：legacy 行可能缺列（undefined 归一为 0/NULL）。 */
+  revision: number | null
+  attempt_token: string | null
   assigned_agent: string | null
   executor: string | null
   status: string
@@ -74,6 +77,8 @@ function rowToTask(row: TaskRow): TaskRecord {
     description: row.description,
     dependencies,
     write_scopes: parseWriteScopes(row.write_scopes),
+    revision: row.revision ?? 0,
+    attempt_token: row.attempt_token ?? null,
     assigned_agent: row.assigned_agent,
     executor: row.executor,
     status: row.status as TaskStatus,

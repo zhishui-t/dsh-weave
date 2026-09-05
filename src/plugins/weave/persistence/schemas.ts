@@ -12,7 +12,7 @@ export const DEFAULT_SCHEMA_VERSION = 1
 /** core.db 结构版本：v2 起统一注册 team_bindings（TDD 2.6.8，原由 TeamManager 自建）。 */
 export const CORE_SCHEMA_VERSION = 2
 
-/** tasks.db 结构版本：v3 起任务携带 write_scopes（写域冲突提醒，参照官方 agent-team）。 */
+/** tasks.db 结构版本：v3 起任务携带 write_scopes（写域提醒）+ revision/attempt_token（乐观并发）。 */
 export const TASKS_SCHEMA_VERSION = 3
 
 /** TDD 2.1.4 任务表 DDL */
@@ -27,6 +27,8 @@ export const TASKS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS tasks (
     stage TEXT NOT NULL DEFAULT '',   -- DAG 模板阶段名（HI-4，阶段→角色绑定用）
     dependencies TEXT DEFAULT '[]',
     write_scopes TEXT DEFAULT '[]',   -- 写域前缀 JSON 数组（advisory：重叠仅告警不阻断）
+    revision INTEGER NOT NULL DEFAULT 0,  -- 乐观并发版本号：治理/attempt 写回每次 +1（迟到写按 expectedRevision 拒绝）
+    attempt_token TEXT,               -- attempt 句柄：claim(RUNNING) 签发 UUID；重派/取消/恢复作废（NULL）
     assigned_agent TEXT,
     executor TEXT,
     status TEXT NOT NULL,
@@ -46,13 +48,34 @@ export const TASKS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS tasks (
 /**
  * v2→v3 存量库补列：CREATE TABLE IF NOT EXISTS 对旧表是 no-op，必须条件 ALTER。
  * 谓词查 PRAGMA table_info，列不存在才执行（全新库由建表 DDL 直接带列，跳过）。
+ * 注意：migrate 以 user_version>=schema.version 短路——在 0174ebd（v3 仅 write_scopes）
+ * 已迁移过的存量库上，本批补列不会随版本门重跑；该形态仅存在于开发期数据库
+ * （可重建），生产行随本 v3 组合 DDL 一次到位。
  */
 export const TASKS_V3_ADD_WRITE_SCOPES: DatabaseSchemaStatement = {
   sql: "ALTER TABLE tasks ADD COLUMN write_scopes TEXT NOT NULL DEFAULT '[]'",
   when: (db: DatabaseSync): boolean => {
-    const columns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
-    return !columns.some((column) => column.name === 'write_scopes')
+    return !taskColumns(db).includes('write_scopes')
   },
+}
+
+/** v3 乐观并发补列（与 write_scopes 同版本 v3，t8 协调）：存量 v2 库升级时随迁移补齐。 */
+export const TASKS_V3_ADD_REVISION: DatabaseSchemaStatement = {
+  sql: 'ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 0',
+  when: (db: DatabaseSync): boolean => {
+    return !taskColumns(db).includes('revision')
+  },
+}
+
+export const TASKS_V3_ADD_ATTEMPT_TOKEN: DatabaseSchemaStatement = {
+  sql: 'ALTER TABLE tasks ADD COLUMN attempt_token TEXT',
+  when: (db: DatabaseSync): boolean => {
+    return !taskColumns(db).includes('attempt_token')
+  },
+}
+
+function taskColumns(db: DatabaseSync): string[] {
+  return (db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>).map((column) => column.name)
 }
 
 /** TDD 2.6.6 dags 表（HI-3） */
@@ -133,7 +156,11 @@ export const TASK_SEQUENCES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS task_sequenc
     PRIMARY KEY (project_id, version)
 )`
 
-/** TDD 2.6.4 熔断表 DDL */
+/**
+ * TDD 2.6.4 熔断表 DDL。
+ * state 值域：'BANNED' | 'COOLDOWN' | 'RETIRED'（永久退役：不冷却不过期，
+ * 参照 dsh-agent-teams RETIRED_MEMBERS 语义；Ddl 结构不变——state 为自由 TEXT）。
+ */
 export const BANS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS bans (
     id TEXT PRIMARY KEY,
     scope TEXT NOT NULL,
@@ -186,7 +213,14 @@ export const DEFAULT_SCHEMAS: Record<
 > = {
   tasks: {
     version: TASKS_SCHEMA_VERSION,
-    statements: [TASKS_TABLE_DDL, DAGS_TABLE_DDL, EDGES_TABLE_DDL, TASKS_V3_ADD_WRITE_SCOPES],
+    statements: [
+      TASKS_TABLE_DDL,
+      DAGS_TABLE_DDL,
+      EDGES_TABLE_DDL,
+      TASKS_V3_ADD_WRITE_SCOPES,
+      TASKS_V3_ADD_REVISION,
+      TASKS_V3_ADD_ATTEMPT_TOKEN,
+    ],
   },
   core: {
     version: CORE_SCHEMA_VERSION,

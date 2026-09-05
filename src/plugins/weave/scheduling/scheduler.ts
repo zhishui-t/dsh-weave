@@ -7,7 +7,7 @@ import { toDagStatus } from '../dag/repository.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
-import { parseWriteScopes } from '../state/write-scope.js'
+import { parseWriteScopes, scopeSetsOverlap } from '../state/write-scope.js'
 import type { NoticeSessionLike } from './session-delegation.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import { DagActivity, type DagWaitResult } from './activity-waiter.js'
@@ -349,7 +349,15 @@ export class WeaveScheduler {
       if (!dagRow) throw new WeaveError('task_not_found', `DAG 不存在: ${dagId}`, { dagId })
       const rows = db
         .prepare('SELECT * FROM tasks WHERE dag_id = ? ORDER BY rowid')
-        .all(dagId) as unknown as Array<Omit<TaskRecord, 'dependencies' | 'skip_override' | 'write_scopes'> & { dependencies: string; skip_override: number; write_scopes: string | null }>
+        .all(dagId) as unknown as Array<
+        Omit<TaskRecord, 'dependencies' | 'skip_override' | 'write_scopes' | 'revision' | 'attempt_token'> & {
+          dependencies: string
+          skip_override: number
+          write_scopes: string | null
+          revision: number | null
+          attempt_token: string | null
+        }
+      >
       const edges = db
         .prepare('SELECT from_task_id AS "from", to_task_id AS "to" FROM edges WHERE dag_id = ?')
         .all(dagId) as unknown as TaskDag['edges']
@@ -357,6 +365,9 @@ export class WeaveScheduler {
         ...row,
         dependencies: safeParseDeps(row.dependencies),
         write_scopes: parseWriteScopes(row.write_scopes),
+        // v3 乐观并发列：legacy 行缺列时归一（undefined → 0/NULL），守卫语义不受影响。
+        revision: Number(row.revision ?? 0),
+        attempt_token: row.attempt_token ?? null,
         skip_override: row.skip_override === 1,
       }))
       return { dag_id: dagId, tasks, edges, status: toDagStatus(tasks) }
@@ -497,6 +508,16 @@ export class WeaveScheduler {
         const roleB = run.team.roles.find((role) => role.id === b.assigned_agent)
         return (roleB?.priority ?? 0) - (roleA?.priority ?? 0)
       })
+    // 写域重叠提醒（advisory，官方 agent-team taskView 同语义）：就绪任务与
+    // in-progress 任务写域前缀重叠 → notify 告警，只提醒不阻断派发。
+    // in-progress = 库内 RUNNING/REVISION_RUNNING + 角色占用（含排队中）；
+    // 本轮已派发任务即时并入集合——同批并行派发的重叠也能被发现。
+    // 就绪任务均无写域时零查询（零写域团队零开销）。
+    const inProgressScopes: Array<{ taskId: string; scopes: string[] }> = readyTasks.some(
+      (task) => task.write_scopes.length > 0,
+    )
+      ? await this.#inProgressScopes(run.sessionId)
+      : []
     for (const task of readyTasks) {
       if (task.status !== 'WAITING') continue
       const depsOk = task.dependencies.every((dep) => {
@@ -520,6 +541,21 @@ export class WeaveScheduler {
       }
       if (roleBusy) continue
 
+      // 写域重叠告警（只提醒不阻断）：与执行中/已派发任务的写域前缀重叠。
+      if (task.write_scopes.length > 0) {
+        const overlapped = inProgressScopes.filter(
+          (other) => other.taskId !== task.id && scopeSetsOverlap(task.write_scopes, other.scopes),
+        )
+        if (overlapped.length > 0) {
+          const others = overlapped.map((other) => other.taskId).join('、')
+          const scopes = [...new Set(overlapped.flatMap((other) => other.scopes))].join('、')
+          this.#notifySafe(
+            run,
+            `[weave] ⚠️ 写域重叠提醒：任务「${subjectLabel(task)}」(${task.id}) 与执行中任务 (${others}) 写域重叠 [${scopes}]——仅提醒不阻断，注意并行写入冲突`,
+          )
+        }
+      }
+
       // 状态机无 BLOCKED→RUNNING 直达：先升 WAITING 再 RUNNING（TDD §2.1.5）。
       // 假并行修复：委托方声明支持槽位回调时，排队期任务保持 WAITING——
       // 真正拿到执行器槽后经 context.onAcquired 才写 RUNNING；未声明（历史
@@ -540,6 +576,11 @@ export class WeaveScheduler {
         started_at: new Date().toISOString(),
         phase: acquiredHook ? 'queued' : 'running',
       })
+      // 本轮已派发任务并入写域集合：同批后续就绪任务的重叠检测可见（排队期
+      // 库内仍是 WAITING，仅靠库内状态会漏报同批并行重叠）。
+      if (task.write_scopes.length > 0) {
+        inProgressScopes.push({ taskId: task.id, scopes: task.write_scopes })
+      }
       // 执行完无论成败都释放占用并重泵；异常在 #executeTaskSafely 内收敛为终态。
       // 角色释放是会话全局事件（doc/05 §6.5 P1-G G-①）：互斥额度跨 DAG 共占，
       // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
@@ -787,6 +828,40 @@ export class WeaveScheduler {
       return db.prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as { status: TaskStatus } | undefined
     })
     return row?.status ?? null
+  }
+
+  /**
+   * 收集会话内 in-progress 任务的写域（写域重叠提醒数据源）：
+   * 库内 RUNNING/REVISION_RUNNING + 角色占用表任务（覆盖排队中——已派发未拿槽
+   * 的任务库内仍是 WAITING）。只返回非空写域；self 由调用方按 taskId 排除。
+   */
+  async #inProgressScopes(sessionId: string): Promise<Array<{ taskId: string; scopes: string[] }>> {
+    const activeTaskIds = new Set<string>()
+    for (const [key, info] of this.#activeByRole.entries()) {
+      if (key.split('\u0000')[0] === sessionId) activeTaskIds.add(info.task_id)
+    }
+    return this.#persistence.tasks.run((db) => {
+      const entries: Array<{ taskId: string; scopes: string[] }> = []
+      const seen = new Set<string>()
+      const push = (id: string, raw: string | null): void => {
+        if (seen.has(id)) return
+        seen.add(id)
+        const scopes = parseWriteScopes(raw)
+        if (scopes.length > 0) entries.push({ taskId: id, scopes })
+      }
+      const statusRows = db
+        .prepare("SELECT id, write_scopes FROM tasks WHERE session_id = ? AND status IN ('RUNNING','REVISION_RUNNING')")
+        .all(sessionId) as Array<{ id: string; write_scopes: string | null }>
+      for (const row of statusRows) push(row.id, row.write_scopes)
+      if (activeTaskIds.size > 0) {
+        const placeholders = [...activeTaskIds].map(() => '?').join(', ')
+        const activeRows = db
+          .prepare(`SELECT id, write_scopes FROM tasks WHERE id IN (${placeholders})`)
+          .all(...activeTaskIds) as Array<{ id: string; write_scopes: string | null }>
+        for (const row of activeRows) push(row.id, row.write_scopes)
+      }
+      return entries
+    })
   }
 
   /**

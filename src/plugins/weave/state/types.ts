@@ -46,6 +46,16 @@ export interface TaskRecord {
    * advisory 语义：与执行中任务重叠时调度器只发警告不阻断（官方 agent-team 对齐）。
    */
   write_scopes: string[]
+  /**
+   * 乐观并发版本号（tasks.revision，v3 起默认 0）：治理写入与 attempt 写回每次 +1；
+   * 带 attempt 守卫的回写按 (attempt_token, expectedRevision) 双验证，不符即拒绝。
+   */
+  revision: number
+  /**
+   * attempt 句柄（tasks.attempt_token，v3 起）：claim(RUNNING) 时签发 UUID，
+   * 重派/取消/恢复时作废（NULL）——旧 attempt 的迟到回写因 token 失效被拒。
+   */
+  attempt_token: string | null
   assigned_agent: string | null
   executor: string | null
   status: TaskStatus
