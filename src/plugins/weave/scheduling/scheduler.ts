@@ -5,7 +5,7 @@ import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { toDagStatus } from '../dag/repository.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
-import { newAttemptToken, TASK_STALE_REVISION, type AttemptGuard } from '../state/attempt-token.js'
+import { newAttemptToken, TASK_STALE_REVISION, applyAttemptGuardedWrite, type AttemptGuard } from '../state/attempt-token.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { parseWriteScopes, scopeSetsOverlap } from '../state/write-scope.js'
@@ -394,36 +394,32 @@ export class WeaveScheduler {
     guard?: AttemptGuard,
   ): Promise<void> {
     const dagId = await this.#persistence.tasks.run((db) => {
-      const sets = ['updated_at = ?']
-      const params: Array<string | null> = [new Date().toISOString()]
-      for (const [field, value] of Object.entries(patch)) {
-        sets.push(`${field} = ?`)
-        params.push(value === undefined ? null : String(value))
-      }
-      let sql = `UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`
-      const tail: Array<string | number> = [taskId]
       if (guard !== undefined) {
-        sql += ' AND attempt_token = ? AND revision = ?'
-        tail.push(guard.token, guard.expectedRevision)
-      }
-      const info = db.prepare(sql).run(...params, ...tail)
-      if (guard !== undefined && info.changes === 0) {
-        const current = db.prepare('SELECT status, attempt_token, revision FROM tasks WHERE id = ?').get(taskId) as
-          | { status: TaskStatus; attempt_token: string | null; revision: number | null }
-          | undefined
-        throw new WeaveError(
-          TASK_STALE_REVISION,
-          `任务 ${taskId} 回写被拒（attempt 句柄失效或 revision 过期；当前 ${current?.status ?? '不存在'}）`,
-          {
-            taskId,
-            expected: { token: guard.token, revision: guard.expectedRevision },
-            current: current ?? null,
-          },
-        )
-      }
-      if (guard !== undefined) {
-        // 守卫写成功即推进版本号：同 attempt 的并发双写只有携带最新 revision 的一方胜出。
-        db.prepare('UPDATE tasks SET revision = revision + 1 WHERE id = ?').run(taskId)
+        // attempt 守卫回写：协议 SQL 收敛在 applyAttemptGuardedWrite（state/attempt-token.ts），
+        // token+expectedRevision 双验证，0 行命中即迟到/冲突写。
+        const changes = applyAttemptGuardedWrite(db, taskId, patch, guard, new Date().toISOString())
+        if (changes === 0) {
+          const current = db.prepare('SELECT status, attempt_token, revision FROM tasks WHERE id = ?').get(taskId) as
+            | { status: TaskStatus; attempt_token: string | null; revision: number | null }
+            | undefined
+          throw new WeaveError(
+            TASK_STALE_REVISION,
+            `任务 ${taskId} 回写被拒（attempt 句柄失效或 revision 过期；当前 ${current?.status ?? '不存在'}）`,
+            {
+              taskId,
+              expected: { token: guard.token, revision: guard.expectedRevision },
+              current: current ?? null,
+            },
+          )
+        }
+      } else {
+        const sets = ['updated_at = ?']
+        const params: Array<string | null> = [new Date().toISOString()]
+        for (const [field, value] of Object.entries(patch)) {
+          sets.push(`${field} = ?`)
+          params.push(value === undefined ? null : String(value))
+        }
+        db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params, taskId)
       }
       const row = db.prepare('SELECT dag_id FROM tasks WHERE id = ?').get(taskId) as
         | { dag_id: string }
