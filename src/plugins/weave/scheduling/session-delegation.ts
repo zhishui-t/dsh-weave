@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { TeamConfig } from '../team/team-manager.js'
+import { readSessionEvents } from '../executors/session-events-adapter.js'
 
 /* ------------------------------------------------------------------ */
 /* 会话控制通道：自然语言团队启停 + 会话 notice 通知。                  */
@@ -65,7 +66,13 @@ export interface NoticeSessionLike {
   ): unknown
   /** 真实 Session 才有；缺失时保守按“无待决工具调用”处理。 */
   readonly surface?: { readonly nodes: readonly number[] }
+  /**
+   * 宿主会话事件：0.1.1-rc.2 为常驻数组（旧路径）；0.1.2-rc.1 改按需
+   * `snapshotEvents()`。读取一律经 session-events-adapter 特性探测（rc1 点 b），
+   * 旧路径保留不删。
+   */
   readonly events?: readonly NoticeEventLike[]
+  readonly snapshotEvents?: () => readonly NoticeEventLike[]
 }
 
 /** 构造一条插件来源的 weave notice。 */
@@ -89,7 +96,9 @@ export function createWeaveNoticeMessage(text: string): WeaveNoticeMessage {
  */
 export function hasPendingToolCall(session: NoticeSessionLike): boolean {
   const surface = session.surface?.nodes
-  const events = session.events
+  // rc1 点 b：宿主事件读取经适配函数特性探测（snapshotEvents() 优先，.events 兜底）；
+  // 事件本就携带 seq，bySeq 交叉逻辑对两代宿主等价。此处收敛回本文件的事件视面类型。
+  const events = readSessionEvents(session) as readonly NoticeEventLike[] | undefined
   if (!surface || !events) return false
   const bySeq = new Map<number, NoticeEventLike>()
   for (const event of events) bySeq.set(event.seq, event)

@@ -219,6 +219,28 @@ describe('自然语言团队启停（会话控制通道）', () => {
     }
     expect(hasPendingToolCall(closed as never)).toBe(false)
   })
+
+  it('hasPendingToolCall（rc1 新宿主）：session 仅提供 snapshotEvents（无 .events）时按同一 seq 交叉逻辑判定', () => {
+    const events = [
+      { seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'call_new' }] } } },
+      { seq: 2, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'x' }] } } },
+    ]
+    const pending = {
+      surface: { nodes: [1, 2] },
+      snapshotEvents: () => events,
+    }
+    expect(hasPendingToolCall(pending as never)).toBe(true)
+
+    const closedEvents = [
+      ...events,
+      { seq: 3, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'call_new' }] } } },
+    ]
+    const closed = {
+      surface: { nodes: [1, 2, 3] },
+      snapshotEvents: () => closedEvents,
+    }
+    expect(hasPendingToolCall(closed as never)).toBe(false)
+  })
 })
 
 describe('session/team-selection RPC（复用 team_bindings，绑定=启用）', () => {
