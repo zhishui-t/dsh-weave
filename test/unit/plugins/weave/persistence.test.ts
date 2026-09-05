@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SingleWriterQueue } from '../../../../src/plugins/weave/persistence/single-writer-queue.js'
-import { CORE_SCHEMA_VERSION, DEFAULT_SCHEMAS } from '../../../../src/plugins/weave/persistence/schemas.js'
+import { DatabaseSync } from 'node:sqlite'
+import { CORE_SCHEMA_VERSION, DEFAULT_SCHEMAS, TASKS_SCHEMA_VERSION } from '../../../../src/plugins/weave/persistence/schemas.js'
 import { WeaveDatabase } from '../../../../src/plugins/weave/persistence/weave-database.js'
 import { openPersistence } from '../../../../src/plugins/weave/persistence/index.js'
 
@@ -169,19 +171,20 @@ describe('WeaveDatabase（续）', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('tasks 表结构与 TDD 2.1.4 DDL 一致（23 列，含 HI-3 dag_id/stage）', () => {
+  it('tasks 表结构与 TDD 2.1.4 DDL 一致（24 列，v3 起含 write_scopes）', () => {
     const db = new WeaveDatabase({ path: join(dir, 'tasks-schema.db'), schema: DEFAULT_SCHEMAS.tasks })
     try {
       const cols = db.columns('tasks')
       expect(cols.map((c) => c.name)).toEqual([
         'id', 'dag_id', 'session_id', 'team_id', 'project_id', 'version', 'description',
-        'stage', 'dependencies', 'assigned_agent', 'executor', 'status', 'revision_count',
+        'stage', 'dependencies', 'write_scopes', 'assigned_agent', 'executor', 'status', 'revision_count',
         'max_revisions', 'feedback_timeout_seconds', 'feedback_expires_at', 'skip_override',
         'skip_reason', 'fail_count', 'result', 'error_type', 'created_at', 'updated_at',
       ])
       expect(cols.find((c) => c.name === 'id')?.pk).toBe(1)
       expect(cols.find((c) => c.name === 'status')?.notnull).toBe(1)
       expect(cols.find((c) => c.name === 'dependencies')?.dflt_value).toBe("'[]'")
+      expect(cols.find((c) => c.name === 'write_scopes')?.dflt_value).toBe("'[]'")
     } finally {
       db.close()
     }
@@ -401,3 +404,85 @@ describe('DDL 对齐（t30：dag/edges/team_bindings 统一注册）', () => {
     }
   })
 })
+
+describe('tasks.db v3 迁移：write_scopes 写域列', () => {
+  let dir: string
+
+  // v2 形态 tasks 建表语句（无 write_scopes；迁移测试夹具，勿改）
+  const TASKS_TABLE_V2_DDL = `CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    dag_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    description TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '',
+    dependencies TEXT DEFAULT '[]',
+    assigned_agent TEXT,
+    executor TEXT,
+    status TEXT NOT NULL,
+    revision_count INTEGER DEFAULT 0,
+    max_revisions INTEGER DEFAULT 5,
+    feedback_timeout_seconds INTEGER DEFAULT 1800,
+    feedback_expires_at TEXT,
+    skip_override INTEGER DEFAULT 0,
+    skip_reason TEXT,
+    fail_count INTEGER DEFAULT 0,
+    result TEXT,
+    error_type TEXT,
+    created_at TEXT,
+    updated_at TEXT
+)`
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'weave-v3-migrate-'))
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('全新库：tasks 直接带 write_scopes（DEFAULT []），版本升到 v3', () => {
+    const p = openPersistence({ stateDir: dir })
+    try {
+      expect(p.tasks.userVersion()).toBe(TASKS_SCHEMA_VERSION)
+      const col = p.tasks.columns('tasks').find((c) => c.name === 'write_scopes')
+      expect(col).toBeDefined()
+      expect(col?.dflt_value).toBe("'[]'")
+    } finally {
+      p.close()
+    }
+  })
+
+  it('存量 v2 库：条件 ALTER 补列，旧行回填 [] 且数据保留', () => {
+    const legacyDir = join(dir, 'legacy')
+    mkdirSync(legacyDir, { recursive: true })
+    // 手工造一个 v2 形态的 tasks.db（无 write_scopes 列，user_version=2）
+    const legacy = new DatabaseSync(join(legacyDir, 'tasks.db'))
+    legacy.exec(TASKS_TABLE_V2_DDL)
+    legacy.exec('PRAGMA user_version = 2')
+    legacy
+      .prepare(
+        `INSERT INTO tasks (id, session_id, team_id, project_id, version, description, status, created_at, updated_at)
+         VALUES ('t-legacy', 's', 'team', 'proj', 'v1', '存量任务', 'RUNNING', '2026-01-01', '2026-01-01')`,
+      )
+      .run()
+    legacy.close()
+
+    const p = openPersistence({ stateDir: legacyDir })
+    try {
+      expect(p.tasks.userVersion()).toBe(TASKS_SCHEMA_VERSION)
+      expect(p.tasks.columns('tasks').map((c) => c.name)).toContain('write_scopes')
+      const row = p.tasks.raw.prepare('SELECT status, write_scopes FROM tasks WHERE id = ?').get('t-legacy') as {
+        status: string
+        write_scopes: string
+      }
+      expect(row.status).toBe('RUNNING')
+      expect(row.write_scopes).toBe('[]')
+    } finally {
+      p.close()
+    }
+  })
+})
+

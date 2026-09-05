@@ -1,4 +1,6 @@
-import type { DatabaseSchema } from './weave-database.js'
+import type { DatabaseSync } from 'node:sqlite'
+
+import type { DatabaseSchema, DatabaseSchemaStatement } from './weave-database.js'
 
 /**
  * 数据库结构版本号（写入 PRAGMA user_version）。
@@ -9,6 +11,9 @@ export const DEFAULT_SCHEMA_VERSION = 1
 
 /** core.db 结构版本：v2 起统一注册 team_bindings（TDD 2.6.8，原由 TeamManager 自建）。 */
 export const CORE_SCHEMA_VERSION = 2
+
+/** tasks.db 结构版本：v3 起任务携带 write_scopes（写域冲突提醒，参照官方 agent-team）。 */
+export const TASKS_SCHEMA_VERSION = 3
 
 /** TDD 2.1.4 任务表 DDL */
 export const TASKS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS tasks (
@@ -21,6 +26,7 @@ export const TASKS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS tasks (
     description TEXT NOT NULL,
     stage TEXT NOT NULL DEFAULT '',   -- DAG 模板阶段名（HI-4，阶段→角色绑定用）
     dependencies TEXT DEFAULT '[]',
+    write_scopes TEXT DEFAULT '[]',   -- 写域前缀 JSON 数组（advisory：重叠仅告警不阻断）
     assigned_agent TEXT,
     executor TEXT,
     status TEXT NOT NULL,
@@ -36,6 +42,18 @@ export const TASKS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS tasks (
     created_at TEXT,
     updated_at TEXT
 )`
+
+/**
+ * v2→v3 存量库补列：CREATE TABLE IF NOT EXISTS 对旧表是 no-op，必须条件 ALTER。
+ * 谓词查 PRAGMA table_info，列不存在才执行（全新库由建表 DDL 直接带列，跳过）。
+ */
+export const TASKS_V3_ADD_WRITE_SCOPES: DatabaseSchemaStatement = {
+  sql: "ALTER TABLE tasks ADD COLUMN write_scopes TEXT NOT NULL DEFAULT '[]'",
+  when: (db: DatabaseSync): boolean => {
+    const columns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    return !columns.some((column) => column.name === 'write_scopes')
+  },
+}
 
 /** TDD 2.6.6 dags 表（HI-3） */
 export const DAGS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS dags (
@@ -166,7 +184,10 @@ export const DEFAULT_SCHEMAS: Record<
   'tasks' | 'core' | 'feedback' | 'knowledgeMeta' | 'imports',
   DatabaseSchema
 > = {
-  tasks: { version: DEFAULT_SCHEMA_VERSION, statements: [TASKS_TABLE_DDL, DAGS_TABLE_DDL, EDGES_TABLE_DDL] },
+  tasks: {
+    version: TASKS_SCHEMA_VERSION,
+    statements: [TASKS_TABLE_DDL, DAGS_TABLE_DDL, EDGES_TABLE_DDL, TASKS_V3_ADD_WRITE_SCOPES],
+  },
   core: {
     version: CORE_SCHEMA_VERSION,
     statements: [TASK_SEQUENCES_TABLE_DDL, BANS_TABLE_DDL, FAILURE_COUNTERS_TABLE_DDL, TEAM_BINDINGS_TABLE_DDL],

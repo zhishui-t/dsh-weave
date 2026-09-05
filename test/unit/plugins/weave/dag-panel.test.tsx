@@ -49,6 +49,7 @@ function task(
     version: 'v1',
     description: `任务 ${id}`,
     dependencies: options.dependencies ?? [],
+    write_scopes: [],
     assigned_agent: null,
     executor: null,
     status,

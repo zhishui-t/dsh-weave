@@ -29,6 +29,7 @@ const BASE_TASK: TaskRecord = {
   project_id: 'proj-weave',
   version: 'v0.2.0',
   description: '实现 ExecutorRegistry 并补单元测试',
+  write_scopes: [],
   dependencies: [],
   assigned_agent: 'coder',
   executor: 'spawn',

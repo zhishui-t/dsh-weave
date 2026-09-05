@@ -7,6 +7,7 @@ import { toDagStatus } from '../dag/repository.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
+import { parseWriteScopes } from '../state/write-scope.js'
 import type { NoticeSessionLike } from './session-delegation.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import { DagActivity, type DagWaitResult } from './activity-waiter.js'
@@ -348,13 +349,14 @@ export class WeaveScheduler {
       if (!dagRow) throw new WeaveError('task_not_found', `DAG 不存在: ${dagId}`, { dagId })
       const rows = db
         .prepare('SELECT * FROM tasks WHERE dag_id = ? ORDER BY rowid')
-        .all(dagId) as unknown as Array<Omit<TaskRecord, 'dependencies' | 'skip_override'> & { dependencies: string; skip_override: number }>
+        .all(dagId) as unknown as Array<Omit<TaskRecord, 'dependencies' | 'skip_override' | 'write_scopes'> & { dependencies: string; skip_override: number; write_scopes: string | null }>
       const edges = db
         .prepare('SELECT from_task_id AS "from", to_task_id AS "to" FROM edges WHERE dag_id = ?')
         .all(dagId) as unknown as TaskDag['edges']
       const tasks: TaskRecord[] = rows.map((row) => ({
         ...row,
         dependencies: safeParseDeps(row.dependencies),
+        write_scopes: parseWriteScopes(row.write_scopes),
         skip_override: row.skip_override === 1,
       }))
       return { dag_id: dagId, tasks, edges, status: toDagStatus(tasks) }

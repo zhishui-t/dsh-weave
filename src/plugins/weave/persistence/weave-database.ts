@@ -5,8 +5,21 @@ export interface DatabaseSchema {
   /** 结构版本号，写入 PRAGMA user_version */
   version: number
   /** 建表/迁移语句（幂等，如 CREATE TABLE IF NOT EXISTS ...） */
-  statements: string[]
+  statements: DatabaseSchemaStatement[]
 }
+
+/**
+ * 迁移语句：纯 SQL 字符串，或带执行条件的对象。
+ * 条件语句用于「存量库补列」类迁移——CREATE TABLE IF NOT EXISTS 对已存在的表
+ * 是 no-op，而 ALTER TABLE ADD COLUMN 在列已存在时会抛错，必须按谓词守卫。
+ */
+export type DatabaseSchemaStatement =
+  | string
+  | {
+      sql: string
+      /** 返回 true 才执行 sql；谓词拿到底层 DatabaseSync 连接。 */
+      when: (db: DatabaseSync) => boolean
+    }
 
 export interface WeaveDatabaseOptions {
   /** 数据库文件路径；':memory:' 表示内存库（测试隔离） */
@@ -76,7 +89,13 @@ export class WeaveDatabase {
       return
     }
     for (const statement of schema.statements) {
-      this.#db.exec(statement)
+      if (typeof statement === 'string') {
+        this.#db.exec(statement)
+        continue
+      }
+      if (statement.when(this.#db)) {
+        this.#db.exec(statement.sql)
+      }
     }
     this.#db.exec(`PRAGMA user_version = ${schema.version}`)
   }

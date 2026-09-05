@@ -3,6 +3,7 @@ import type { WeavePersistence } from '../persistence/persistence.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { TaskDag, TaskEdge, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
+import { parseWriteScopes } from '../state/write-scope.js'
 import type { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 import type { AuditLog } from '../audit/audit-log.js'
 
@@ -21,6 +22,8 @@ interface TaskRow {
   version: string
   description: string
   dependencies: string
+  /** v3 起存在；v1/v2 旧库经 ALTER 补列后同样有值（DEFAULT '[]'）。 */
+  write_scopes: string | null
   assigned_agent: string | null
   executor: string | null
   status: string
@@ -70,6 +73,7 @@ function rowToTask(row: TaskRow): TaskRecord {
     version: row.version,
     description: row.description,
     dependencies,
+    write_scopes: parseWriteScopes(row.write_scopes),
     assigned_agent: row.assigned_agent,
     executor: row.executor,
     status: row.status as TaskStatus,

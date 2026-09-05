@@ -41,6 +41,11 @@ export interface TaskRecord {
   version: string
   description: string
   dependencies: string[]
+  /**
+   * 写域前缀（tasks.write_scopes JSON 数组，v3 起默认 []）。
+   * advisory 语义：与执行中任务重叠时调度器只发警告不阻断（官方 agent-team 对齐）。
+   */
+  write_scopes: string[]
   assigned_agent: string | null
   executor: string | null
   status: TaskStatus

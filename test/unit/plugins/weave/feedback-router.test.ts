@@ -32,6 +32,7 @@ async function insertTask(
     version: 'v1',
     description: '测试任务',
     dependencies: [],
+    write_scopes: [],
     assigned_agent: null,
     executor: 'spawn',
     status: 'COMPLETED',

@@ -16,6 +16,7 @@ const makeTask = (overrides: Partial<TaskRecord> & { id: string }): TaskRecord =
   version: 'v1',
   description: 'desc',
   dependencies: [],
+  write_scopes: [],
   assigned_agent: null,
   executor: null,
   status: 'WAITING',
