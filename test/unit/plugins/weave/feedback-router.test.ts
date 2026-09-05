@@ -468,3 +468,84 @@ describe('FeedbackRouter 状态变更发电（doc/05 §6.4 P1-D 接线点 5）',
     expect(notified.length).toBe(before)
   })
 })
+
+
+describe('FeedbackRouter 成员信箱投递分流（delivery 按消息类型）', () => {
+  let p: WeavePersistence
+  let tracker: SessionTracker
+  let now: { value: Date }
+  let deliveries: Array<{ to: string; from: string; content: string; delivery: 'quiet' | 'wakeup' }>
+  let router: FeedbackRouter
+
+  beforeAll(() => {
+    p = openPersistence({ inMemory: true })
+    tracker = new SessionTracker(p.feedback)
+    now = { value: new Date(BASE) }
+    deliveries = []
+    router = new FeedbackRouter({
+      tasks: p.tasks,
+      feedback: p.feedback,
+      sessionTracker: tracker,
+      clock: makeClock(now),
+      memberMailbox: {
+        deliverToMember: async (input) => {
+          deliveries.push({ to: input.to, from: input.from, content: input.content, delivery: input.delivery })
+          return 'delivered'
+        },
+      },
+    })
+  })
+
+  afterAll(() => {
+    p.close()
+  })
+
+  it('revise（指令）→ wakeup；accept（确认）→ quiet；收件人=受派角色', async () => {
+    await insertTask(p, { id: 'mb-1', assigned_agent: 'coder-a', executor: 'zcode' })
+    await router.enterAwaitingFeedback('mb-1')
+    await router.route('mb-1', '改成深色主题')
+    expect(deliveries.at(-1)).toMatchObject({
+      to: 'coder-a',
+      from: 'captain',
+      delivery: 'wakeup',
+    })
+    expect(deliveries.at(-1)!.content).toContain('改成深色主题')
+
+    // accept 需要 AWAITING_FEEDBACK（revise 后任务在 REVISION_RUNNING）→ 用新任务验证确认分流。
+    await insertTask(p, { id: 'mb-1b', assigned_agent: 'coder-a' })
+    await router.enterAwaitingFeedback('mb-1b')
+    await router.route('mb-1b', '确认')
+    expect(deliveries.at(-1)).toMatchObject({ to: 'coder-a', delivery: 'quiet' })
+  })
+
+  it('cancel/reopen/保温超时 → quiet（状态知会旁路，不触发成员回合）', async () => {
+    await insertTask(p, { id: 'mb-2', assigned_agent: 'tester-b' })
+    await router.enterAwaitingFeedback('mb-2')
+    await router.route('mb-2', '取消')
+    expect(deliveries.at(-1)!.delivery).toBe('quiet')
+
+    await insertTask(p, { id: 'mb-3', assigned_agent: 'coder-c' })
+    await router.enterAwaitingFeedback('mb-3')
+    await router.route('mb-3', '确认')
+    await router.reopen('mb-3')
+    expect(deliveries.at(-1)!.delivery).toBe('quiet')
+
+    await insertTask(p, { id: 'mb-4', assigned_agent: 'qa-d', feedback_expires_at: '2026-08-01T00:00:00.000Z', status: 'AWAITING_FEEDBACK' })
+    await router.closeExpired(new Date('2026-08-28T00:00:00.000Z'))
+    expect(deliveries.at(-1)).toMatchObject({ to: 'qa-d', delivery: 'quiet' })
+  })
+
+  it('未注入 memberMailbox → 零行为（既有路径不受影响）', async () => {
+    const bare = new FeedbackRouter({
+      tasks: p.tasks,
+      feedback: p.feedback,
+      sessionTracker: tracker,
+      clock: makeClock(now),
+    })
+    await insertTask(p, { id: 'mb-5', assigned_agent: 'dev-e' })
+    await bare.enterAwaitingFeedback('mb-5')
+    const before = deliveries.length
+    await bare.route('mb-5', '改成浅色')
+    expect(deliveries.length).toBe(before)
+  })
+})

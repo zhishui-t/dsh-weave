@@ -1,4 +1,5 @@
 import type { WeaveDatabase } from '../persistence/weave-database.js'
+import type { MailboxDelivery } from '../team/mailbox.js'
 import type { SessionTracker } from './session-tracker.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import type { AuditLog } from '../audit/audit-log.js'
@@ -47,6 +48,29 @@ export const DEFAULT_FEEDBACK_CONFIG: FeedbackConfig = {
 
 export type FeedbackIntent = 'accept' | 'revise' | 'cancel'
 
+/**
+ * 成员信箱投递面（结构最小视面；prod 侧由 Mailbox.deliver 薄包装满足，测试注入桩）。
+ * delivery 在类型里显式体现（b）：投递模式由调用方按消息类型选定。
+ */
+export interface MemberMailboxSink {
+  deliverToMember(input: {
+    sessionId: string
+    to: string
+    from: string
+    content: string
+    delivery: MailboxDelivery
+  }): Promise<'delivered' | 'queued' | void>
+}
+
+/**
+ * 反馈消息类型 → 投递模式（用户裁定，官方 agent-team delivery 语义对齐）：
+ * - revise 是要成员立即执行的指令 → wakeup（回灌触发成员回合）；
+ * - accept/cancel/reopen/保温超时是状态知会 → quiet（进收件旁路，不触发回合）。
+ */
+export function deliveryModeOf(intent: FeedbackIntent | 'reopen' | 'expired'): MailboxDelivery {
+  return intent === 'revise' ? 'wakeup' : 'quiet'
+}
+
 export interface FeedbackRouterOptions {
   /** tasks.db：任务状态/修订计数/保温期截止时间。 */
   tasks: WeaveDatabase
@@ -65,6 +89,11 @@ export interface FeedbackRouterOptions {
   statusNotifier?: TaskStatusNotifier
   /** 审计（同步补 task.status_changed，by=user）；五动作均为矩阵内合法转移，可正常入账。 */
   audit?: AuditLog
+  /**
+   * 成员信箱投递面（可选；未注入则零行为）。反馈动作按消息类型分流投递：
+   * revise=wakeup（指令触发成员回合），accept/cancel/reopen/超时=quiet（旁路知会）。
+   */
+  memberMailbox?: MemberMailboxSink
 }
 
 interface FeedbackRouteRow {
@@ -96,6 +125,7 @@ export class FeedbackRouter {
   readonly #clock: () => Date
   readonly #statusNotifier?: TaskStatusNotifier
   readonly #audit?: AuditLog
+  readonly #memberMailbox?: MemberMailboxSink
 
   constructor(options: FeedbackRouterOptions) {
     this.#tasks = options.tasks
@@ -105,6 +135,7 @@ export class FeedbackRouter {
     this.#clock = options.clock ?? (() => new Date())
     this.#statusNotifier = options.statusNotifier
     this.#audit = options.audit
+    this.#memberMailbox = options.memberMailbox
   }
 
   /** 接线点 5（doc/05 §6.4）：状态变更发电 + 审计（by=user，五动作均为矩阵内转移）。 */
@@ -174,6 +205,7 @@ export class FeedbackRouter {
     await this.#saveTask(task, { status: 'CLOSED', feedback_expires_at: null, revision_count: task.revision_count })
     await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CLOSED', 'feedback_accept')
     await this.#patchRoute(taskId, { status: 'CLOSED', closed_at: this.#iso(this.#clock()) })
+    await this.#deliverToMember(task, 'accept', `任务「${task.description.split('\n')[0]?.trim() || task.id}」已被用户确认关闭。`)
     return this.#loadTask(taskId)
   }
 
@@ -199,6 +231,8 @@ export class FeedbackRouter {
     })
     await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'REVISION_RUNNING', 'feedback_revise')
     await this.#patchRoute(taskId, { status: 'REVISION_RUNNING', revision_count: nextCount })
+    // revise 是要成员执行的指令 → wakeup（回灌触发成员回合）。
+    await this.#deliverToMember(task, 'revise', `用户要求修订任务「${task.description.split('\n')[0]?.trim() || task.id}」：${feedback}`)
     return this.#loadTask(taskId)
   }
 
@@ -210,6 +244,7 @@ export class FeedbackRouter {
     await this.#saveTask(task, { status: 'CANCELLED', feedback_expires_at: null, revision_count: task.revision_count })
     await this.#emitStatus(task, 'AWAITING_FEEDBACK', 'CANCELLED', 'feedback_cancel')
     await this.#patchRoute(taskId, { status: 'CANCELLED' })
+    await this.#deliverToMember(task, 'cancel', `任务「${task.description.split('\n')[0]?.trim() || task.id}」已被用户取消。`)
     return this.#loadTask(taskId)
   }
 
@@ -245,6 +280,7 @@ export class FeedbackRouter {
       closed_at: null,
       reopen_count: (route?.reopen_count ?? 0) + 1,
     })
+    await this.#deliverToMember(task, 'reopen', `任务「${task.description.split('\n')[0]?.trim() || task.id}」已被用户重新打开，保温期重置。`)
     return this.#loadTask(taskId)
   }
 
@@ -280,6 +316,7 @@ export class FeedbackRouter {
         actor: 'user',
         source: 'close_expired',
       })
+      await this.#deliverToMember(task, 'expired', `任务「${task.description.split('\n')[0]?.trim() || task.id}」保温期超时，已自动关闭。`)
       closed.push(id)
     }
     if (expiredChanges.length > 0) this.#statusNotifier?.notifyBatch(expiredChanges)
@@ -295,6 +332,32 @@ export class FeedbackRouter {
   }
 
   /* ---------------------------------- 内部 ---------------------------------- */
+
+  /**
+   * 成员信箱投递（b）：按消息类型选择 delivery 模式（deliveryModeOf），
+   * 收件人=任务受派角色（缺省 executor id）；投递失败不影响反馈主链路
+   * （与状态通知吞错同一哲学）。未注入 memberMailbox 时零行为。
+   */
+  async #deliverToMember(
+    task: TaskRecord,
+    intent: FeedbackIntent | 'reopen' | 'expired',
+    content: string,
+  ): Promise<void> {
+    const sink = this.#memberMailbox
+    if (!sink) return
+    const to = task.assigned_agent ?? task.executor ?? 'unknown'
+    try {
+      await sink.deliverToMember({
+        sessionId: task.session_id ?? '',
+        to,
+        from: 'captain',
+        content,
+        delivery: deliveryModeOf(intent),
+      })
+    } catch {
+      // 投递失败不阻断反馈动作；消息仍在收件箱，恢复路径可重投。
+    }
+  }
 
   async #loadTask(taskId: string): Promise<TaskRecord> {
     const row = await this.#tasks.run((raw) => {
