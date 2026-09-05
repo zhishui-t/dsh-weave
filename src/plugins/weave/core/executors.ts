@@ -3,6 +3,7 @@ import type { CliMcpDeps } from '../host/cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import type { ZcodeAcpExecutorProvider } from '../acp/acp-session-provider.js'
 import { createDefaultExecutorProviderRegistry } from '../host/host-wiring.js'
+import { ExecutorChildStore } from '../executors/executor-child-store.js'
 import {
   acpRegistryContextFrom,
   createWeaveProviderCommandDefinitions,
@@ -30,7 +31,10 @@ export function createExecutorLayer(options: ExecutorLayerOptions): ExecutorLaye
 
   let executorProviders: ExecutorProviderRegistry | undefined
   try {
-    executorProviders = createDefaultExecutorProviderRegistry(runtime)
+    executorProviders = createDefaultExecutorProviderRegistry(runtime, {
+      // continuable 子代理映射持久镜像（core.db v3）：重启后恢复对账「可续」判定数据源。
+      childrenStore: new ExecutorChildStore(deps.persistence.core),
+    })
     target.executorProviders = executorProviders
     const storedProviders = registerStoredAcpProviders({
       providersFile,

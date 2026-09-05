@@ -9,8 +9,8 @@ import type { DatabaseSchema, DatabaseSchemaStatement } from './weave-database.j
  */
 export const DEFAULT_SCHEMA_VERSION = 1
 
-/** core.db 结构版本：v2 起统一注册 team_bindings（TDD 2.6.8，原由 TeamManager 自建）。 */
-export const CORE_SCHEMA_VERSION = 2
+/** core.db 结构版本：v2 起统一注册 team_bindings；v3 起 executor_children（continuable 子代理持久映射）。 */
+export const CORE_SCHEMA_VERSION = 3
 
 /** tasks.db 结构版本：v3 起任务携带 write_scopes（写域提醒）+ revision/attempt_token（乐观并发）。 */
 export const TASKS_SCHEMA_VERSION = 3
@@ -189,6 +189,20 @@ export const TEAM_BINDINGS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS team_bindings
     updated_at TEXT NOT NULL
 )`
 
+/**
+ * core.db v3：executor_children —— dsh-subagent-executor-provider 内存
+ * Map(sessionKey→childId) 的持久镜像。宿主/插件重启后恢复对账据此判定
+ * continuable 子代理「可续」（对照官方 agent-team roster.reconcileProvisioning：
+ * durable 记录 vs child 持久 session 匹配 → active 否则 failed）。
+ * 同一 sessionKey 复用同一子代理，session_key 主键 upsert 即可（无历史版本需求）。
+ */
+export const EXECUTOR_CHILDREN_TABLE_DDL = `CREATE TABLE IF NOT EXISTS executor_children (
+    session_key TEXT PRIMARY KEY,
+    executor TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)`
+
 /** 全部核心表 DDL 索引：表名 → 建表语句（TDD 2.x）。 */
 export const CORE_TABLE_DDL: Record<string, string> = {
   tasks: TASKS_TABLE_DDL,
@@ -201,6 +215,7 @@ export const CORE_TABLE_DDL: Record<string, string> = {
   bans: BANS_TABLE_DDL,
   failure_counters: FAILURE_COUNTERS_TABLE_DDL,
   team_bindings: TEAM_BINDINGS_TABLE_DDL,
+  executor_children: EXECUTOR_CHILDREN_TABLE_DDL,
 }
 
 /**
@@ -224,7 +239,13 @@ export const DEFAULT_SCHEMAS: Record<
   },
   core: {
     version: CORE_SCHEMA_VERSION,
-    statements: [TASK_SEQUENCES_TABLE_DDL, BANS_TABLE_DDL, FAILURE_COUNTERS_TABLE_DDL, TEAM_BINDINGS_TABLE_DDL],
+    statements: [
+      TASK_SEQUENCES_TABLE_DDL,
+      BANS_TABLE_DDL,
+      FAILURE_COUNTERS_TABLE_DDL,
+      TEAM_BINDINGS_TABLE_DDL,
+      EXECUTOR_CHILDREN_TABLE_DDL,
+    ],
   },
   feedback: { version: DEFAULT_SCHEMA_VERSION, statements: [FEEDBACK_ROUTES_TABLE_DDL] },
   knowledgeMeta: { version: DEFAULT_SCHEMA_VERSION, statements: [KNOWLEDGE_META_TABLE_DDL] },

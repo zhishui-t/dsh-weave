@@ -24,6 +24,7 @@ import { SessionTracker } from '../scheduling/session-tracker.js'
 import { TeamManager } from '../team/team-manager.js'
 import { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import { DshSubagentExecutorProvider } from '../executors/dsh-subagent-executor-provider.js'
+import type { ExecutorChildPersistence } from '../executors/executor-child-store.js'
 import { AcpSessionProvider, DEFAULT_ACP_SESSION_INDEX_FILE, ZcodeAcpExecutorProvider, zcodeAcpProviderConfigFromEnvironment, type AcpSessionProviderConfig } from '../acp/acp-session-provider.js'
 
 /**
@@ -814,6 +815,8 @@ export interface CreateDefaultExecutorProviderRegistryOptions {
   zcode?: AcpSessionProviderConfig
   /** 是否包含 DSH 原生子代理 fallback；默认 true。 */
   includeDsh?: boolean
+  /** 可选持久映射（executor_children，core.db v3）：continuable 子代理跨重启恢复对账用。 */
+  childrenStore?: ExecutorChildPersistence
 }
 
 /**
@@ -862,7 +865,13 @@ export function createDefaultExecutorProviderRegistry(
     const agents = (ctx as Context & { reflect?: { get(name: string, fallback?: boolean): unknown } }).reflect?.get?.('agents', false) as
       | { get(id: string): unknown }
       | undefined
-    registry.register(new DshSubagentExecutorProvider(subagents as unknown as ConstructorParameters<typeof DshSubagentExecutorProvider>[0], { agents }))
+    const dshProvider = new DshSubagentExecutorProvider(subagents as unknown as ConstructorParameters<typeof DshSubagentExecutorProvider>[0], {
+      agents,
+      childrenStore: options.childrenStore,
+    })
+    registry.register(dshProvider)
+    // 启动 seed：持久映射里的 continuable 子代理直达内存表；失败静默（采纳路径兜底）。
+    void dshProvider.hydrateChildren().catch(() => undefined)
   }
 
   return registry

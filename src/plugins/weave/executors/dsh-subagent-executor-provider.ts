@@ -1,6 +1,7 @@
 import { foldConsumedWork, installModelSelection } from '@deepseek-ai/dsh-agent'
 import { finalAssistantOutput } from '@deepseek-ai/dsh-subagent'
 import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun, ExecutorRuntimeOptions } from './executor-provider.js'
+import type { ExecutorChildPersistence } from './executor-child-store.js'
 import { readSessionEventBoundary, sliceSessionEvents } from './session-events-adapter.js'
 
 import { appendFileSync, mkdirSync } from 'node:fs'
@@ -82,6 +83,8 @@ export interface DshSubagentExecutorProviderOptions {
   executors?: string[]
   /** 可选的活 Agent 注册表，用于 continuable 子代理复用；缺失时自动退化为 one-shot。 */
   agents?: { get(id: string): unknown }
+  /** 可选持久映射（executor_children，core.db v3）：Map(sessionKey→childId) 落库镜像，重启后恢复对账用。 */
+  childrenStore?: ExecutorChildPersistence
 }
 
 function toStopReason(reason: { kind?: string } | undefined): string {
@@ -154,12 +157,36 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
   readonly #explicitExecutors?: Set<string>
   readonly #children = new Map<string, string>()
   readonly #boundaries = new Map<string, number>()
+  readonly #childrenStore?: ExecutorChildPersistence
 
   constructor(subagents: DshSubagentsContext, options: DshSubagentExecutorProviderOptions = {}) {
     this.#subagents = options.agents
       ? { ...subagents, agents: options.agents }
       : subagents
     this.#explicitExecutors = options.executors ? new Set(options.executors) : undefined
+    this.#childrenStore = options.childrenStore
+  }
+
+  /**
+   * 启动时从持久映射（executor_children，core.db v3）seed 内存表：宿主/插件重启后
+   * 同 sessionKey 仍直达原 continuable 子代理（恢复对账「可续」判定的运行侧前提）。
+   * 失败仅告警——错过 seed 时 listChildren 按标签采纳路径仍保会话复用，正确性不依赖本方法时序。
+   */
+  async hydrateChildren(): Promise<void> {
+    try {
+      for (const row of await this.#childrenStore?.load() ?? []) {
+        if (!this.#children.has(row.sessionKey)) this.#children.set(row.sessionKey, row.childId)
+      }
+    } catch (error) {
+      console.warn('[dsh-weave] executor_children hydrate failed (continuing in-memory):', error)
+    }
+  }
+
+  /** 映射落库（best-effort）：持久化失败不阻断派发，仅调试日志。 */
+  #persistChild(sessionKey: string, executor: string, childId: string): void {
+    this.#childrenStore?.record({ sessionKey, executor, childId }).catch((error) => {
+      debugLog('executor_children record failed', { sessionKey, executor, childId, error: String(error) })
+    })
   }
 
   supports(executor: string): boolean {
@@ -242,6 +269,7 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
           if (existing?.id) {
             childId = existing.id
             this.#children.set(sessionKey, childId)
+            this.#persistChild(sessionKey, request.executor, childId)
           }
         }
       } catch {
@@ -264,6 +292,7 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       })
       childId = started.childId
       this.#children.set(sessionKey, childId)
+      this.#persistChild(sessionKey, request.executor, childId)
       const initialChild = this.#subagents.agents!.get(childId) as ChildAgentLike | undefined
       if (!initialChild || typeof initialChild.whenIdle !== 'function') {
         throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
