@@ -9,6 +9,7 @@ import type { TaskDag, TaskRecord, TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import type { NoticeSessionLike } from './session-delegation.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
+import { DagActivity, type DagWaitResult } from './activity-waiter.js'
 import type { AuditLog } from '../audit/audit-log.js'
 
 /**
@@ -147,6 +148,8 @@ export class WeaveScheduler {
   readonly #chains = new Map<string, Promise<void>>()
   /** taskId → 派发守卫：同一任务未 settle 前禁止重复 start。 */
   readonly #dispatchGuards = new Map<string, { settled: boolean }>()
+  /** DAG 变更一次性等待者（waitForChange 数据面，notify-only 不缓存历史）。 */
+  readonly #activity = new DagActivity()
 
   constructor(options: WeaveSchedulerOptions) {
     this.#opts = options
@@ -298,6 +301,25 @@ export class WeaveScheduler {
     await this.#enqueue(dagId)
   }
 
+  /**
+   * 队长值守等待：阻塞到该 DAG 的下一条状态变更边沿（或超时/中止）。
+   * 无在途任务（无 RUNNING/排队中的成员占用、无派发窗口）时等待毫无意义，
+   * 立即返回 noProgress=true 让调用方自行复查状态；有在途任务则注册一次性
+   * 等待者，#updateTask/#afterTaskSettled 的任一状态写入都会 notify 唤醒。
+   * 边沿不重放：注册前的变更由返回后的状态复查兜底（与官方 activity.ts 同语义）。
+   */
+  async waitForChange(dagId: string, timeoutMs: number, signal: AbortSignal): Promise<DagWaitResult & { noProgress: boolean }> {
+    const dag = await this.loadDag(dagId)
+    const inFlight = new Set<string>([...this.#controllers.keys(), ...this.#dispatchGuards.keys()])
+    for (const info of this.#activeByRole.values()) inFlight.add(info.task_id)
+    const hasActive = dag.tasks.some(
+      (task) => task.status === 'RUNNING' || inFlight.has(task.id),
+    )
+    if (!hasActive) return { timedOut: false, noProgress: true }
+    const result = await this.#activity.wait(dagId, timeoutMs, signal)
+    return { ...result, noProgress: false }
+  }
+
   /** 会话内各角色的实时占用（session/status RPC 数据源）。 */
   memberRuntime(sessionId: string): MemberRuntimeInfo[] {
     const result: MemberRuntimeInfo[] = []
@@ -315,6 +337,7 @@ export class WeaveScheduler {
     this.#heartbeats.clear()
     this.#runs.clear()
     this.#activeByRole.clear()
+    this.#activity.close()
   }
 
   /* ------------------------------ 持久化读写 ------------------------------ */
@@ -349,7 +372,7 @@ export class WeaveScheduler {
     taskId: string,
     patch: Partial<Pick<TaskRecord, 'status' | 'result' | 'error_type'>>,
   ): Promise<void> {
-    await this.#persistence.tasks.run((db) => {
+    const dagId = await this.#persistence.tasks.run((db) => {
       const sets = ['updated_at = ?']
       const params: Array<string | null> = [new Date().toISOString()]
       for (const [field, value] of Object.entries(patch)) {
@@ -358,7 +381,13 @@ export class WeaveScheduler {
       }
       params.push(taskId)
       db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+      const row = db.prepare('SELECT dag_id FROM tasks WHERE id = ?').get(taskId) as
+        | { dag_id: string }
+        | undefined
+      return row?.dag_id ?? null
     })
+    // 状态变更边沿：唤醒该 DAG 的 waitForChange 等待者（无等待者时零开销）。
+    if (dagId) this.#activity.notify(dagId)
   }
 
   async #persistSkipped(skippedIds: string[]): Promise<void> {
@@ -696,6 +725,8 @@ export class WeaveScheduler {
     } catch (error) {
       this.#opts.log?.warn?.('[dsh-weave] settle propagation failed:', error)
     }
+    // 终态收敛边沿（含下游 SKIPPED 批量落库后再发一次，覆盖传播产物）。
+    this.#activity.notify(run.dagId)
     this.#enqueue(run.dagId)
   }
 
