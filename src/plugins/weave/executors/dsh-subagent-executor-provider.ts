@@ -1,6 +1,7 @@
 import { foldConsumedWork, installModelSelection } from '@deepseek-ai/dsh-agent'
 import { finalAssistantOutput } from '@deepseek-ai/dsh-subagent'
 import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, ExecutorRun, ExecutorRuntimeOptions } from './executor-provider.js'
+import { readSessionEventBoundary, sliceSessionEvents } from './session-events-adapter.js'
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -64,7 +65,14 @@ interface DshSubagentsContext {
 interface ChildAgentLike {
   id?: string
   whenIdle?(): Promise<void>
-  session?: { events?: Array<{ type: string; data?: { reason?: { kind?: string } } }> }
+  /**
+   * 宿主会话事件视面。0.1.1-rc.2 为常驻 `.events` 数组；0.1.2-rc.1 改按需
+   * `snapshotEvents()`——读写一律经 session-events-adapter 特性探测（rc1 点 b）。
+   */
+  session?: {
+    events?: Array<{ type: string; data?: { reason?: { kind?: string } } }>
+    snapshotEvents?: () => Array<{ type: string; data?: { reason?: { kind?: string } } }>
+  }
   ctx?: { on?: (event: string, listener: unknown) => unknown }
   options?: { provider?: string; model?: string }
 }
@@ -111,7 +119,8 @@ function readChildResult(child: ChildAgentLike, boundary: number, cancelled: boo
   output: Array<{ type: string; text?: string }>
   stopReason: string
 } {
-  const own = (child.session?.events?.slice(boundary) ?? []) as unknown as Parameters<typeof foldConsumedWork>[0]
+  // rc1 点 b：边界切片经适配函数特性探测（0.1.2 snapshotEvents() 优先，0.1.1 .events 兜底）。
+  const own = sliceSessionEvents(child.session, boundary) as unknown as Parameters<typeof foldConsumedWork>[0]
   const lastEnd = foldConsumedWork(own).end
   const output = (finalAssistantOutput(own) ?? []) as Array<{ type: string; text?: string }>
   const recorded = toStopReason((lastEnd?.data as { reason?: { kind?: string } } | undefined)?.reason)
@@ -259,14 +268,14 @@ export class DshSubagentExecutorProvider implements ExecutorProvider {
       if (!initialChild || typeof initialChild.whenIdle !== 'function') {
         throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
       }
-      boundary = initialChild.session?.events?.length ?? 0
+      boundary = readSessionEventBoundary(initialChild.session)
     } else {
       const existingChild = this.#subagents.agents!.get(childId) as ChildAgentLike | undefined
       if (!existingChild || typeof existingChild.whenIdle !== 'function') {
         throw new Error(`dsh-subagent: continuable child "${childId}" is not live`)
       }
       // followup 可能同步触发事件；先记录边界，避免把本轮输出误算进上一轮/漏掉本轮。
-      boundary = existingChild.session?.events?.length ?? 0
+      boundary = readSessionEventBoundary(existingChild.session)
       await this.#subagents.followup!(request.parent, childId, prompt, {
         source: {
           kind: 'coordinator',

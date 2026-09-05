@@ -63,4 +63,53 @@ describe('DshSubagentExecutorProvider continuable 会话复用', () => {
     const out2 = await run2.result
     expect(out2.output?.[0]?.text).toContain('done-4')
   })
+
+  it('rc1 新宿主：child.session 仅提供 snapshotEvents（无 .events）时，边界与产出回收等价', async () => {
+    // 特性探测新路径替身：事件只经 snapshotEvents() 物化，seq 单调（0.1.2 形状）。
+    const snapshot: Array<{ type: string; seq: number; data: Record<string, unknown> }> = [
+      { type: 'turn/start', seq: 0, data: { turn: 1 } },
+      { type: 'turn/end', seq: 1, data: { turn: 1, reason: { kind: 'completed' } } },
+    ]
+    const child = {
+      id: 'child-new-host',
+      whenIdle: vi.fn(async () => {
+        // 模拟本轮新增事件：seq 从上一边界（2）之后继续单调前进。
+        const base = snapshot[snapshot.length - 1]!.seq + 1
+        snapshot.push(
+          { type: 'turn/start', seq: base, data: { turn: 2 } },
+          { type: 'step/start', seq: base + 1, data: { turn: 2 } },
+          { type: 'assistant/message', seq: base + 2, data: { message: { content: [{ type: 'text', text: 'done-new-host' }] } } },
+          { type: 'turn/end', seq: base + 3, data: { turn: 2, reason: { kind: 'completed' } } },
+        )
+      }),
+      session: { snapshotEvents: () => snapshot },
+      ctx: { on: () => () => undefined },
+      options: { provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' },
+    }
+    const startContinuable = vi.fn(async () => ({ childId: 'child-new-host' }))
+    const subagents = {
+      list: () => ['spawn'],
+      start: vi.fn(async () => ({ id: 'should-not-be-used', result: Promise.resolve({ output: [], stopReason: 'completed' }), dispose: async () => undefined })),
+      startContinuable,
+      followup: vi.fn(async () => 'message-2'),
+      agents: { get: () => child },
+    }
+    const provider = new DshSubagentExecutorProvider(subagents as never)
+
+    const run = await provider.start({
+      executor: 'spawn',
+      sessionKey: 'team:spawn:proj:v2',
+      prompt: [{ type: 'text' as const, text: 'task on new host' }],
+      signal: new AbortController().signal,
+      runtime: {
+        model: { provider: 'deepseek-official', id: 'deepseek-v4-flash-vision-exp' },
+      },
+    })
+
+    // 边界 = 末事件 seq+1 = 2（记录于 whenIdle 之前）；回收只折叠本轮增量。
+    const out = await run.result
+    expect(out.output?.[0]?.text).toBe('done-new-host')
+    expect(out.stopReason).toBe('completed')
+    expect(subagents.start).not.toHaveBeenCalled()
+  })
 })
