@@ -338,6 +338,20 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       execute: (args) => mcp.taskReopen((args as unknown as { task_id: string }).task_id),
     },
     {
+      name: `${prefix}wait_dag_change`,
+      description:
+        '队长值守等待：阻塞到任务组（dag_id）的下一条状态变更（任务开始/完成/失败/取消/跳过）后返回，' +
+        '替代在途任务期间的 15 秒级高频轮询——调用本工具期间无需重复 get_status。' +
+        '无在途任务时立即返回 no_progress=true（此时应直接查状态或推进下一步，不要空等）。' +
+        '返回含 timed_out 与当前各任务状态快照；timeout_ms 缺省 60000，允许 10000~3600000。',
+      parameters: {
+        dag_id: { type: 'string', required: true, description: '任务组 id' },
+        timeout_ms: { type: 'number', description: '最长等待毫秒数（10000~3600000，缺省 60000）' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args) => mcp.waitDagChange(args as unknown as { dag_id: string; timeout_ms?: number }),
+    },
+    {
       name: `${prefix}ban_list`,
       description: '熔断/冷却中实体清单（CircuitBreaker.snapshot 非 ACTIVE 项）',
       parameters: {},

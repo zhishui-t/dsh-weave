@@ -90,6 +90,15 @@ export interface CliMcpDeps {
   executionHooks?: {
     cancelTask?: (taskId: string) => void | Promise<void>
     resumeTask?: (taskId: string) => void | Promise<void>
+    /**
+     * 队长值守等待（weave_wait_dag_change）：阻塞到该 DAG 的下一条状态变更
+     * 边沿（timeoutMs 有界 10s~1h）；无在途任务时立即返回 no_progress=true。
+     * 未注入（无调度器）时对应工具返回 configuration_error。
+     */
+    waitForChange?: (input: { dagId: string; timeoutMs: number; signal: AbortSignal }) => Promise<{
+      timedOut: boolean
+      noProgress: boolean
+    }>
   }
 }
 
@@ -364,6 +373,38 @@ export class WeaveMcp {
   /** weave_task_reopen：CLOSED → AWAITING_FEEDBACK（24h 窗口，复用 FeedbackRouter #17）。 */
   async taskReopen(taskId: string): Promise<TaskRecord> {
     return this.#deps.feedbackRouter.reopen(taskId)
+  }
+
+  /**
+   * weave_wait_dag_change：队长值守——阻塞到任务组下一条状态变更边沿。
+   * 无在途任务立即返回 no_progress=true（等了也白等，调用方自行复查）；
+   * 唤醒/超时后附带当前任务状态快照，队长免去一次 get_status 往返，
+   * 同时兜住边沿不重放导致的注册前变更漏看。
+   */
+  async waitDagChange(input: { dag_id: string; timeout_ms?: number }): Promise<{
+    dag_id: string
+    timed_out: boolean
+    no_progress: boolean
+    tasks: Array<{ id: string; status: TaskStatus }>
+  }> {
+    const dagId = typeof input.dag_id === 'string' ? input.dag_id.trim() : ''
+    if (dagId === '') {
+      throw new WeaveError('invalid_argument', 'dag_id 不能为空', { field: 'dag_id' })
+    }
+    const hook = this.#deps.executionHooks?.waitForChange
+    if (!hook) {
+      throw new WeaveError('configuration_error', 'scheduler 未注入（weave_wait_dag_change 需要调度器）')
+    }
+    const timeoutMs = input.timeout_ms ?? 60_000
+    // MCP 工具无每次调用的取消信号：等待时长由 waiter 的 timeout 有界收敛。
+    const result = await hook({ dagId, timeoutMs, signal: new AbortController().signal })
+    const dag = await this.#deps.dagRepository.loadDag(dagId)
+    return {
+      dag_id: dagId,
+      timed_out: result.timedOut,
+      no_progress: result.noProgress,
+      tasks: dag.tasks.map((task) => ({ id: task.id, status: task.status })),
+    }
   }
 
   /** weave_ban_list：熔断/冷却中实体清单（CircuitBreaker.snapshot，非 ACTIVE）。 */

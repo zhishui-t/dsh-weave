@@ -196,6 +196,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_task_skip',
       'weave_task_cancel',
       'weave_task_reopen',
+      'weave_wait_dag_change',
       'weave_ban_list',
       'weave_graph_build',
       'weave_graph_query',
@@ -209,7 +210,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_obsidian_status',
       'weave_obsidian_conflicts',
     ])
-    expect(registered).toHaveLength(27)
+    expect(registered).toHaveLength(28)
 
     // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
     const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
@@ -306,11 +307,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
   })
 
-  it('buildWeaveToolDefinitions 27 个定义：名称齐全且每个具 execute/description/parameters', async () => {
+  it('buildWeaveToolDefinitions 28 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const defs = buildWeaveToolDefinitions(bundle.mcp)
-    expect(defs).toHaveLength(27)
+    expect(defs).toHaveLength(28)
     for (const d of defs) {
       expect(d.name).toMatch(/^weave_/)
       expect(d.description.length).toBeGreaterThan(0)
@@ -321,6 +322,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     for (const n of [
       'weave_knowledge_search', 'weave_knowledge_review', 'weave_knowledge_approve', 'weave_knowledge_reject',
       'weave_task_retry', 'weave_task_skip', 'weave_task_cancel', 'weave_task_reopen',
+      'weave_wait_dag_change',
       'weave_ban_list', 'weave_graph_build', 'weave_graph_query', 'weave_graph_path',
       'weave_graph_explain', 'weave_graph_affected', 'weave_document_convert',
       'weave_obsidian_generate', 'weave_obsidian_open', 'weave_obsidian_reindex',

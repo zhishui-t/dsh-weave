@@ -157,6 +157,8 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
   deps.executionHooks = {
     cancelTask: async (taskId) => scheduler.onExternalCancel(taskId),
     resumeTask: async (taskId) => scheduler.onExternalRetry(taskId),
+    // 队长值守等待（weave_wait_dag_change）：状态变更边沿唤醒替代高频轮询。
+    waitForChange: async ({ dagId, timeoutMs, signal }) => scheduler.waitForChange(dagId, timeoutMs, signal),
   }
 
   const planner = new TeamPlanner({ persistence: deps.persistence, teamManager: deps.teamManager })
