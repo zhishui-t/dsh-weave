@@ -1,7 +1,11 @@
 import { WeaveError } from '../state/weave-error.js'
 
-/** 断路器状态：ACTIVE → BANNED → COOLDOWN → ACTIVE（架构 10.1） */
-export type BreakerState = 'ACTIVE' | 'BANNED' | 'COOLDOWN'
+/**
+ * 断路器状态：ACTIVE → BANNED → COOLDOWN → ACTIVE（架构 10.1）；
+ * RETIRED 为永久退役终态（参照 dsh-agent-teams RETIRED_MEMBERS 语义）：
+ * 不冷却不过期、resolve 不可复活——check 一律拒绝派发。
+ */
+export type BreakerState = 'ACTIVE' | 'BANNED' | 'COOLDOWN' | 'RETIRED'
 
 /** 检查顺序（最窄 scope 优先，架构 10.2） */
 export const BREAKER_SCOPE_ORDER = [
@@ -50,8 +54,9 @@ export interface CircuitBreakerOptions {
 const KEY_SEP = '\u0000'
 
 /**
- * 断路器：ACTIVE → (连续失败 ≥ 3) → BANNED → (expiry/手动解除) → COOLDOWN → (冷却结束) → ACTIVE。
- * 检查会做惰性时间流转；BANNED/COOLDOWN 期间 check 抛 WeaveError（code=execution_failed）。
+ * 断路器：ACTIVE → (连续失败 ≥ 3) → BANNED → (expiry/手动解除) → COOLDOWN → (冷却结束) → ACTIVE；
+ * retire() 使实体进入 RETIRED 永久退役终态（不冷却不过期，resolve 不复活）。
+ * 检查会做惰性时间流转；BANNED/COOLDOWN/RETIRED 期间 check 抛 WeaveError（code=execution_failed）。
  * 纯内存实现；bans/failure_counters DDL 已在 t4 的 core.db 就绪，P1 可接持久化。
  */
 export class CircuitBreaker {
@@ -94,8 +99,9 @@ export class CircuitBreaker {
     return rec
   }
 
-  /** 惰性时间流转：BANNED→(到期)→COOLDOWN→(到期)→ACTIVE。 */
+  /** 惰性时间流转：BANNED→(到期)→COOLDOWN→(到期)→ACTIVE。RETIRED 是终态，时间流不动它。 */
   #refresh(rec: BreakerRecord): void {
+    if (rec.state === 'RETIRED') return
     const now = this.#now()
     if (rec.state === 'BANNED' && rec.banExpiresAt !== null && now >= rec.banExpiresAt) {
       rec.state = 'COOLDOWN'
@@ -109,13 +115,16 @@ export class CircuitBreaker {
     }
   }
 
-  /** 检查指定 scope+entityKey；熔断中（BANNED/COOLDOWN 未到期）抛 WeaveError。 */
+  /** 检查指定 scope+entityKey；熔断中（BANNED/COOLDOWN 未到期）或已退役（RETIRED）抛 WeaveError。 */
   async check(scope: string, entityKey: string): Promise<void> {
     const rec = this.#records.get(this.#key(scope, entityKey))
     if (!rec) return
     this.#refresh(rec)
     if (rec.state === 'ACTIVE') return
-    throw new WeaveError('execution_failed', `断路器熔断: scope=${rec.scope} entityKey=${rec.entityKey} state=${rec.state}`, {
+    const message = rec.state === 'RETIRED'
+      ? `实体已永久退役（retired）: scope=${rec.scope} entityKey=${rec.entityKey}——不冷却不过期，须人工移出退役名单`
+      : `断路器熔断: scope=${rec.scope} entityKey=${rec.entityKey} state=${rec.state}`
+    throw new WeaveError('execution_failed', message, {
       scope: rec.scope,
       entityKey: rec.entityKey,
       state: rec.state,
@@ -128,6 +137,20 @@ export class CircuitBreaker {
     for (const key of keys) {
       await this.check(key.scope, key.entityKey)
     }
+  }
+
+  /**
+   * 永久退役：实体进入 RETIRED 终态（bans 表 state='retired' 语义）。
+   * 不冷却不过期：check/refresh 恒拒绝；resolve 不复活；recordFailure/Success 不改变状态。
+   */
+  async retire(scope: string, entityKey: string): Promise<void> {
+    const rec = this.#getOrCreate(scope, entityKey)
+    const now = this.#now()
+    rec.state = 'RETIRED'
+    rec.bannedAt = now
+    rec.banExpiresAt = null
+    rec.cooldownEndsAt = null
+    rec.updatedAt = now
   }
 
   /** 记录一次失败；连续失败 ≥ 阈值（默认 3）时 ACTIVE→BANNED。 */
@@ -157,11 +180,12 @@ export class CircuitBreaker {
     rec.updatedAt = this.#now()
   }
 
-  /** 手动解除：所有匹配 entityKey 的记录（任意 scope）→ ACTIVE。 */
+  /** 手动解除：所有匹配 entityKey 的记录（任意 scope）→ ACTIVE；RETIRED 永久退役不复活。 */
   async resolve(entityKey: string): Promise<void> {
     const now = this.#now()
     for (const rec of this.#records.values()) {
       if (rec.entityKey !== entityKey) continue
+      if (rec.state === 'RETIRED') continue
       rec.state = 'ACTIVE'
       rec.consecutiveFailures = 0
       rec.resolvedAt = now

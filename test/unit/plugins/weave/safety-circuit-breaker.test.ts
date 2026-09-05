@@ -148,6 +148,59 @@ describe('CircuitBreaker：ACTIVE → BANNED → COOLDOWN → ACTIVE', () => {
   })
 })
 
+describe('CircuitBreaker RETIRED：永久退役（不冷却不过期，resolve 不复活）', () => {
+  it('retire 后 check 恒拒绝（state=RETIRED），时间推进也不恢复', async () => {
+    let t = 1_000_000
+    const cb = new CircuitBreaker({ now: () => t, banDurationMs: 1000, cooldownDurationMs: 1000 })
+    await cb.retire('agent', 'retired-agent')
+
+    // 派发闸（checkChain 同路径）直接拒绝
+    await expect(cb.checkChain([{ scope: 'agent', entityKey: 'retired-agent' }])).rejects.toMatchObject({
+      code: 'execution_failed',
+      details: { state: 'RETIRED', scope: 'agent', entityKey: 'retired-agent' },
+    })
+
+    // 不冷却不过期：远超 ban+cooldown 时长后仍是 RETIRED
+    t += 100_000
+    expect(cb.status('agent', 'retired-agent')?.state).toBe('RETIRED')
+    await expect(cb.check('agent', 'retired-agent')).rejects.toMatchObject({ details: { state: 'RETIRED' } })
+  })
+
+  it('resolve 不复活 retired 实体；成功/失败记录也不改变退役态', async () => {
+    const cb = new CircuitBreaker()
+    await cb.retire('agent', 'gone')
+    await cb.resolve('gone')
+    expect(cb.status('agent', 'gone')?.state).toBe('RETIRED')
+    await expect(cb.check('agent', 'gone')).rejects.toMatchObject({ details: { state: 'RETIRED' } })
+
+    await cb.recordSuccess('agent', 'gone')
+    await cb.recordFailure('agent', 'gone')
+    expect(cb.status('agent', 'gone')?.state).toBe('RETIRED')
+  })
+
+  it('retire 对已熔断实体生效并清空到期时间；其他实体不受影响', async () => {
+    const cb = new CircuitBreaker()
+    for (let i = 0; i < 3; i++) await cb.recordFailure('operation', 'op:p:v')
+    expect(cb.status('operation', 'op:p:v')?.state).toBe('BANNED')
+    await cb.retire('operation', 'op:p:v')
+    const rec = cb.status('operation', 'op:p:v')
+    expect(rec?.state).toBe('RETIRED')
+    expect(rec?.banExpiresAt).toBeNull()
+    expect(rec?.cooldownEndsAt).toBeNull()
+
+    await cb.recordFailure('operation', 'other')
+    expect(cb.status('operation', 'other')?.state).toBe('ACTIVE')
+  })
+
+  it('ban_list 快照包含 retired 项（非 ACTIVE 过滤语义）', async () => {
+    const cb = new CircuitBreaker()
+    await cb.retire('agent', 'gone')
+    const listed = cb.snapshot().filter((b) => b.state !== 'ACTIVE')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({ entityKey: 'gone', state: 'RETIRED' })
+  })
+})
+
 describe('LoopGuard：步数/工具重复/输出零增长/时间', () => {
   it('步数上限 30：第 31 步抛 loop_detected(max_steps)', () => {
     const lg = new LoopGuard()
