@@ -12,6 +12,7 @@ import { parseWriteScopes, scopeSetsOverlap } from '../state/write-scope.js'
 import type { NoticeSessionLike } from './session-delegation.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
 import { DagActivity, type DagWaitResult } from './activity-waiter.js'
+import { BoundedSettlement } from './bounded-settlement.js'
 import type { AuditLog } from '../audit/audit-log.js'
 
 /**
@@ -78,6 +79,16 @@ export interface WeaveSchedulerOptions {
   /** 知识候选计数：DAG 收敛时候选 >0 则提醒队长审核（未注入则不提醒）。 */
   countKnowledgeCandidates?: () => Promise<number>
   log?: { warn?: (...args: unknown[]) => void }
+}
+
+/** disposeGracefully 结算报告。 */
+export interface SchedulerDisposeReport {
+  /** 有界等待收敛的在途执行数。 */
+  drained: number
+  /** 兜底落库（自收敛未落地、仍处中间态）转 CANCELLED 的任务数。 */
+  interrupted: number
+  /** 结算期间的非取消失败（超时/异常），调用方落日志。 */
+  failures: unknown[]
 }
 
 export interface DagStartInput {
@@ -148,6 +159,10 @@ export class WeaveScheduler {
   readonly #activeByRole = new Map<string, MemberRuntimeInfo>()
   /** dagId → 泵序列化链（避免同一 DAG 并发泵）。 */
   readonly #chains = new Map<string, Promise<void>>()
+  /** 在途执行 Promise（disposeGracefully 有界结算的捕获面）。 */
+  readonly #inflight = new Set<Promise<void>>()
+  /** 准入截止（官方 lifecycle 语义）：disposeGracefully 开始后不再准入新工作。 */
+  #admissionClosed = false
   /** taskId → 派发守卫：同一任务未 settle 前禁止重复 start。 */
   readonly #dispatchGuards = new Map<string, { settled: boolean }>()
   /** DAG 变更一次性等待者（waitForChange 数据面，notify-only 不缓存历史）。 */
@@ -342,6 +357,89 @@ export class WeaveScheduler {
     this.#activity.close()
   }
 
+  /** disposeGracefully 的结算报告：drained=有界等待的在途数；interrupted=兜底落库数；failures=非取消失败。 */
+  async disposeGracefully(opts: { settlementTimeoutMs?: number } = {}): Promise<SchedulerDisposeReport> {
+    // 准入截止（官方 lifecycle.close 语义）：enqueue/pump 短路，处置开始后不派发新工作。
+    this.#admissionClosed = true
+    const inflight = [...this.#inflight]
+    // 取消可中断工作：在途 #executeReady 走既有 abort→CANCELLED 收敛路径自行落库。
+    for (const controller of this.#controllers.values()) controller.abort()
+    for (const timer of this.#heartbeats.values()) clearInterval(timer)
+    this.#heartbeats.clear()
+    this.#activity.close()
+
+    // 有界结算：allSettled + 超时上限；预期取消静默，非取消失败收集后落日志。
+    const settlement = new BoundedSettlement(opts.settlementTimeoutMs ?? 5_000)
+    const failures: unknown[] = []
+    await settlement.settle(inflight, failures)
+    if (failures.length > 0) {
+      this.#opts.log?.warn?.('[dsh-weave] scheduler dispose settlement failures:', failures)
+    }
+
+    // 兜底结算落库：在途任务仍处中间态（自收敛写丢失/挂起超时）→ CANCELLED 后再退出。
+    const interrupted = await this.#sweepInflightToCancelled()
+    this.#releaseMemory()
+    return { drained: inflight.length, interrupted, failures }
+  }
+
+  /** 原 dispose 的内存收尾（与旧行为一致；activity.close 已在 disposeGracefully 前置做过，幂等）。 */
+  #releaseMemory(): void {
+    this.#controllers.clear()
+    this.#runs.clear()
+    this.#activeByRole.clear()
+  }
+
+  /**
+   * 在途任务兜底结算：库内仍 RUNNING/REVISION_RUNNING 的在途任务 → CANCELLED
+   * （REVISION_RUNNING→INTERRUPTED 不在状态机转换表；CANCELLED 与 abort 收敛词汇一致），
+   * 治理语义作废 attempt_token（revision+1）——迟到的 attempt 回写被守卫拒绝。
+   */
+  async #sweepInflightToCancelled(): Promise<number> {
+    const ids = new Set<string>([...this.#controllers.keys(), ...this.#dispatchGuards.keys()])
+    for (const info of this.#activeByRole.values()) ids.add(info.task_id)
+    if (ids.size === 0) return 0
+    const placeholders = [...ids].map(() => '?').join(', ')
+    const rows = await this.#persistence.tasks.run((raw) =>
+      raw
+        .prepare(
+          `SELECT id, status, dag_id, session_id, description FROM tasks
+           WHERE id IN (${placeholders}) AND status IN ('RUNNING', 'REVISION_RUNNING')`,
+        )
+        .all(...ids),
+    ) as Array<Record<string, unknown>>
+
+    let swept = 0
+    for (const row of rows) {
+      const taskId = String(row.id)
+      const from = String(row.status)
+      await this.#persistence.tasks.run((raw) => {
+        raw
+          .prepare(
+            `UPDATE tasks SET status = 'CANCELLED', error_type = COALESCE(error_type, 'cancelled'),
+                 attempt_token = NULL, revision = revision + 1, updated_at = ?
+             WHERE id = ? AND status = ?`,
+          )
+          .run(new Date().toISOString(), taskId, from)
+      })
+      swept++
+      const description = String(row.description ?? '')
+      this.#opts.statusNotifier?.notify({
+        taskId,
+        dagId: String(row.dag_id ?? ''),
+        sessionId: String(row.session_id ?? ''),
+        subject: description.split('\n')[0]?.trim() || taskId,
+        from: from as TaskStatus,
+        to: 'CANCELLED',
+        actor: 'scheduler',
+        source: 'dispose_settlement',
+      })
+      await this.#opts.audit
+        ?.record({ type: 'task.status_changed', task_id: taskId, from, to: 'CANCELLED', by: 'scheduler-dispose' })
+        .catch(() => undefined)
+    }
+    return swept
+  }
+
   /* ------------------------------ 持久化读写 ------------------------------ */
 
   loadDag(dagId: string): Promise<TaskDag> {
@@ -494,6 +592,7 @@ export class WeaveScheduler {
 
 
   #enqueue(dagId: string): void {
+    if (this.#admissionClosed) return // 准入截止：处置中不再派发新工作
     const previous = this.#chains.get(dagId) ?? Promise.resolve()
     const next = previous
       .then(() => this.#pump(dagId))
@@ -505,6 +604,7 @@ export class WeaveScheduler {
   }
 
   async #pump(dagId: string): Promise<void> {
+    if (this.#admissionClosed) return // 准入截止
     const run = this.#runs.get(dagId)
     if (!run) return
     const dag = await this.loadDag(dagId)
@@ -645,7 +745,12 @@ export class WeaveScheduler {
       // 唤醒也必须跨 DAG——遍历全部活跃 runs 重泵，拾取其他任务组中因本角色
       // 占位而滞留的 WAITING 任务（否则角色空闲、他组任务永久饿死）。
       // #pump 幂等（就绪判定 + 角色忙检查 + canTransition 三重闸），空泵无害。
-      void this.#executeReady(run, task, role, acquiredHook, attemptRef).finally(() => {
+      // execution 同时登记 #inflight：disposeGracefully 有界结算的捕获面。
+      const execution = this.#executeReady(run, task, role, acquiredHook, attemptRef)
+      this.#inflight.add(execution)
+      void execution.catch(() => undefined) // 异常由内部收敛路径落库；此处仅防 floating unhandled
+      void execution.finally(() => {
+        this.#inflight.delete(execution)
         this.#endDispatch(task.id)
         this.#activeByRole.delete(key)
         for (const activeDagId of this.#runs.keys()) {

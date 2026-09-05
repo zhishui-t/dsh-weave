@@ -190,7 +190,12 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     onDuty,
     disposeScheduler: () => {
       graphRefresher.dispose()
-      scheduler.dispose()
+      // 宿主卸载走有界结算（官方 lifecycle 模式）：准入截止 + allSettled+超时 + 在途任务
+      // 状态兜底落库后再退出；此处无法 await（Cordis 清理同步），后台收敛并以日志兜底。
+      void scheduler.disposeGracefully().catch((error) => {
+        console.warn('[dsh-weave] scheduler graceful dispose failed, falling back to hard abort:', error)
+        scheduler.dispose()
+      })
     },
   }
 }
