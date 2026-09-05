@@ -54,9 +54,9 @@
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "0.25.1",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-subagent": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-agent": "^0.1.1-rc.2 || ^0.1.2-rc.1",
+    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2 || ^0.1.2-rc.1",
+    "@deepseek-ai/dsh-subagent": "^0.1.1-rc.2 || ^0.1.2-rc.1",
     "@eslint/js": "^9.39.5",
     "@playwright/test": "1.62.1",
     "@testing-library/react": "^16.3.2",
@@ -75,8 +75,8 @@
   },
   "peerDependencies": {
     "@agentclientprotocol/sdk": ">=0.25.1 <2",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2"
+    "@deepseek-ai/dsh-agent": "^0.1.1-rc.2 || ^0.1.2-rc.1",
+    "@deepseek-ai/dsh-commands": "^0.1.1-rc.2 || ^0.1.2-rc.1"
   },
   "dsh": {
     "bundle": {
