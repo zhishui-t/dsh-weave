@@ -94,6 +94,18 @@
 4. 回归锚点：`dsh-subagent-executor-provider` 现有测试替身全部走 `.events` 形状（旧路径），
    适配函数落地后补 1 例「session 仅提供 snapshotEvents」的替身用例锁定新路径。
 
+**实施核验（t2，2026-09-05）**：本节策略已落地——适配器 `executors/session-events-adapter.ts`
+三件套（`readSessionEvents` / `readSessionEventBoundary` / `sliceSessionEvents`：snapshotEvents()
+优先、`.events` 数组兜底；boundary 与 slice 成对且落在同一探测分支，旧路径逐字节保持下标语义，
+新路径单调 seq 寻址），替换上表全部 5 处直接读（executor 侧 4 处：
+`dsh-subagent-executor-provider.ts` 的 ChildAgentLike 视面 / readChildResult 切片 / 两处
+continuable 边界捕获；delegation 侧 1 处：`session-delegation.ts` hasPendingToolCall）。
+测试锚定：适配器单测 9 例（两分支 + null/非数组返回/缺 seq/空物化/后缀窗口病态输入），
+executor 侧补「仅 snapshotEvents」替身端到端 1 例，delegation 侧补 pending/closed 2 例；
+既有 `.events` 替身原样经旧路径全绿（旧宿主行为不变）。两分支各代宿主均有真实路径
+（0.1.1 常驻数组 → 兜底分支；0.1.2 按需 API → snapshotEvents 分支），新路径行为由替身
+锁定、升级日即活，非死代码。
+
 ### c) 旧 APIProxy 移除
 
 **grep 结论**：`apiproxy`（大小写不敏感）在 `src/`、`test/`、`package.json` **零命中**。
@@ -156,7 +168,7 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
 | report 工具改 send_message（点 a） | weave 不按名引用该工具；回收逻辑吃通用事件流，工具名变化由 dsh-agent/dsh-subagent 库内消化 |
 | client 注入防御性 try/catch 加固（点 e） | `ctx.get('sessions')` 已守卫、`agent.inject` 已探测、`moduleLoader` 缺失 throw 是刻意的 fail-fast（静默加载失败比崩溃更难排查） |
 | peerDependencies 立即放宽 | ~~见 §3：host 暂不升级，pin 维持 0.1.1-rc.2 即为当前正确约束~~ **t4 裁定翻转（2026-09-05，队长令）**：已放宽为 `^0.1.1-rc.2 \|\| ^0.1.2-rc.1` 双接受——lockfile 解析仍落 0.1.1-rc.2（构件不变），仅消除升级日安装校验硬冲突；原担忧（0.1.1 环境误装 0.1.2 构件）由「lockfile 不动 + devDeps 仍 pin 0.1.1-rc.2」兜住 |
-| 新 API（snapshotEvents/eventAt）预接代码（点 b） | 宿主未升级，0.1.1 下新路径永远探测失败；提前写等于给死代码开测试账。落地时机在升级演练内，随适配函数一并进 |
+| 新 API（snapshotEvents/eventAt）预接代码（点 b） | ~~宿主未升级，0.1.1 下新路径永远探测失败；提前写等于给死代码开测试账。落地时机在升级演练内，随适配函数一并进~~ **t2 裁定翻转（2026-09-05，队长令）**：点 b 适配函数已提前落地（两分支特性探测 + 替身锁定新路径行为，见 §1.b 实施核验）——「死代码测试账」的顾虑由「替身使新路径恒有回归锚定」化解；提前落地的成本可控，升级演练第 2 步工作量减半 |
 
 ## 3. 宿主升级日演练清单（0.1.1-rc.2 → 0.1.2-rc.1）
 
@@ -168,6 +180,8 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
    ✅ **声明放宽半步已由 t4 提前完成**（dev+peer 五处统一 `^0.1.1-rc.2 || ^0.1.2-rc.1`，lockfile specifier 同步，semver 双版本可解析 + `--frozen-lockfile` 过）；**剩余**：升级日把 devDeps 实际装到 0.1.2-rc.1 后跑 typecheck。
 2. **点 b 落地**：新增 `readSessionEvents` 适配函数（特性探测 snapshotEvents→events 兜底），
    替换 §1.b 表中 5 处直接读；补「仅 snapshotEvents」替身用例。
+   ✅ **已由 t2 提前完成**（适配器三件套 + 5 处替换 + 两分支测试锚定，详见 §1.b 实施核验；
+   devDeps 仍为 0.1.1-rc.2，本步剩余仅升级日真宿主冒烟）。
 3. **回归**：`pnpm vitest run`（全量）+ `pnpm build` + `pnpm test:e2e:harness`（stub RPC，不依赖真实宿主版本）。
 4. **真宿主冒烟**：live E2E（`pnpm test:e2e:live`）重点验：会话团队页签挂载（点 e 槽位）、
    委托执行器产出回收（点 a/b）、notice 落面（点 e surface）。
