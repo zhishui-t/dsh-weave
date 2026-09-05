@@ -485,5 +485,47 @@ describe('tasks.db v3 迁移：write_scopes 写域列', () => {
       p.close()
     }
   })
+
+  it('中间形态 v3 库（仅 write_scopes 批已迁移，user_version=3）：自愈补齐 revision/attempt_token 且版本不降', () => {
+    const midDir = join(dir, 'mid-v3')
+    mkdirSync(midDir, { recursive: true })
+    // 0174ebd（v3 第一批，仅 write_scopes）与 6f4d6a6（v3 第二批，revision/attempt_token）
+    // 之间迁移过的库形态：user_version 已达 3，版本门短路，仅靠 when 条件语句自愈补列。
+    const mid = new DatabaseSync(join(midDir, 'tasks.db'))
+    mid.exec(TASKS_TABLE_V2_DDL.replace(
+      '    skip_reason TEXT,',
+      "    skip_reason TEXT,\n    write_scopes TEXT NOT NULL DEFAULT '[]',",
+    ))
+    mid.exec('PRAGMA user_version = 3')
+    mid
+      .prepare(
+        `INSERT INTO tasks (id, session_id, team_id, project_id, version, description, status, created_at, updated_at)
+         VALUES ('t-mid', 's', 'team', 'proj', 'v1', '中间形态任务', 'RUNNING', '2026-01-01', '2026-01-01')`,
+      )
+      .run()
+    mid.close()
+
+    const p = openPersistence({ stateDir: midDir })
+    try {
+      expect(p.tasks.userVersion()).toBe(TASKS_SCHEMA_VERSION)
+      const cols = p.tasks.columns('tasks').map((c) => c.name)
+      expect(cols).toContain('write_scopes')
+      expect(cols).toContain('revision')
+      expect(cols).toContain('attempt_token')
+      // 数据保留，且守卫回写协议 SQL 立即可用（修复前此处 no such column: revision）。
+      const row = p.tasks.raw
+        .prepare('SELECT status, revision, attempt_token FROM tasks WHERE id = ?')
+        .get('t-mid') as { status: string; revision: number; attempt_token: string | null }
+      expect(row.status).toBe('RUNNING')
+      expect(row.revision).toBe(0)
+      expect(row.attempt_token).toBeNull()
+      const changes = p.tasks.raw
+        .prepare('UPDATE tasks SET revision = revision + 1 WHERE id = ? AND attempt_token IS NULL AND revision = 0')
+        .run('t-mid')
+      expect(Number(changes.changes)).toBe(1)
+    } finally {
+      p.close()
+    }
+  })
 })
 

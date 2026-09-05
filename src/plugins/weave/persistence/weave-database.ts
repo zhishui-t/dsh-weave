@@ -86,6 +86,15 @@ export class WeaveDatabase {
   migrate(schema: DatabaseSchema): void {
     this.#assertOpen()
     if (this.userVersion() >= schema.version) {
+      // 已达版本：仍评估自愈性条件语句（when 谓词幂等——列在则跳过，正常库零执行）。
+      // 兜住「同版本分批补列」形态：v3 曾分两批落库（write_scopes 与 revision/attempt_token），
+      // 仅前批迁移过的库 user_version 已达 3，版本门不再放行——运行时引用缺列即
+      // `no such column`（终审实测）。条件 ALTER 本就为此设计，挪出版本门即可自愈。
+      for (const statement of schema.statements) {
+        if (typeof statement !== 'string' && statement.when(this.#db)) {
+          this.#db.exec(statement.sql)
+        }
+      }
       return
     }
     for (const statement of schema.statements) {

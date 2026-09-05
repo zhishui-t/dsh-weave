@@ -4,8 +4,6 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WeavePersistence } from '../../../../src/plugins/weave/persistence/persistence'
-import { TeamManager } from '../../../../src/plugins/weave/team/team-manager'
-import { TeamPlanner } from '../../../../src/plugins/weave/scheduling/planner'
 import { WeaveScheduler, type SchedulerDelegationLike, type WeaveSchedulerOptions } from '../../../../src/plugins/weave/scheduling/scheduler'
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository'
 import { applyAttemptGuardedWrite, TASK_STALE_REVISION } from '../../../../src/plugins/weave/state/attempt-token'
@@ -19,8 +17,6 @@ import { WeaveError } from '../../../../src/plugins/weave/state/weave-error'
  * - attempt 回写带 { token, expectedRevision } 双验证，迟到写被 task_stale_revision 拒绝。
  */
 
-const lookup = (id: string) => TEAM_ID === id
-
 const TEAM_ID = 'alpha-squad'
 const TEAM = {
   id: TEAM_ID,
@@ -28,12 +24,6 @@ const TEAM = {
   roles: [
     { id: 'coder', name: '程序员', bias: 'dev', executor: 'codex', stages: ['implement'], max_concurrent_tasks: 1, personality: '实现' },
   ],
-}
-
-interface AttemptSnapshot {
-  token: string | null
-  revision: number
-  output: string
 }
 
 /** Delegation 替身：捕获 claim 后库内句柄，按 (taskId, 第几次进入) 门控放行并脚本输出。 */
