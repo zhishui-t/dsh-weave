@@ -155,7 +155,7 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
 | 宿主 SQLite 后端（点 d） | weave 持久化全自研（`node:sqlite` 内置 + JSON 索引），与宿主后端零交集 |
 | report 工具改 send_message（点 a） | weave 不按名引用该工具；回收逻辑吃通用事件流，工具名变化由 dsh-agent/dsh-subagent 库内消化 |
 | client 注入防御性 try/catch 加固（点 e） | `ctx.get('sessions')` 已守卫、`agent.inject` 已探测、`moduleLoader` 缺失 throw 是刻意的 fail-fast（静默加载失败比崩溃更难排查） |
-| peerDependencies 立即放宽 | 见 §3：host 暂不升级，pin 维持 0.1.1-rc.2 即为当前正确约束；升级窗口一次性放宽，避免现在放宽后被 0.1.1 环境装到不匹配的 0.1.2 构件 |
+| peerDependencies 立即放宽 | ~~见 §3：host 暂不升级，pin 维持 0.1.1-rc.2 即为当前正确约束~~ **t4 裁定翻转（2026-09-05，队长令）**：已放宽为 `^0.1.1-rc.2 \|\| ^0.1.2-rc.1` 双接受——lockfile 解析仍落 0.1.1-rc.2（构件不变），仅消除升级日安装校验硬冲突；原担忧（0.1.1 环境误装 0.1.2 构件）由「lockfile 不动 + devDeps 仍 pin 0.1.1-rc.2」兜住 |
 | 新 API（snapshotEvents/eventAt）预接代码（点 b） | 宿主未升级，0.1.1 下新路径永远探测失败；提前写等于给死代码开测试账。落地时机在升级演练内，随适配函数一并进 |
 
 ## 3. 宿主升级日演练清单（0.1.1-rc.2 → 0.1.2-rc.1）
@@ -165,6 +165,7 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
 1. **package.json**：`peerDependencies["@deepseek-ai/dsh-agent"]` 由精确 `0.1.1-rc.2` 放宽为
    区间（如 `>=0.1.1-rc.2 <0.2`）；devDeps 三件套（dsh-agent/dsh-commands/dsh-subagent）升到 0.1.2-rc.1，
    装包后跑 `pnpm typecheck` 暴露类型层破坏（`ChildAgentLike`、`Parameters<typeof foldConsumedWork>` 均为类型面哨兵）。
+   ✅ **声明放宽半步已由 t4 提前完成**（dev+peer 五处统一 `^0.1.1-rc.2 || ^0.1.2-rc.1`，lockfile specifier 同步，semver 双版本可解析 + `--frozen-lockfile` 过）；**剩余**：升级日把 devDeps 实际装到 0.1.2-rc.1 后跑 typecheck。
 2. **点 b 落地**：新增 `readSessionEvents` 适配函数（特性探测 snapshotEvents→events 兜底），
    替换 §1.b 表中 5 处直接读；补「仅 snapshotEvents」替身用例。
 3. **回归**：`pnpm vitest run`（全量）+ `pnpm build` + `pnpm test:e2e:harness`（stub RPC，不依赖真实宿主版本）。
@@ -172,23 +173,23 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
    委托执行器产出回收（点 a/b）、notice 落面（点 e surface）。
 5. 若槽位名变更：一次性改 `src/client/index.ts:6285/6273` 两处 + `pnpm build`（单文件 bundle 约束不变）。
 
-## 4. 版本 pin 现状（审计时点快照）
+## 4. 版本 pin 现状（t4 放宽后快照，2026-09-05）
 
 ```jsonc
-// package.json（master f56228f）
+// package.json（t4 依赖放宽后）
 "dependencies": {
-  "@deepseek-ai/cordis": "^4.0.1",          // Cordis fork，宿主运行时无关
+  "@deepseek-ai/cordis": "^4.0.1",          // Cordis fork，宿主运行时无关，4.x 线与宿主 0.1.x 无关，不动
   "zcode-acp-server": "0.11.9"              // 桥，与 DSH 版本解耦
 },
 "devDependencies": {
-  "@deepseek-ai/dsh-agent": "0.1.1-rc.2",   // 精确 pin；src 运行时 import（宿主装载时解析）
-  "@deepseek-ai/dsh-commands": "^0.1.1-rc.2",
-  "@deepseek-ai/dsh-subagent": "0.1.1-rc.2" // 精确 pin；src 运行时 import
+  "@deepseek-ai/dsh-agent": "^0.1.1-rc.2 || ^0.1.2-rc.1",   // src 运行时 import（宿主装载时解析）
+  "@deepseek-ai/dsh-commands": "^0.1.1-rc.2 || ^0.1.2-rc.1",
+  "@deepseek-ai/dsh-subagent": "^0.1.1-rc.2 || ^0.1.2-rc.1" // src 运行时 import
 },
 "peerDependencies": {
   "@agentclientprotocol/sdk": ">=0.25.1 <2",
-  "@deepseek-ai/dsh-agent": "0.1.1-rc.2",   // 精确 pin：0.1.2 下安装校验的唯一硬冲突点
-  "@deepseek-ai/dsh-commands": "^0.1.1-rc.2"
+  "@deepseek-ai/dsh-agent": "^0.1.1-rc.2 || ^0.1.2-rc.1",   // 原精确 pin 硬冲突点已消除（t4）
+  "@deepseek-ai/dsh-commands": "^0.1.1-rc.2 || ^0.1.2-rc.1"
 },
 "dsh": {
   "client": { "inject": ["@deepseek-ai/dsh-client-connection", "@deepseek-ai/dsh-client-ui-slots"], "platform": "web" }
@@ -197,3 +198,20 @@ client 侧注入面（`src/client/index.ts:6235-6300`，单文件 bundle，DSH M
 
 注：`dsh.client.inject` 两模块名由宿主 web bundle 提供（点 e 装载面），改名属宿主 breaking，
 随演练第 4 步冒烟覆盖。
+
+### 实施核验（t4，2026-09-05）
+
+- **a) 依赖声明双版本放宽**：semver 预发布规则下 `^0.1.1-rc.2` 不匹配 `0.1.2-rc.1`（无同
+  `[0,1,2]` 元组比较器），故统一用 OR 范围 `^0.1.1-rc.2 || ^0.1.2-rc.1`（lockfile 内 zod
+  `^3.25.0 || ^4.0.0` 同款先例）。验证：semver 矩阵 7/7 PASS（`0.1.1-rc.2`✓ `0.1.2-rc.1`✓
+  `0.1.0-rc.9`✗ `0.2.0-rc.1`✗）；lockfile specifier 三处同步（resolved 仍 `0.1.1-rc.2`，
+  version/peer hash 零变化）；`pnpm install --frozen-lockfile` 只读校验通过
+  （Already up to date，零安装）。
+- **b) apiproxy 残留**：全仓复 grep（src/test/scripts/doc/e2e/examples/根配置），命中仅本文档
+  自述（§0/§1.c），代码零残留，无需清理。
+- **c) dsh persistence-sqlite 零依赖**：`persistence-sqlite`/`better-sqlite3`/`dsh-persistence`/
+  `SessionStore` 全仓零命中；`WeaveDatabase` 仅依赖 `node:sqlite` 内置（DatabaseSync）+
+  内部 SingleWriterQueue，自研不变。
+- **d) typecheck**：主树因并行在途编辑（`team/mailbox.ts` + `state/types.ts`，`MailboxMessage`
+  新增必填 `to` 字段的中间态）瞬时报 TS2741；以隔离 worktree（HEAD `0174ebd` + 本轮两个文件）
+  证得本轮改动 typecheck 干净（exit 0）——并行工作树归因方法，主树待该编辑窗口关闭后自愈转绿。
