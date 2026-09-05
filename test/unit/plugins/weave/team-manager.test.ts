@@ -72,7 +72,7 @@ feedback:
 `
 
 const EXAMPLES_TEAM_YAML = fileURLToPath(
-  new URL('../../../../examples/team.yaml', import.meta.url),
+  new URL('../../../../examples/teams/team.yaml', import.meta.url),
 )
 
 function makeLookup(executors: string[]): ExecutorLookup {
