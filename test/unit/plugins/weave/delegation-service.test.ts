@@ -678,7 +678,7 @@ describe('执行空闲超时缺省（idle_timeout 误杀修复）', () => {
     expect(DEFAULT_EXECUTION_IDLE_TIMEOUT_MS).toBe(1_200_000)
   })
 
-  it('loadExecutionIdleTimeoutMs：缺失文件回落缺省；非正数/非法类型忽略', () => {
-    expect(loadExecutionIdleTimeoutMs('no-such-settings-file.json')).toBe(1_200_000)
+  it('loadExecutionIdleTimeoutMs：缺失文件回落缺省；非正数/非法类型忽略', async () => {
+    expect(await loadExecutionIdleTimeoutMs('no-such-settings-file.json')).toBe(1_200_000)
   })
 })

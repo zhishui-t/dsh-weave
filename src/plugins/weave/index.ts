@@ -64,12 +64,12 @@ export function apply(ctx: Context): void {
 
   // 真实 DSH 宿主接入：等待宿主服务就绪后一次性注册真实依赖。
   // 执行器列表来自 ctx.subagents 当前实际注册项；ZCode ACP 只是可选附加源。
-  ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm', 'connection'], (scoped) => {
+  ctx.inject(['subagents', 'subprocess', 'commands', 'tools', 'llm', 'connection'], async (scoped) => {
     const runtime = scoped as Context
 
     const weaveSettingsFile = DEFAULT_WEAVE_SETTINGS_FILE
-    const settingsOverrides = loadWeaveSettingsOverrides(weaveSettingsFile)
-    const executionStream = loadExecutionStreamSettings(weaveSettingsFile)
+    const settingsOverrides = await loadWeaveSettingsOverrides(weaveSettingsFile)
+    const executionStream = await loadExecutionStreamSettings(weaveSettingsFile)
     const effectiveProvidersFile = settingsOverrides.providers_file ?? DEFAULT_PROVIDERS_FILE
     const effectiveStateDir = settingsOverrides.state_dir ?? DEFAULT_STATE_DIR
     const effectiveAuditDir = settingsOverrides.audit_dir ?? DEFAULT_AUDIT_DIR
@@ -128,7 +128,7 @@ export function apply(ctx: Context): void {
         executorProviders: service.executorProviders,
         weaveSettingsFile,
         executionStream,
-        idleTimeoutMs: loadExecutionIdleTimeoutMs(weaveSettingsFile),
+        idleTimeoutMs: await loadExecutionIdleTimeoutMs(weaveSettingsFile),
         capabilities,
       })
       const {

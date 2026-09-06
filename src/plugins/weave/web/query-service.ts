@@ -7,7 +7,7 @@ import { SessionTracker } from '../scheduling/session-tracker.js'
 import { TASK_STATUSES, type TaskRecord, type TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
 import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge/knowledge-model.js'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../knowledge/import-pipeline.js'
@@ -447,6 +447,9 @@ export class WeaveQueryService {
     return { node, explain: text, text }
   }
 
+  /** 上传体积上限：对齐 DocumentConverter.MAX_INPUT_BYTES（50MB），在写盘前拒绝。 */
+  static readonly MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
   /** knowledge/import/upload：浏览器 base64 上传到服务端临时目录。 */
   async importUpload(input: unknown): Promise<unknown> {
     if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入（knowledge/import 需要 ImportPipeline）')
@@ -455,10 +458,15 @@ export class WeaveQueryService {
     const dataB64 = requireString(p, 'data')
     const meta = p['meta'] as ImportMeta | undefined
     if (!meta) throw new WeaveError('invalid_argument', 'meta 不能为空')
+    // base64 每字符 ≈ 0.75 字节；按字符数先拒绝超大上传，避免无上限同步/异步写盘拖垮宿主。
+    const approxBytes = Math.floor((dataB64.length * 3) / 4)
+    if (approxBytes > WeaveQueryService.MAX_UPLOAD_BYTES) {
+      throw new WeaveError('invalid_argument', `上传体积超限: 约 ${Math.round(approxBytes / 1024 / 1024)}MB（上限 ${Math.round(WeaveQueryService.MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
+    }
     const dir = join(homedir(), '.dsh', 'imports')
-    mkdirSync(dir, { recursive: true })
+    await mkdir(dir, { recursive: true })
     const filePath = join(dir, `${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
-    writeFileSync(filePath, Buffer.from(dataB64, 'base64'))
+    await writeFile(filePath, Buffer.from(dataB64, 'base64'))
     return this.importPipeline.upload({ original_filename: filename, local_path: filePath }, meta)
   }
 

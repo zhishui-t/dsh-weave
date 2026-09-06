@@ -525,7 +525,7 @@ export function createWeaveRpcHandler(
       if (endpoint === 'settings/describe') {
         objectPayload(payload)
         const settingsFile = resolvedDeps.settingsFile ?? DEFAULT_WEAVE_SETTINGS_FILE
-        const overrides = loadWeaveSettingsOverrides(settingsFile)
+        const overrides = await loadWeaveSettingsOverrides(settingsFile)
         let registeredZcode = false
         try {
           registeredZcode = resolvedDeps.executorRegistry.get('zcode') !== undefined
@@ -557,7 +557,7 @@ export function createWeaveRpcHandler(
       if (endpoint === 'settings/update') {
         const body = objectPayload(payload)
         const settingsFile = resolvedDeps.settingsFile ?? DEFAULT_WEAVE_SETTINGS_FILE
-        const saved = saveWeaveSettingsOverrides(settingsFile, body)
+        const saved = await saveWeaveSettingsOverrides(settingsFile, body)
         return success({ saved, settings_file: settingsFile, requires_reload: true })
       }
 
