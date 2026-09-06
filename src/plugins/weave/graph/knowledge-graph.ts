@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -113,16 +113,21 @@ export class KnowledgeGraphService {
     this.#cliPath = options.cliPath ?? resolveGraphifyCli()
   }
 
-  hasGraph(): boolean {
-    return existsSync(this.graphPath)
+  async hasGraph(): Promise<boolean> {
+    try {
+      await stat(this.graphPath)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** 构建/刷新知识图谱（Graphify extract + 自定义语义 JSON）。 */
   async build(): Promise<KnowledgeGraphBuildResult> {
     const semantic = await this.#buildSemantic()
-    const semDir = mkdtempSync(join(tmpdir(), 'weave-kg-semantic-'))
+    const semDir = await mkdtemp(join(tmpdir(), 'weave-kg-semantic-'))
     const semPath = join(semDir, 'semantic.json')
-    writeFileSync(semPath, JSON.stringify(semantic), 'utf8')
+    await writeFile(semPath, JSON.stringify(semantic), 'utf8')
     try {
       await execFileAsync(
         process.execPath,
@@ -153,9 +158,9 @@ export class KnowledgeGraphService {
         ...(detail.code !== undefined ? { exitCode: String(detail.code) } : {}),
       })
     } finally {
-      rmSync(semDir, { recursive: true, force: true })
+      await rm(semDir, { recursive: true, force: true })
     }
-    const graph = this.#readGraph()
+    const graph = await this.#readGraph()
     const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const links = Array.isArray(graph.links) ? graph.links : []
     return {
@@ -177,10 +182,10 @@ export class KnowledgeGraphService {
     limit?: number
     includeLinkedLayers?: boolean
   } = {}): Promise<KnowledgeGraphResult> {
-    if (!this.hasGraph()) {
-      return buildKnowledgeGraph(this.store, input)
+    if (!(await this.hasGraph())) {
+      return await buildKnowledgeGraph(this.store, input)
     }
-    const graph = this.#readGraph()
+    const graph = await this.#readGraph()
     const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const links = Array.isArray(graph.links) ? graph.links : []
 
@@ -284,12 +289,12 @@ export class KnowledgeGraphService {
 
   /** 知识语义查询：Graphify 图 JSON BFS + 中文友好的本地命中。 */
   async query(question: string, options: KnowledgeGraphQueryOptions = {}): Promise<string> {
-    this.#requireBuilt()
+    await this.#requireBuilt()
     const q = question.trim()
     if (q === '') {
       throw new WeaveError('invalid_argument', 'question 不能为空')
     }
-    const graph = this.#readGraph()
+    const graph = await this.#readGraph()
     const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const links = Array.isArray(graph.links) ? graph.links : []
 
@@ -354,8 +359,8 @@ export class KnowledgeGraphService {
 
   /** 两个知识节点之间的最短路径（基于 Graphify graph.json 的权值为 1 的 BFS）。 */
   async path(source: string, target: string): Promise<string> {
-    this.#requireBuilt()
-    const graph = this.#readGraph()
+    await this.#requireBuilt()
+    const graph = await this.#readGraph()
     const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const links = Array.isArray(graph.links) ? graph.links : []
     const sourceId = this.#resolveNode(nodes, source)
@@ -403,8 +408,8 @@ export class KnowledgeGraphService {
 
   /** 知识节点解释：节点详情 + 邻居。 */
   async explain(node: string): Promise<string> {
-    this.#requireBuilt()
-    const graph = this.#readGraph()
+    await this.#requireBuilt()
+    const graph = await this.#readGraph()
     const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const links = Array.isArray(graph.links) ? graph.links : []
     const nodeId = this.#resolveNode(nodes, node)
@@ -435,17 +440,17 @@ export class KnowledgeGraphService {
     return lines.join('\n')
   }
 
-  #requireBuilt(): void {
-    if (!this.hasGraph()) {
+  async #requireBuilt(): Promise<void> {
+    if (!(await this.hasGraph())) {
       throw new WeaveError('configuration_error', `知识图谱尚未构建，请先执行 knowledge/build: ${this.graphPath}`, {
         graphPath: this.graphPath,
       })
     }
   }
 
-  #readGraph(): GraphifyGraphJson {
+  async #readGraph(): Promise<GraphifyGraphJson> {
     try {
-      return JSON.parse(readFileSync(this.graphPath, 'utf8')) as GraphifyGraphJson
+      return JSON.parse(await readFile(this.graphPath, 'utf8')) as GraphifyGraphJson
     } catch (error) {
       throw new WeaveError('internal', `知识图谱解析失败: ${this.graphPath}`, {
         graphPath: this.graphPath,

@@ -207,10 +207,10 @@ describe('GraphService.graphSummary', () => {
     await expectWeaveError(service.graphSummary(), 'configuration_error')
   })
 
-  it('默认 CLI 路径解析可构造（不依赖 package.json 子路径导出）', () => {
+  it('默认 CLI 路径解析可构造（不依赖 package.json 子路径导出）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'weave-graph-cli-'))
     roots.push(root)
     const service = new GraphService({ projectRoot: root })
-    expect(service.hasGraph()).toBe(false)
+    expect(await service.hasGraph()).toBe(false)
   })
 })

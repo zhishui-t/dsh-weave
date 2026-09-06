@@ -43,29 +43,29 @@ describe('code graph port: GraphService sourceDir', () => {
 })
 
 describe('code graph port: directory listing', () => {
-  it('returns child directories for a given path', () => {
+  it('returns child directories for a given path', async () => {
     const dir = makeTmp('weave-dirs-')
     mkdirSync(join(dir, 'src'))
     mkdirSync(join(dir, 'docs'))
-    const listing = listDirectories(dir)
+    const listing = await listDirectories(dir)
     expect(listing.path).toBe(dir)
     expect(listing.dirs.map((d) => basename(d))).toEqual(['docs', 'src'])
     expect(listing.parent).toBeDefined()
   })
 
-  it('returns path and empty dirs for a missing path without throwing', () => {
+  it('returns path and empty dirs for a missing path without throwing', async () => {
     const missing = join(makeTmp('weave-dirs-missing-'), 'nope')
-    const listing = listDirectories(missing)
+    const listing = await listDirectories(missing)
     expect(listing.path).toBe(missing)
     expect(listing.dirs).toEqual([])
   })
 })
 
 describe('code graph port: project listing', () => {
-  it('includes cwd project and detects source dir', () => {
+  it('includes cwd project and detects source dir', async () => {
     const dir = makeTmp('weave-projects-')
     mkdirSync(join(dir, 'src'))
-    const projects = listGraphProjects(dir)
+    const projects = await listGraphProjects(dir)
     const current = projects.find((p) => p.current)
     expect(current).toBeDefined()
     expect(current?.root).toBe(dir)

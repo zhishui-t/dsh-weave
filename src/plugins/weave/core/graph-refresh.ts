@@ -68,7 +68,7 @@ export class GraphRefresher {
     const reason = this.#lastReason
     this.#building = true
     try {
-      const mode = graphService.hasGraph() ? '更新' : '新建'
+      const mode = (await graphService.hasGraph()) ? '更新' : '新建'
       await graphService.build()
       if (this.#disposed) return
       if (sessionId && notify) notify(sessionId, `[dsh-weave] 代码图谱已${mode}（触发: ${reason}）`)

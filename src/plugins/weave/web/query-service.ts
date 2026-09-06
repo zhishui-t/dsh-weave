@@ -508,15 +508,15 @@ export class WeaveQueryService {
     return this.graphService
   }
 
-  private ensureGraphBuilt(service: GraphService): void {
-    if (!service.hasGraph()) {
+  private async ensureGraphBuilt(service: GraphService): Promise<void> {
+    if (!(await service.hasGraph())) {
       throw new WeaveError('configuration_error', '代码图谱尚未构建，请先执行 pnpm code:scan', { graphPath: service.graphPath })
     }
   }
 
-  private ensureFlowsBuilt(service: GraphService): void {
-    this.ensureGraphBuilt(service)
-    if (!service.hasFlows()) {
+  private async ensureFlowsBuilt(service: GraphService): Promise<void> {
+    await this.ensureGraphBuilt(service)
+    if (!(await service.hasFlows())) {
       throw new WeaveError('configuration_error', '执行流尚未构建，请先执行 graphify flows build', { flowsPath: service.flowsPath })
     }
   }
@@ -524,14 +524,14 @@ export class WeaveQueryService {
   /** code/projects：返回候选 Web 代码图项目列表。 */
   async codeProjects(input: unknown = {}): Promise<{ projects: GraphProjectSummary[] }> {
     asPayload(input)
-    return { projects: listGraphProjects() }
+    return { projects: await listGraphProjects() }
   }
 
   /** code/dirs：目录选择数据。 */
   async codeDirs(input: unknown = {}): Promise<DirectoryListing> {
     const p = asPayload(input)
     const path = optionalString(p, 'path')
-    return listDirectories(path)
+    return await listDirectories(path)
   }
 
   /** code/status：当前项目/指定项目图谱状态。 */
@@ -552,8 +552,8 @@ export class WeaveQueryService {
       sourceDir: service.sourceDir,
       graphPath: service.graphPath,
       flowsPath: service.flowsPath,
-      hasGraph: service.hasGraph(),
-      hasFlows: service.hasFlows(),
+      hasGraph: await service.hasGraph(),
+      hasFlows: await service.hasFlows(),
     }
   }
 
@@ -570,7 +570,7 @@ export class WeaveQueryService {
   async codeGraph(input: unknown = {}): Promise<GraphSummary> {
     asPayload(input)
     const service = this.requireGraphService()
-    this.ensureGraphBuilt(service)
+    await this.ensureGraphBuilt(service)
     return service.graphSummary()
   }
 
@@ -580,7 +580,7 @@ export class WeaveQueryService {
     const source = requireString(p, 'source')
     const target = requireString(p, 'target')
     const service = this.requireGraphService()
-    this.ensureGraphBuilt(service)
+    await this.ensureGraphBuilt(service)
     const text = (await service.path(source, target)).trim()
     return { source, target, path: text, text }
   }
@@ -590,7 +590,7 @@ export class WeaveQueryService {
     const p = asPayload(input)
     const node = requireString(p, 'node')
     const service = this.requireGraphService()
-    this.ensureGraphBuilt(service)
+    await this.ensureGraphBuilt(service)
     const text = (await service.explain(node)).trim()
     return { node, explain: text, text }
   }
@@ -609,8 +609,8 @@ export class WeaveQueryService {
       return file.trim()
     })
     const service = this.requireGraphService()
-    this.ensureGraphBuilt(service)
-    if (files.length > 0) this.ensureFlowsBuilt(service)
+    await this.ensureGraphBuilt(service)
+    if (files.length > 0) await this.ensureFlowsBuilt(service)
     return service.affectedFlows(files)
   }
 
@@ -619,7 +619,7 @@ export class WeaveQueryService {
     const p = asPayload(input)
     const limit = optionalPositiveInt(p, 'limit') ?? 50
     const service = this.requireGraphService()
-    this.ensureFlowsBuilt(service)
+    await this.ensureFlowsBuilt(service)
     return { flows: await service.listFlows(limit) }
   }
 
@@ -628,7 +628,7 @@ export class WeaveQueryService {
     const p = asPayload(input)
     const id = requireString(p, 'id', 'flowId', 'flow_id')
     const service = this.requireGraphService()
-    this.ensureFlowsBuilt(service)
+    await this.ensureFlowsBuilt(service)
     return service.getFlow(id)
   }
 

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -73,7 +73,8 @@ export interface GraphSummary {
 
 const SOURCE_DIR_CANDIDATES = ['src', 'render', 'lib', 'app', 'packages', '.']
 
-/** 自动选择项目源码目录：常见目录存在时优先，否则退回项目根。 */
+/** 自动选择项目源码目录：常见目录存在时优先，否则退回项目根。
+ *  保留同步（构造器一次性探测 ≤6 个路径）；请求路径的大批量探测见 listGraphProjects。 */
 export function autoSourceDir(projectRoot: string): string {
   for (const candidate of SOURCE_DIR_CANDIDATES) {
     if (candidate === '.') return '.'
@@ -81,6 +82,15 @@ export function autoSourceDir(projectRoot: string): string {
     if (existsSync(path)) return candidate
   }
   return '.'
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await stat(target)
+    return true
+  } catch {
+    return false
+  }
 }
 
 
@@ -98,41 +108,43 @@ export interface DirectoryListing {
   dirs: string[]
 }
 
-/** 扫描候选 Web 代码图项目：先当前 cwd，再扫描其父目录下常见项目。 */
-export function listGraphProjects(cwd = process.cwd()): GraphProjectSummary[] {
+/** 扫描候选 Web 代码图项目：先当前 cwd，再扫描其父目录下常见项目（全部异步 stat，不阻塞事件循环）。 */
+export async function listGraphProjects(cwd = process.cwd()): Promise<GraphProjectSummary[]> {
   const roots = new Set<string>([resolve(cwd)])
   const parent = dirname(cwd)
   try {
-    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+    for (const entry of await readdir(parent, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
       const root = resolve(parent, entry.name)
-      if (existsSync(join(root, 'package.json')) || existsSync(join(root, 'src')) || existsSync(join(root, '.git'))) {
+      if ((await pathExists(join(root, 'package.json'))) || (await pathExists(join(root, 'src'))) || (await pathExists(join(root, '.git')))) {
         roots.add(root)
       }
     }
   } catch {
     // parent 不可扫描时忽略
   }
-  return [...roots].slice(0, 30).map((root) => {
+  const projects: GraphProjectSummary[] = []
+  for (const root of [...roots].slice(0, 30)) {
     const sourceDir = autoSourceDir(root)
     const service = new GraphService({ projectRoot: root, sourceDir })
-    return {
+    projects.push({
       root,
       sourceDir,
-      hasGraph: service.hasGraph(),
-      hasFlows: service.hasFlows(),
+      hasGraph: await service.hasGraph(),
+      hasFlows: await service.hasFlows(),
       current: root === resolve(cwd),
-    }
-  })
+    })
+  }
+  return projects
 }
 
 /** 目录选择：返回给定路径下的子目录。 */
-export function listDirectories(inputPath?: string, cwd = process.cwd()): DirectoryListing {
+export async function listDirectories(inputPath?: string, cwd = process.cwd()): Promise<DirectoryListing> {
   const base = inputPath?.trim() || resolve(cwd)
   const path = resolve(base)
   let dirs: string[] = []
   try {
-    dirs = readdirSync(path, { withFileTypes: true })
+    dirs = (await readdir(path, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
       .map((entry) => resolve(path, entry.name))
       .sort()
@@ -223,18 +235,18 @@ export class GraphService {
   }
 
   /** 图谱数据是否已构建。 */
-  hasGraph(): boolean {
-    return existsSync(this.graphPath)
+  async hasGraph(): Promise<boolean> {
+    return await pathExists(this.graphPath)
   }
 
   /** 执行流文件是否已构建。 */
-  hasFlows(): boolean {
-    return existsSync(this.flowsPath)
+  async hasFlows(): Promise<boolean> {
+    return await pathExists(this.flowsPath)
   }
 
   /** 读取 graph.json 的轻量摘要（不调用 CLI，适合 RPC 快速展示）。 */
   async graphSummary(): Promise<GraphSummary> {
-    if (!this.hasGraph()) {
+    if (!(await this.hasGraph())) {
       throw new WeaveError('configuration_error', `代码图谱尚未构建: ${this.graphPath}`, { graphPath: this.graphPath })
     }
     let parsed: {
@@ -262,7 +274,7 @@ export class GraphService {
       edgeCount: Array.isArray(parsed.links) ? parsed.links.length : 0,
       communityCount,
       ...(parsed.graph?.built_from_commit ? { builtFromCommit: parsed.graph.built_from_commit } : {}),
-      hasFlows: this.hasFlows(),
+      hasFlows: await this.hasFlows(),
     }
   }
 

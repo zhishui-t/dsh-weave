@@ -60,12 +60,12 @@ describe('KnowledgeGraphService Graphify 后端', () => {
       body: '反向引用 [[A 指南]]。',
     })
 
-    expect(service.hasGraph()).toBe(false)
+    expect(await service.hasGraph()).toBe(false)
     const built = await service.build()
     expect(built.graphPath).toBe(service.graphPath)
     expect(built.nodeCount).toBe(2)
     expect(built.edgeCount).toBeGreaterThanOrEqual(1)
-    expect(service.hasGraph()).toBe(true)
+    expect(await service.hasGraph()).toBe(true)
 
     const graph = await service.graph({})
     expect(graph.counts.knowledge).toBe(2)
