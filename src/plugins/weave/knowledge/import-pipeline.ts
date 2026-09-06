@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { IMPORT_JOBS_TABLE_DDL } from '../persistence/schemas.js'
 import type { WeaveDatabase } from '../persistence/weave-database.js'
@@ -229,13 +229,21 @@ export class ImportPipeline {
   readonly #knowledge: KnowledgeStore | undefined
   readonly #converter: AnyDocLikeConverter
   #ready = false
+  /** imports 目录惰性建立；构造函数不再做同步 mkdir。 */
+  #dirPromise: Promise<void> | undefined
 
   constructor(options: ImportPipelineOptions) {
     this.#db = options.importsDb
     this.#importsDir = options.importsDir
     this.#knowledge = options.knowledgeStore
     this.#converter = options.converter ?? new AnyDocConverterAdapter()
-    mkdirSync(this.#importsDir, { recursive: true })
+  }
+
+  #dirReady(): Promise<void> {
+    this.#dirPromise ??= (async () => {
+      await mkdir(this.#importsDir, { recursive: true })
+    })()
+    return this.#dirPromise
   }
 
   /** 上传：白名单校验 + 元数据校验，创建 uploaded 状态的 import_job（TDD 3.1.5-1）。 */
@@ -304,7 +312,8 @@ export class ImportPipeline {
     }
 
     const markdownFile = join(this.#importsDir, `${jobId}.md`)
-    writeFileSync(markdownFile, output.markdown, 'utf8')
+    await this.#dirReady()
+    await writeFile(markdownFile, output.markdown, 'utf8')
     const title = output.title.trim() !== '' ? output.title : stemOf(job.original_filename)
     const warnings = output.warnings ?? []
 
@@ -345,7 +354,7 @@ export class ImportPipeline {
         `状态 ${job.status} 不允许预览（需先 convert）: ${jobId}`,
       )
     }
-    const markdown = job.converted_body ?? readMarkdown(job.markdown_path)
+    const markdown = job.converted_body ?? (await readMarkdown(job.markdown_path))
     if (markdown === null) {
       throw new ImportPipelineError('invalid_status_transition', `任务无转换结果，无法预览: ${jobId}`)
     }
@@ -616,12 +625,12 @@ const scopeForJob = (job: ImportJob): { projectId?: string; version?: string; ro
   instanceId: job.target_instance_id ?? undefined,
 })
 
-const readMarkdown = (markdownPath: string | null): string | null => {
+const readMarkdown = async (markdownPath: string | null): Promise<string | null> => {
   if (!markdownPath) {
     return null
   }
   try {
-    return readFileSync(markdownPath, 'utf8')
+    return await readFile(markdownPath, 'utf8')
   } catch {
     return null
   }

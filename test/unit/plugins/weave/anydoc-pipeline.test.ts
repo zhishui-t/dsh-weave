@@ -239,14 +239,14 @@ describe('ImportPipeline：预览与确认（3.1.4 全链路 / AC-IMPORT-003/004
     expect(meta?.layer).toBe('project')
     expect(meta?.path.startsWith('_agent/projects/demo/v1/')).toBe(true)
 
-    const file = knowledgeStore.getKnowledgeFile(candidateId)
+    const file = await knowledgeStore.getKnowledgeFile(candidateId)
     expect(file?.frontmatter.status).toBe('candidate')
     expect(file?.frontmatter.title).toBe('设计指南')
     expect(file?.body).toContain('设计指南正文（用户确认）')
 
     // AC-IMPORT-004：未审核转正前无 active 知识
     expect(await knowledgeStore.listMeta({ status: 'active' })).toEqual([])
-    const raw = knowledgeStore.readRaw(candidateId)
+    const raw = await knowledgeStore.readRaw(candidateId)
     expect(raw).toContain('status: candidate')
     expect(raw).not.toContain('status: active')
   })

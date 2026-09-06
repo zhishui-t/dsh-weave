@@ -301,7 +301,7 @@ export class KnowledgeGraphService {
       const path = String(node['path'] ?? '')
       const tags = Array.isArray(node['tags']) ? (node['tags'] as string[]).join(' ') : ''
       const desc = String(node['description'] ?? '')
-      const file = this.store.getKnowledgeFile(id)
+      const file = await this.store.getKnowledgeFile(id)
       const body = file ? file.body : ''
 
       let score = 0
@@ -487,7 +487,7 @@ export class KnowledgeGraphService {
 
     for (const meta of metas) {
       ids.add(meta.id)
-      const file = this.store.getKnowledgeFile(meta.id)
+      const file = await this.store.getKnowledgeFile(meta.id)
       if (!file) continue
       nodes.push({
         id: meta.id,
@@ -511,7 +511,7 @@ export class KnowledgeGraphService {
     }
 
     for (const meta of metas) {
-      const file = this.store.getKnowledgeFile(meta.id)
+      const file = await this.store.getKnowledgeFile(meta.id)
       if (!file) continue
       for (const rawTarget of extractWikiLinks(file.body)) {
         const normalized = normalize(rawTarget)

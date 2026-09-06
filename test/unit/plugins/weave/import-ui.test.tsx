@@ -153,7 +153,7 @@ describe('KUI：导入全链路（AC-IMPORT-003：上传→转换→预览→确
 
     // 文件落盘：_agent/roles/ 下出现 candidate 卡片，frontmatter status=candidate
     const meta0 = all[0]!
-    const file = f.knowledgeStore!.getKnowledgeFile(meta0.id)
+    const file = await f.knowledgeStore!.getKnowledgeFile(meta0.id)
     expect(file).not.toBeNull()
     expect(file!.frontmatter.status).toBe('candidate')
     expect(file!.frontmatter.title).toBe('设计指南（人工确认）')

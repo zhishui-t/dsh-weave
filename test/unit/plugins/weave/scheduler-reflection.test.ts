@@ -253,7 +253,7 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
       expect(notices.some((notice) => notice.text.includes('反思沉淀 1 条候选知识（待审核）'))).toBe(true)
       const metas = await store.listMeta({ status: 'candidate' })
       expect(metas).toHaveLength(1)
-      const file = store.getKnowledgeFile(metas[0]!.id)
+      const file = await store.getKnowledgeFile(metas[0]!.id)
       expect(file?.frontmatter.type).toBe('pattern')
       expect(file?.frontmatter.title).toBe('单一任务')
       expect(file?.frontmatter.tags).toEqual(
@@ -289,7 +289,7 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
 
       const metas = await store.listMeta({ status: 'candidate' })
       expect(metas).toHaveLength(1)
-      const file = store.getKnowledgeFile(metas[0]!.id)
+      const file = await store.getKnowledgeFile(metas[0]!.id)
       expect(file?.frontmatter.title).toBe('显式经验')
       expect(file?.frontmatter.tags).toEqual(expect.arrayContaining(['source:weave-reflection']))
       expect(file?.frontmatter.tags).not.toContain('source:weave-reflection-auto')

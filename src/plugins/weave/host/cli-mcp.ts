@@ -228,7 +228,7 @@ export class WeaveMcp {
     const scored: Array<{ meta: KnowledgeMeta; score: number; file: KnowledgeFile }> = []
     let totalChars = 0
     for (const meta of metas) {
-      const file = store.getKnowledgeFile(meta.id)
+      const file = await store.getKnowledgeFile(meta.id)
       if (!file) continue
       if (visibility !== undefined && file.frontmatter.visibility !== visibility) continue
       const path = meta.path.toLowerCase()

@@ -173,8 +173,11 @@ describe('KnowledgeStore：目录隔离与写入规则', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('初始化创建三目录隔离（_agent/_human/_views）', () => {
+  it('首次写入时惰性创建三目录隔离（_agent/_human/_views）；构造函数不做 fs', async () => {
     const store = new KnowledgeStore({ rootDir: root, metaDb: p.knowledgeMeta })
+    // 构造函数不再同步 mkdir（避免阻塞宿主事件循环）；目录树在首次写入时建立。
+    expect(existsSync(store.agentRoot())).toBe(false)
+    await store.createCandidate(baseInput)
     expect(existsSync(store.agentRoot())).toBe(true)
     expect(existsSync(store.humanRoot())).toBe(true)
     expect(existsSync(store.viewsRoot())).toBe(true)
@@ -201,7 +204,7 @@ describe('KnowledgeStore：目录隔离与写入规则', () => {
     const store = new KnowledgeStore({ rootDir: root, metaDb: p.knowledgeMeta })
     const meta = await store.createCandidate({ ...baseInput, filename: 'active-attempt.md' })
 
-    const raw = store.readRaw(meta.id)
+    const raw = await store.readRaw(meta.id)
     expect(raw).toContain('status: candidate')
     expect(raw).not.toContain('status: active')
     // 强制默认值：schema_version="1"、confidence=0.1、freshness=1.0
@@ -228,7 +231,7 @@ describe('KnowledgeStore：目录隔离与写入规则', () => {
   it('getKnowledgeFile 与元数据一致（状态与 frontmatter 同步）', async () => {
     const store = new KnowledgeStore({ rootDir: root, metaDb: p.knowledgeMeta })
     const meta = await store.createCandidate(baseInput)
-    const file = store.getKnowledgeFile(meta.id)
+    const file = await store.getKnowledgeFile(meta.id)
     expect(file?.frontmatter.status).toBe('candidate')
     expect(file?.frontmatter.schema_version).toBe('1')
     expect(file?.body).toContain('正文内容')
@@ -256,7 +259,7 @@ describe('KnowledgeStore：生命周期（AC-KNOW-003）', () => {
     await expect(store.activate(meta.id, { confirmed: false })).rejects.toThrow(/确认/)
     const after = await store.getMeta(meta.id)
     expect(after?.status).toBe('candidate')
-    expect(store.readRaw(meta.id)).toContain('status: candidate')
+    expect(await store.readRaw(meta.id)).toContain('status: candidate')
   })
 
   it('activate(confirmed: true)：candidate → active，last_confirmed 写入，文件同步', async () => {
@@ -266,7 +269,7 @@ describe('KnowledgeStore：生命周期（AC-KNOW-003）', () => {
     const active = await store.activate(meta.id, { confirmed: true })
     expect(active.status).toBe('active')
     expect(active.last_confirmed).not.toBeNull()
-    expect(store.readRaw(meta.id)).toContain('status: active')
+    expect(await store.readRaw(meta.id)).toContain('status: active')
   })
 
   it('reject：candidate → deprecated（FDD 4.6.3）', async () => {
@@ -274,7 +277,7 @@ describe('KnowledgeStore：生命周期（AC-KNOW-003）', () => {
     const meta = await store.createCandidate(baseInput)
     const rejected = await store.reject(meta.id)
     expect(rejected.status).toBe('deprecated')
-    expect(store.readRaw(meta.id)).toContain('status: deprecated')
+    expect(await store.readRaw(meta.id)).toContain('status: deprecated')
   })
 
   it('deprecate：active → deprecated', async () => {
@@ -292,7 +295,7 @@ describe('KnowledgeStore：生命周期（AC-KNOW-003）', () => {
     const superseded = await store.supersede(meta.id, 'new-id-001')
     expect(superseded.status).toBe('superseded')
     expect(superseded.superseded_by).toBe('new-id-001')
-    expect(store.readRaw(meta.id)).toContain('status: superseded')
+    expect(await store.readRaw(meta.id)).toContain('status: superseded')
   })
 
   it('非法转移全部拒绝：activate 两次、candidate→superseded、deprecated→active', async () => {

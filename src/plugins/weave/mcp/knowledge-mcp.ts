@@ -51,7 +51,7 @@ async function searchKnowledge(store: KnowledgeStore, input: Record<string, unkn
   let totalChars = 0
 
   for (const meta of metas) {
-    const file = store.getKnowledgeFile(meta.id)
+    const file = await store.getKnowledgeFile(meta.id)
     if (!file) continue
     if (visibility !== undefined && file.frontmatter.visibility !== visibility) continue
     if (!scopeMatch(meta, input)) continue

@@ -168,7 +168,7 @@ export class ObsidianService {
       }
       const dest = join(vault, rel)
       const old = state.files[rel]
-      const sourceText = this.#sourceText(meta)
+      const sourceText = await this.#sourceText(meta)
       if (sourceText === null) continue
       const sourceHash = sha256(sourceText)
       const destExists = existsSync(dest)
@@ -422,10 +422,10 @@ export class ObsidianService {
     return [...active, ...candidate]
   }
 
-  #sourceText(meta: KnowledgeMeta): string | null {
+  async #sourceText(meta: KnowledgeMeta): Promise<string | null> {
     const store = this.#knowledgeStore
     if (!store) return null
-    const file = store.getKnowledgeFile(meta.id)
+    const file = await store.getKnowledgeFile(meta.id)
     if (!file) return null
     return serializeKnowledgeFile(file.frontmatter, file.body)
   }

@@ -77,7 +77,7 @@ describe('ReflectionService.depositFromOutput', () => {
     const metas = await env.store.listMeta({ layer: 'role', status: 'candidate' })
     expect(metas).toHaveLength(1)
     const meta = metas[0]!
-    const file = env.store.getKnowledgeFile(meta.id)
+    const file = await env.store.getKnowledgeFile(meta.id)
     expect(file?.frontmatter.status).toBe('candidate')
     expect(file?.frontmatter.visibility).toBe('role_only')
     expect(file?.frontmatter.tags).toEqual(expect.arrayContaining(['executor:codex', 'role:coder', 'source:weave-reflection']))
@@ -115,7 +115,7 @@ describe('ReflectionService.depositFromOutput', () => {
 
     expect(result.deposited[0]).toMatchObject({ layer: 'shared' })
     const metas = await env.store.listMeta({ layer: 'shared', status: 'candidate' })
-    const file = env.store.getKnowledgeFile(metas[0]!.id)
+    const file = await env.store.getKnowledgeFile(metas[0]!.id)
     expect(file?.frontmatter.visibility).toBe('global')
     expect(existsSync(join(env.store.rootDir, '_agent', 'shared', 'reflect-task-1-1.md'))).toBe(true)
   })
@@ -211,7 +211,7 @@ describe('ReflectionService.depositFromOutput', () => {
 
     const metas = await env.store.listMeta({ layer: 'project', status: 'candidate' })
     expect(metas).toHaveLength(1)
-    const file = env.store.getKnowledgeFile(metas[0]!.id)
+    const file = await env.store.getKnowledgeFile(metas[0]!.id)
     expect(file?.frontmatter.type).toBe('pattern')
     expect(file?.frontmatter.status).toBe('candidate')
     expect(file?.frontmatter.tags).toEqual(
@@ -252,7 +252,7 @@ describe('ReflectionService.depositFromOutput', () => {
     })
 
     const metas = await env.store.listMeta({ layer: 'project', status: 'candidate' })
-    const file = env.store.getKnowledgeFile(metas[0]!.id)
+    const file = await env.store.getKnowledgeFile(metas[0]!.id)
     expect(file?.body.trim()).toBe('甲'.repeat(200))
   })
 

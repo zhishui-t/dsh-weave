@@ -110,7 +110,7 @@ describe('P0-KREVIEW：approve —— candidate→active 只能显式审核（AC
     expect(after?.last_confirmed).not.toBeNull()
     expect(await f.review.queueSize()).toBe(0)
 
-    const file = f.knowledge.getKnowledgeFile(meta.id)
+    const file = await f.knowledge.getKnowledgeFile(meta.id)
     expect(file?.frontmatter.status).toBe('active')
     expect(file?.frontmatter.title).toBe('项目指南')
     expect(file?.body).toContain('正文内容')
@@ -159,7 +159,7 @@ describe('P0-KREVIEW：reject —— 不转正（FDD 4.6.3）', () => {
     expect(after?.status).toBe('deprecated')
     expect(await f.knowledge.listMeta({ status: 'active' })).toEqual([])
 
-    const file = f.knowledge.getKnowledgeFile(meta.id)
+    const file = await f.knowledge.getKnowledgeFile(meta.id)
     expect(file?.frontmatter.status).toBe('deprecated')
     expect(file?.body).toContain('正文内容')
 

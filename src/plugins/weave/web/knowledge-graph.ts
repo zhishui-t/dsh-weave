@@ -122,7 +122,7 @@ export async function buildKnowledgeGraph(
 
   for (const meta of selected) {
     try {
-      const file = store.getKnowledgeFile(meta.id)
+      const file = await store.getKnowledgeFile(meta.id)
       if (!file) throw new Error('missing')
       entries.push({
         id: meta.id,
@@ -143,7 +143,7 @@ export async function buildKnowledgeGraph(
     // 跨层解析不做 project 过滤：项目内条目引用其他项目/层的 [[双链]] 仍解析为 linked 节点。
     for (const meta of allMetas) {
       try {
-        const file = store.getKnowledgeFile(meta.id)
+        const file = await store.getKnowledgeFile(meta.id)
         if (!file) continue
         allEntries.push({
           id: meta.id,

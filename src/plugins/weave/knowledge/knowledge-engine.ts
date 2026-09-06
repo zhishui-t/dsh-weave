@@ -124,7 +124,7 @@ export class KnowledgeEngine {
 
     for (const { meta } of ranked) {
       if (entries.length >= maxEntries) break
-      const file = this.#readFile(meta.id)
+      const file = await this.#readFile(meta.id)
       if (!file) continue // 文件缺失/frontmatter 非法 → 跳过该条（优雅降级）
       let content = file.body.trim()
       if (params.slim === true) {
@@ -165,9 +165,9 @@ export class KnowledgeEngine {
   }
 
   /** 读取知识文件（缺失/非法 → null，不抛）。 */
-  #readFile(id: string): { title: string; body: string; visibility: Visibility } | null {
+  async #readFile(id: string): Promise<{ title: string; body: string; visibility: Visibility } | null> {
     try {
-      const file = this.#store.getKnowledgeFile(id)
+      const file = await this.#store.getKnowledgeFile(id)
       if (!file) return null
       return { title: file.frontmatter.title, body: file.body, visibility: file.frontmatter.visibility }
     } catch {

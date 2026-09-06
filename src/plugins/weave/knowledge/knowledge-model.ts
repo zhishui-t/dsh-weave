@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { WeaveDatabase } from '../persistence/weave-database.js'
 
@@ -363,25 +363,29 @@ export class KnowledgeStore {
   readonly rootDir: string
   readonly #metaDb: WeaveDatabase
   #ready = false
+  /** 目录树惰性建立（首次写入时）；构造函数不再做同步 mkdir。 */
+  #dirsPromise: Promise<void> | undefined
 
   constructor(options: KnowledgeStoreOptions) {
     this.rootDir = resolve(options.rootDir)
     this.#metaDb = options.metaDb
-    this.#ensureDirs()
   }
 
-  /** 建立三目录隔离结构（含 _agent 四层子目录）。 */
-  #ensureDirs(): void {
-    for (const dir of [
-      join(this.rootDir, AGENT_DIR, 'projects'),
-      join(this.rootDir, AGENT_DIR, 'roles'),
-      join(this.rootDir, AGENT_DIR, 'instances'),
-      join(this.rootDir, AGENT_DIR, 'shared'),
-      join(this.rootDir, HUMAN_DIR),
-      join(this.rootDir, VIEWS_DIR),
-    ]) {
-      mkdirSync(dir, { recursive: true })
-    }
+  /** 建立三目录隔离结构（含 _agent 四层子目录）；幂等，失败在调用方冒泡。 */
+  #dirsReady(): Promise<void> {
+    this.#dirsPromise ??= (async () => {
+      for (const dir of [
+        join(this.rootDir, AGENT_DIR, 'projects'),
+        join(this.rootDir, AGENT_DIR, 'roles'),
+        join(this.rootDir, AGENT_DIR, 'instances'),
+        join(this.rootDir, AGENT_DIR, 'shared'),
+        join(this.rootDir, HUMAN_DIR),
+        join(this.rootDir, VIEWS_DIR),
+      ]) {
+        await mkdir(dir, { recursive: true })
+      }
+    })()
+    return this.#dirsPromise
   }
 
   agentRoot(): string {
@@ -397,12 +401,12 @@ export class KnowledgeStore {
   }
 
   /** 目标归属目录（_agent 区，绝对路径），并确保目录存在。 */
-  resolveAgentDir(layer: KnowledgeLayer, scope: KnowledgeScope): string {
+  async resolveAgentDir(layer: KnowledgeLayer, scope: KnowledgeScope): Promise<string> {
     const dir = join(this.rootDir, agentLayerDir(layer, scope))
     if (!this.#pathWithin(join(this.rootDir, AGENT_DIR), dir)) {
       throw new Error(`目标目录超出 _agent 区: ${dir}`)
     }
-    mkdirSync(dir, { recursive: true })
+    await mkdir(dir, { recursive: true })
     return dir
   }
 
@@ -423,6 +427,7 @@ export class KnowledgeStore {
   /** 写入 candidate 知识卡片（未确认前不写 active）。返回元数据记录。 */
   async createCandidate(input: CreateCandidateInput): Promise<KnowledgeMeta> {
     await this.#ensureTable()
+    await this.#dirsReady()
 
     // 覆盖/强制默认值：schema_version="1"、status=candidate、confidence=0.1、freshness=1.0、created=今天
     const frontmatter: KnowledgeFrontmatter = {
@@ -446,12 +451,12 @@ export class KnowledgeStore {
     }
 
     const filename = KnowledgeStore.safeKnowledgeFilename(input.filename)
-    const dir = this.resolveAgentDir(input.layer, input.scope)
+    const dir = await this.resolveAgentDir(input.layer, input.scope)
     const absolute = join(dir, filename)
     const id = randomUUID()
     const now = new Date().toISOString()
     const body = input.body ?? ''
-    writeFileSync(absolute, serializeKnowledgeFile(frontmatter, body), 'utf8')
+    await writeFile(absolute, serializeKnowledgeFile(frontmatter, body), 'utf8')
 
     const row: KnowledgeMetaRow = {
       id,
@@ -530,16 +535,19 @@ export class KnowledgeStore {
 
     // 同步文件 frontmatter（knowledge_meta 与卡片保持一致）
     const absolute = join(this.rootDir, current.path)
-    if (!existsSync(absolute)) {
+    let rawText: string
+    try {
+      rawText = await readFile(absolute, 'utf8')
+    } catch {
       throw new Error(`知识文件不存在: ${absolute}`)
     }
-    const parsed = parseFrontmatter(readFileSync(absolute, 'utf8'))
+    const parsed = parseFrontmatter(rawText)
     const validated = parsed.frontmatter ? validateFrontmatter(parsed.frontmatter) : null
     if (!validated?.ok || !validated.value) {
       throw new Error(`知识文件 frontmatter 非法: ${absolute}`)
     }
     const fileFm: KnowledgeFrontmatter = { ...validated.value, status: next }
-    writeFileSync(absolute, serializeKnowledgeFile(fileFm, parsed.body), 'utf8')
+    await writeFile(absolute, serializeKnowledgeFile(fileFm, parsed.body), 'utf8')
 
     await this.#upsertMeta(nextRow)
     return this.#toMeta(nextRow)
@@ -575,8 +583,8 @@ export class KnowledgeStore {
   }
 
   /** 读取知识文件全文（frontmatter + 正文）。 */
-  getKnowledgeFile(id: string): KnowledgeFile | null {
-    const raw = this.#readFileSyncSafe(id)
+  async getKnowledgeFile(id: string): Promise<KnowledgeFile | null> {
+    const raw = await this.#readFileSafe(id)
     if (!raw) {
       return null
     }
@@ -589,20 +597,24 @@ export class KnowledgeStore {
   }
 
   /** 读取原始文件文本（无 frontmatter 校验）；供测试/审计使用。 */
-  readRaw(id: string): string | null {
-    return this.#readFileSyncSafe(id)?.text ?? null
+  async readRaw(id: string): Promise<string | null> {
+    return (await this.#readFileSafe(id))?.text ?? null
   }
 
-  #readFileSyncSafe(id: string): { path: string; text: string } | null {
+  /** 元数据点查走 sqlite（索引快，同步可接受）；文件读取异步。 */
+  async #readFileSafe(id: string): Promise<{ path: string; text: string } | null> {
     const row = this.#getRowSync(id)
     if (!row) {
       return null
     }
     const absolute = join(this.rootDir, row.path)
-    if (!existsSync(absolute)) {
+    let text: string
+    try {
+      text = await readFile(absolute, 'utf8')
+    } catch {
       throw new Error(`知识文件不存在: ${absolute}`)
     }
-    return { path: row.path, text: readFileSync(absolute, 'utf8') }
+    return { path: row.path, text }
   }
 
   #getRowSync(id: string): KnowledgeMetaRow | null {

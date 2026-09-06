@@ -50,7 +50,7 @@ export class KnowledgeReviewService {
     const metas = await this.#knowledge.listMeta({ status: 'candidate', layer: filter.layer })
     const items: ReviewQueueItem[] = []
     for (const meta of metas) {
-      const file = this.#knowledge.getKnowledgeFile(meta.id)
+      const file = await this.#knowledge.getKnowledgeFile(meta.id)
       items.push({
         meta,
         title: file?.frontmatter.title ?? '(无标题)',
