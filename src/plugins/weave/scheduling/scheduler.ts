@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import type { SubagentTaskOutput } from './delegation-service.js'
 import { GraphService } from '../graph/graph-service.js'
 import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
@@ -1113,7 +1113,14 @@ export class WeaveScheduler {
     try {
       const texts = dag.tasks.map((task) => String(task.description ?? ''))
       const root = firstDeliveryRoot(texts)
-      if (root === '' || !existsSync(root)) return
+      if (root === '') return
+      let rootExists = false
+      try {
+        rootExists = (await stat(root)).isDirectory()
+      } catch {
+        rootExists = false
+      }
+      if (!rootExists) return
       const graph = new GraphService({ projectRoot: root })
       const built = await graph.build()
       this.#notifySafe(

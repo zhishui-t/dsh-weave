@@ -43,6 +43,8 @@ export interface DefaultTaskLivenessProbeOptions {
   readIndex?: (file: string) => Record<string, SessionKeyIndexRecord> | undefined
 }
 
+// 注：本文件当前未接入生产装配（仅 recovery/测试引用），保留同步 fs；
+// 若未来接入 dsh 宿主进程，须改为 node:fs/promises（整索引 readFileSync 会阻塞事件循环）。
 function readAcpIndex(file: string): Record<string, SessionKeyIndexRecord> {
   try {
     if (!existsSync(file)) return {}

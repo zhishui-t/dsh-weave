@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 
 import { AnyDocConverterAdapter, WHITELIST_EXTENSIONS, type AnyDocLikeConverter } from '../knowledge/import-pipeline.js'
@@ -95,11 +95,19 @@ export class DocumentConverter {
   readonly #outputDir: string
   readonly #converter: AnyDocLikeConverter
   readonly #jobs = new Map<string, DocumentJobRecord>()
+  /** 输出目录惰性建立；构造函数不再做同步 mkdir。 */
+  #dirPromise: Promise<void> | undefined
 
   constructor(options: DocumentConverterOptions) {
     this.#outputDir = options.outputDir
     this.#converter = options.converter ?? new AnyDocConverterAdapter()
-    mkdirSync(this.#outputDir, { recursive: true })
+  }
+
+  #dirReady(): Promise<void> {
+    this.#dirPromise ??= (async () => {
+      await mkdir(this.#outputDir, { recursive: true })
+    })()
+    return this.#dirPromise
   }
 
   /**
@@ -107,8 +115,9 @@ export class DocumentConverter {
    * 调用方通过 status/preview 轮询或 waitFor 获取结果。
    */
   async convert(input: DocumentConvertInput): Promise<DocumentConvertResult> {
+    await this.#dirReady()
     const jobId = `doc_${randomUUID()}`
-    const prepared = this.#prepareInput(input, jobId)
+    const prepared = await this.#prepareInput(input, jobId)
     const now = new Date().toISOString()
     const job: DocumentJobRecord = {
       id: jobId,
@@ -208,7 +217,7 @@ export class DocumentConverter {
       })
       const markdown = output.markdown ?? ''
       const markdownPath = join(this.#outputDir, `${jobId}.md`)
-      writeFileSync(markdownPath, markdown, 'utf8')
+      await writeFile(markdownPath, markdown, 'utf8')
       job.status = 'done'
       job.progress = 1
       job.title = output.title.trim() !== '' ? output.title : stemOf(prepared.filename)
@@ -225,7 +234,7 @@ export class DocumentConverter {
     }
   }
 
-  #prepareInput(input: DocumentConvertInput, jobId: string): PreparedInput {
+  async #prepareInput(input: DocumentConvertInput, jobId: string): Promise<PreparedInput> {
     const hasData = typeof input.data === 'string' && input.data !== ''
     const file = typeof input.file === 'string' ? input.file.trim() : ''
 
@@ -241,7 +250,7 @@ export class DocumentConverter {
       }
       const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
       const filePath = join(this.#outputDir, `src-${jobId}-${safeName}`)
-      writeFileSync(filePath, raw)
+      await writeFile(filePath, raw)
       return { filePath, fileType, filename }
     }
 
@@ -255,7 +264,12 @@ export class DocumentConverter {
       ? input.filename.trim()
       : basename(file)
     const fileType = this.#whitelistedFileType(filename)
-    const bytes = statSync(file).size
+    let bytes: number
+    try {
+      bytes = (await stat(file)).size
+    } catch {
+      throw new WeaveError('invalid_argument', `文件不存在或不可读: ${file}`, { field: 'file' })
+    }
     if (bytes > MAX_INPUT_BYTES) {
       throw new WeaveError('invalid_argument', `文件超过大小上限（${MAX_INPUT_BYTES} bytes）`, { field: 'file', bytes })
     }

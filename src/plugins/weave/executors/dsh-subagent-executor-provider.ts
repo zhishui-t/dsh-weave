@@ -4,21 +4,24 @@ import type { ExecutorCapabilities, ExecutorProvider, ExecutorStartRequest, Exec
 import type { ExecutorChildPersistence } from './executor-child-store.js'
 import { readSessionEventBoundary, sliceSessionEvents } from './session-events-adapter.js'
 
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-/** 执行器复用调试日志：WEAVE_EXEC_DEBUG=1 时追加到 ~/.dsh/weave/exec-debug.log（排障用，失败静默）。 */
+/** 执行器复用调试日志：WEAVE_EXEC_DEBUG=1 时追加到 ~/.dsh/weave/exec-debug.log（排障用，失败静默）。
+ *  异步 fire-and-forget：每个执行器事件都可能打点，不得同步阻塞事件循环。 */
 function debugLog(event: string, detail: Record<string, unknown>): void {
   if (process.env.WEAVE_EXEC_DEBUG !== '1') return
-  try {
-    const dir = join(homedir(), '.dsh', 'weave')
-    mkdirSync(dir, { recursive: true })
-    appendFileSync(join(dir, 'exec-debug.log'), `${new Date().toISOString()} ${event} ${JSON.stringify(detail)}
+  void (async () => {
+    try {
+      const dir = join(homedir(), '.dsh', 'weave')
+      await mkdir(dir, { recursive: true })
+      await appendFile(join(dir, 'exec-debug.log'), `${new Date().toISOString()} ${event} ${JSON.stringify(detail)}
 `, 'utf-8')
-  } catch {
-    /* 调试日志失败不影响主链路 */
-  }
+    } catch {
+      /* 调试日志失败不影响主链路 */
+    }
+  })()
 }
 
 interface DshSubagentsContext {

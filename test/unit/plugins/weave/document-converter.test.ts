@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -45,6 +45,8 @@ function newConverter(overrides: { converter?: AnyDocLikeConverter } = {}): {
   const root = mkdtempSync(join(tmpdir(), 'weave-doc-conv-'))
   roots.push(root)
   const outputDir = join(root, 'imports')
+  // 构造函数不再同步建目录（惰性化不阻塞事件循环）；测试自带源文件需先建目录。
+  mkdirSync(outputDir, { recursive: true })
   const mock = new MockConverter()
   const converter = new DocumentConverter({ outputDir, converter: overrides.converter ?? mock })
   return { outputDir, converter, mock }
