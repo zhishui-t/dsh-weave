@@ -533,8 +533,8 @@ describe('AcpSessionProvider', () => {
         'utf8',
       )
       const { provider } = makeFixtures({ sessionIndexFile: indexFile })
-      expect(provider.isSessionKnown('changan:known:x')).toBe(true)
-      expect(provider.isSessionKnown('changan:nope:x')).toBe(false)
+      expect(await provider.isSessionKnown('changan:known:x')).toBe(true)
+      expect(await provider.isSessionKnown('changan:nope:x')).toBe(false)
     })
   })
 })

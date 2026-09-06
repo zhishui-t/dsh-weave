@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { Readable, Writable } from 'node:stream'
 
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
+import { SingleWriterQueue } from '../persistence/single-writer-queue.js'
 import { applyRuntimeIntents, BUILTIN_ACP_EXTENSIONS, negotiateExtensions, type AcpCapabilityApplication, type AcpExtensionCallContext, type AcpExtensionProbeInput, type AcpIntentKey, type AcpProviderExtension, type ExtensionNegotiationEntry } from './provider-extension.js'
 import type { ExecutorCapabilities, ExecutorProviderMetadata, ExecutorRun, ExecutorSessionConfig, ExecutorStartRequest } from '../executors/executor-provider.js'
 import type { DelegationRunLike } from '../scheduling/delegation-service.js'
@@ -237,11 +239,17 @@ function normalizeSessionKey(sessionKey: string | undefined): string | undefined
   return trimmed !== '' && trimmed !== 'undefined' ? trimmed : undefined
 }
 
+/**
+ * 索引文件的读改写串行队列：并发 session start 各自“读全量→合并→写全量”，
+ * 不串行会互相覆盖丢键。模块级——同一文件全局一份。
+ */
+const sessionIndexWriteQueue = new SingleWriterQueue()
+
 /** 读持久索引（best-effort：任何异常按无记录处理，绝不阻断委托）。 */
-function readSessionIndexFile(file: string | undefined, sessionKey: string): SessionKeyIndexRecord | undefined {
+async function readSessionIndexFile(file: string | undefined, sessionKey: string): Promise<SessionKeyIndexRecord | undefined> {
   if (!file) return undefined
   try {
-    const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
+    const raw = JSON.parse(await readFile(file, 'utf8')) as Partial<SessionKeyIndexFile>
     const record = raw?.keys?.[sessionKey]
     if (typeof record?.acpSid !== 'string' || record.acpSid === '') return undefined
     const clue = (value: unknown): string | undefined =>
@@ -258,53 +266,58 @@ function readSessionIndexFile(file: string | undefined, sessionKey: string): Ses
 }
 
 /**
- * 写持久索引（读改写合并；失败仅吞掉——别名库本身在桥接侧另有 durable 副本）。
+ * 写持久索引（读改写合并，经单写队列串行 + tmp/rename 原子落盘；
+ * 失败仅吞掉——别名库本身在桥接侧另有 durable 副本）。
  * `cwd` 是本次会话的 resume 线索：仅在该 sid 首次入索引时生效——同 sid 复写
  * 保留旧线索（会话真实创建工作区不随宿主 cwd 漂移），sid 变更（自愈新建）时
  * 旧线索整体作废、不得迁移。
  */
-function writeSessionIndexFile(file: string | undefined, sessionKey: string, acpSid: string, cwd?: string): void {
+async function writeSessionIndexFile(file: string | undefined, sessionKey: string, acpSid: string, cwd?: string): Promise<void> {
   if (!file) return
-  try {
-    mkdirSync(dirname(file), { recursive: true })
-    let base: SessionKeyIndexFile = { version: 1, keys: {} }
+  await sessionIndexWriteQueue.run(async () => {
     try {
-      const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<SessionKeyIndexFile>
-      if (raw && typeof raw === 'object' && raw.keys && typeof raw.keys === 'object') {
-        const cleaned: Record<string, SessionKeyIndexRecord> = {}
-        let dropped = 0
-        for (const [key, value] of Object.entries(raw.keys as Record<string, SessionKeyIndexRecord>)) {
-          const cleanKey = normalizeSessionKey(key)
-          if (cleanKey && value && typeof value.acpSid === 'string' && value.acpSid !== '') {
-            cleaned[cleanKey] = value
-          } else {
-            dropped += 1
+      await mkdir(dirname(file), { recursive: true })
+      let base: SessionKeyIndexFile = { version: 1, keys: {} }
+      try {
+        const raw = JSON.parse(await readFile(file, 'utf8')) as Partial<SessionKeyIndexFile>
+        if (raw && typeof raw === 'object' && raw.keys && typeof raw.keys === 'object') {
+          const cleaned: Record<string, SessionKeyIndexRecord> = {}
+          let dropped = 0
+          for (const [key, value] of Object.entries(raw.keys as Record<string, SessionKeyIndexRecord>)) {
+            const cleanKey = normalizeSessionKey(key)
+            if (cleanKey && value && typeof value.acpSid === 'string' && value.acpSid !== '') {
+              cleaned[cleanKey] = value
+            } else {
+              dropped += 1
+            }
           }
+          if (dropped > 0) {
+            console.warn(`[dsh-weave] acp-session-index: dropped ${dropped} invalid key(s) (legacy "undefined"/empty sessionKey) while rewriting`)
+          }
+          base = { version: 1, keys: cleaned }
         }
-        if (dropped > 0) {
-          console.warn(`[dsh-weave] acp-session-index: dropped ${dropped} invalid key(s) (legacy "undefined"/empty sessionKey) while rewriting`)
-        }
-        base = { version: 1, keys: cleaned }
+      } catch {
+        // 首次写或旧文件损坏：从空表起写。
       }
+      base.version = 1
+      const prior = base.keys[sessionKey]
+      const carried = prior?.acpSid === acpSid ? prior : undefined
+      // 同 sid：保留原创建 cwd（会话真实工作区不随宿主 cwd 漂移）；sid 变更/首次：
+      // 记录本次声明（新会话就是在当前 cwd 下创建的）。
+      const clueCwd = carried?.cwd ?? cwd
+      base.keys[sessionKey] = {
+        acpSid,
+        updatedAt: Date.now(),
+        ...(clueCwd !== undefined ? { cwd: clueCwd } : {}),
+        ...(carried?.zcodeSid !== undefined ? { zcodeSid: carried.zcodeSid } : {}),
+      }
+      const temp = `${file}.tmp`
+      await writeFile(temp, `${JSON.stringify(base, null, 2)}\n`, 'utf8')
+      await rename(temp, file)
     } catch {
-      // 首次写或旧文件损坏：从空表起写。
+      // 索引写失败不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
     }
-    base.version = 1
-    const prior = base.keys[sessionKey]
-    const carried = prior?.acpSid === acpSid ? prior : undefined
-    // 同 sid：保留原创建 cwd（会话真实工作区不随宿主 cwd 漂移）；sid 变更/首次：
-    // 记录本次声明（新会话就是在当前 cwd 下创建的）。
-    const clueCwd = carried?.cwd ?? cwd
-    base.keys[sessionKey] = {
-      acpSid,
-      updatedAt: Date.now(),
-      ...(clueCwd !== undefined ? { cwd: clueCwd } : {}),
-      ...(carried?.zcodeSid !== undefined ? { zcodeSid: carried.zcodeSid } : {}),
-    }
-    writeFileSync(file, `${JSON.stringify(base, null, 2)}\n`, 'utf8')
-  } catch {
-    // 索引写失败不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
-  }
+  })
 }
 
 interface StartOptions {
@@ -444,7 +457,7 @@ export class AcpSessionProvider {
     // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
     // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，
     // 已带 zcodeSid 的记录直达同一后端会话），不同 sessionKey 天然各得独立会话。
-    const indexed = readSessionIndexFile(this.#sessionIndexFile, sessionKey)
+    const indexed = await readSessionIndexFile(this.#sessionIndexFile, sessionKey)
     let sessionId =
       weave.resumeSessionId ??
       this.#sessions.get(sessionKey)?.sessionId ??
@@ -475,10 +488,10 @@ export class AcpSessionProvider {
         createdNewSession = true
       }
       this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
-      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
+      await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
     } else {
       // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键/线索缺失）。
-      writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
+      await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
     }
 
     const runId = `acp-${sessionId}`
@@ -595,11 +608,11 @@ export class AcpSessionProvider {
    * 会话是否已存在（当前连接已知，或持久索引有可恢复线索）。
    * 调度侧据此决定“首次真正创建会话才全量注入角色/纪律”，复用会话只注入任务段。
    */
-  isSessionKnown(sessionKey: string): boolean {
+  async isSessionKnown(sessionKey: string): Promise<boolean> {
     const normalized = normalizeSessionKey(sessionKey)
     if (normalized === undefined) return false
     if (this.#sessions.has(normalized)) return true
-    return readSessionIndexFile(this.#sessionIndexFile, normalized) !== undefined
+    return (await readSessionIndexFile(this.#sessionIndexFile, normalized)) !== undefined
   }
 
   /**
@@ -985,8 +998,8 @@ export class ZcodeAcpExecutorProvider {
   }
 
   /** 是否已有该 sessionKey 的可复用会话（供首次/复用注入决策）。 */
-  isSessionKnown(sessionKey: string): boolean {
-    return this.#provider.isSessionKnown(sessionKey)
+  async isSessionKnown(sessionKey: string): Promise<boolean> {
+    return await this.#provider.isSessionKnown(sessionKey)
   }
 
   /** 转发底层 ACP session/new 能力目录。 */

@@ -675,8 +675,8 @@ export class DelegationService {
       // Provider 能根据持久索引/连接状态判断会话是否已存在；无该方法时退回
       // 内存 Set（历史行为）。
       const sessionKnown =
-        typeof (provider as unknown as { isSessionKnown?: (key: string) => boolean } | undefined)?.isSessionKnown === 'function'
-          ? (provider as unknown as { isSessionKnown: (key: string) => boolean }).isSessionKnown(sessionKey)
+        typeof (provider as unknown as { isSessionKnown?: (key: string) => boolean | Promise<boolean> } | undefined)?.isSessionKnown === 'function'
+          ? await (provider as unknown as { isSessionKnown: (key: string) => boolean | Promise<boolean> }).isSessionKnown(sessionKey)
           : undefined
       const firstDispatch =
         sessionKnown === false || (sessionKnown === undefined && !this.#dispatchedSessionKeys.has(sessionKey))
