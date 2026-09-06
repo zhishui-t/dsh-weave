@@ -167,7 +167,7 @@ export type WeaveRpcDeps = Pick<CliMcpDeps, 'teamManager' | 'executorRegistry'> 
      * t8：providers.json 动态 ACP provider 存储（provider/list 与 settings.providers_file 用）。
      * 未注入时相应能力返回 configuration_error，UI 呈现明确空态。
      */
-    providerStore?: { list(): StoredProviderConfig[] } | (() => { list(): StoredProviderConfig[] } | undefined)
+    providerStore?: { list(): StoredProviderConfig[] | Promise<StoredProviderConfig[]> } | (() => { list(): StoredProviderConfig[] | Promise<StoredProviderConfig[]> } | undefined)
     /** ctx.llm 驱动：返回全局可用模型目录（provider -> models）。 */
     llmCatalog?: () => Promise<Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>>
   }
@@ -228,7 +228,7 @@ function serializeTeam(team: TeamConfig) {
  * - 错误统一走 failure()：WeaveError 映射业务 code，其余归 internal。
  */
 /** 解析可选 providerStore（实例或惰性工厂）；未注入返回 undefined。 */
-function resolvedProviderStore(deps: WeaveRpcDeps): { list(): StoredProviderConfig[] } | undefined {
+function resolvedProviderStore(deps: WeaveRpcDeps): { list(): StoredProviderConfig[] | Promise<StoredProviderConfig[]> } | undefined {
   const resolved = deps.providerStore
   if (resolved === undefined) return undefined
   return typeof resolved === 'function' ? resolved() ?? undefined : resolved
@@ -256,7 +256,7 @@ export function createWeaveRpcHandler(
         const thoughtOption = zcodeSessionConfig?.configOptions?.find((option) => option.id === 'thought')
         const currentMode = modeOption?.currentValue ?? zcodeSessionConfig?.modes?.currentModeId
         const modeOptions = modeOption?.options ?? zcodeSessionConfig?.modes?.availableModes?.map((mode) => ({ value: mode.id, name: mode.name }))
-        const teams = resolvedDeps.teamManager.listTeams().map(serializeTeam)
+        const teams = (await resolvedDeps.teamManager.listTeams()).map(serializeTeam)
         const executors = resolvedDeps.executorRegistry.list().map((executor) => {
           const provider = resolvedDeps.executorProviders?.resolve(executor.id)
           return {
@@ -312,13 +312,13 @@ export function createWeaveRpcHandler(
         if (yaml.trim() === '') {
           throw new WeaveError('invalid_argument', 'team/import 需要 yaml 文本或 config 对象')
         }
-        const team = resolvedDeps.teamManager.importTeam(yaml, { overwrite: input.overwrite === true })
+        const team = await resolvedDeps.teamManager.importTeam(yaml, { overwrite: input.overwrite === true })
         return success({ team_id: team.team_id, name: team.name, roles: team.roles.length })
       }
 
       if (endpoint === 'team/list') {
         objectPayload(payload)
-        return success({ teams: resolvedDeps.teamManager.listTeams().map(serializeTeam) })
+        return success({ teams: (await resolvedDeps.teamManager.listTeams()).map(serializeTeam) })
       }
 
       if (endpoint === 'team/current') {
@@ -336,7 +336,7 @@ export function createWeaveRpcHandler(
       if (endpoint === 'team/set-default') {
         const input = objectPayload(payload)
         const teamId = requireString(input, 'teamId')
-        return success(resolvedDeps.teamManager.setDefaultTeam(teamId))
+        return success(await resolvedDeps.teamManager.setDefaultTeam(teamId))
       }
 
       if (endpoint === 'executor/run-events') {
@@ -417,7 +417,7 @@ export function createWeaveRpcHandler(
       if (endpoint === 'team/get') {
         const input = objectPayload(payload)
         const teamId = requireString(input, 'teamId')
-        return success(serializeTeam(resolvedDeps.teamManager.loadTeam(teamId)))
+        return success(serializeTeam(await resolvedDeps.teamManager.loadTeam(teamId)))
       }
 
       if (endpoint === 'team/delete') {
@@ -431,7 +431,7 @@ export function createWeaveRpcHandler(
         const input = objectPayload(payload)
         const sessionId = requireString(input, 'sessionId')
         const teamId = requireString(input, 'teamId')
-        resolvedDeps.teamManager.loadTeam(teamId) // 绑定前校验团队存在且可用（invalid_team / executor_unavailable 冒泡）
+        await resolvedDeps.teamManager.loadTeam(teamId) // 绑定前校验团队存在且可用（invalid_team / executor_unavailable 冒泡）
         await resolvedDeps.teamManager.bindTeam(sessionId, teamId)
         return success({ session_id: sessionId, team_id: teamId })
       }
@@ -517,7 +517,7 @@ export function createWeaveRpcHandler(
         if (typeof input.teamId !== 'string' || input.teamId.trim() === '') {
           throw new WeaveError('invalid_argument', 'teamId 必须为非空字符串或 null（清除选择）')
         }
-        resolvedDeps.teamManager.loadTeam(input.teamId) // 启用前校验团队存在且可用（invalid_team/executor_unavailable 冒泡）
+        await resolvedDeps.teamManager.loadTeam(input.teamId) // 启用前校验团队存在且可用（invalid_team/executor_unavailable 冒泡）
         await resolvedDeps.teamManager.bindTeam(sessionId, input.teamId)
         return success({ session_id: sessionId, enabled: true, team_id: input.teamId })
       }
@@ -568,7 +568,7 @@ export function createWeaveRpcHandler(
         if (!store) {
           throw new WeaveError('configuration_error', 'providerStore 未注入（provider/list 不可用）')
         }
-        const providers = store.list().map((config: StoredProviderConfig) => {
+        const providers = (await store.list()).map((config: StoredProviderConfig) => {
           let enabled = false
           try {
             enabled = resolvedDeps.executorRegistry?.get(config.name) !== undefined

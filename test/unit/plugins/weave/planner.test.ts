@@ -39,11 +39,11 @@ let persistence: WeavePersistence
 let manager: TeamManager
 let planner: TeamPlanner
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'weave-planner-'))
   persistence = new WeavePersistence({ inMemory: true })
   manager = new TeamManager(lookup, { teamsDir: dir, persistence })
-  manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+  await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
   planner = new TeamPlanner({ persistence, teamManager: manager })
 })
 
@@ -92,7 +92,7 @@ describe('TeamPlanner.plan', () => {
   })
 
   it('多团队且无默认且未绑定 → invalid_team 并给出启用指引', async () => {
-    manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
+    await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
     await expect(planner.plan({
       session_id: 'nobody',
       tasks: [{ description: 'x', assignee: 'coder' }],
@@ -231,7 +231,7 @@ describe('TeamPlanner.plan 追加模式（doc/05 §6.1 P1-A）', () => {
     })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringContaining('不存在') })
 
     const first = await planner.plan({ session_id: 'sess-1', tasks: [{ description: '一', assignee: 'coder' }] })
-    manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
+    await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM, team_id: 'beta', default: false }), { overwrite: true })
     await manager.bindTeam('sess-beta', 'beta')
     await expect(planner.plan({
       session_id: 'sess-beta',

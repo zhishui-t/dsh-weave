@@ -239,20 +239,20 @@ describe('意图应用 applyRuntimeIntents / zcode.apply', () => {
 })
 
 describe('providers.json 存储与入参解析', () => {
-  it('add/list/remove/upsert 真实落盘；损坏文件按空库降级', () => {
+  it('add/list/remove/upsert 真实落盘；损坏文件按空库降级', async () => {
     const root = tmpRoot()
     const store = new ProviderStore({ file: join(root, 'weave', 'providers.json') })
-    expect(store.list()).toEqual([])
+    expect(await store.list()).toEqual([])
     const cfg = parseProviderInput({ name: 'a1', transport: 'stdio', command: 'node', protocol: 'acp', args: ['x.js'], declaredExtensions: ['zcode'] })
-    store.add(cfg)
-    store.add(parseProviderInput('name=a2 command=node transport=stdio protocol=acp'))
-    store.add(parseProviderInput({ name: 'a1', transport: 'stdio', command: 'node2', protocol: 'acp' }))
-    expect(store.list().map((c) => `${c.name}:${c.command}`)).toEqual(['a2:node', 'a1:node2'])
+    await store.add(cfg)
+    await store.add(parseProviderInput('name=a2 command=node transport=stdio protocol=acp'))
+    await store.add(parseProviderInput({ name: 'a1', transport: 'stdio', command: 'node2', protocol: 'acp' }))
+    expect((await store.list()).map((c) => `${c.name}:${c.command}`)).toEqual(['a2:node', 'a1:node2'])
     expect(existsSync(store.file)).toBe(true)
     expect(JSON.parse(readFileSync(store.file, 'utf8')).version).toBe(1)
-    expect(store.remove('a2')).toBe(true)
-    expect(store.remove('ghost')).toBe(false)
-    expect(store.get('a1')?.command).toBe('node2')
+    expect(await store.remove('a2')).toBe(true)
+    expect(await store.remove('ghost')).toBe(false)
+    expect((await store.get('a1'))?.command).toBe('node2')
   })
 
   it('校验矩阵：非法字段逐一 invalid_argument', () => {
@@ -286,8 +286,8 @@ describe('providers.json 存储与入参解析', () => {
     expect(json.name).toBe('j1')
   })
 
-  it('parseProviderInputs：支持数组、providers/servers/mcpServers、env 数组与缺省 transport/protocol', () => {
-    const arr = parseProviderInputs([
+  it('parseProviderInputs：支持数组、providers/servers/mcpServers、env 数组与缺省 transport/protocol', async () => {
+    const arr = await parseProviderInputs([
       { name: 'm1', command: 'node', args: ['a.js'] },
       { name: 'm2', command: 'python', args: ['b.py'] },
     ])
@@ -295,11 +295,11 @@ describe('providers.json 存储与入参解析', () => {
     expect(arr[0]?.transport).toBe('stdio')
     expect(arr[0]?.protocol).toBe('acp')
 
-    const providers = parseProviderInputs('{"providers":[{"name":"p1","command":"node","args":["x.js"]}]}')
+    const providers = await parseProviderInputs('{"providers":[{"name":"p1","command":"node","args":["x.js"]}]}')
     expect(providers).toHaveLength(1)
     expect(providers[0]?.name).toBe('p1')
 
-    const mcp = parseProviderInputs({
+    const mcp = await parseProviderInputs({
       mcpServers: [
         {
           name: 'acp-tool',
@@ -313,56 +313,56 @@ describe('providers.json 存储与入参解析', () => {
     expect(mcp[0]?.command).toBe('/usr/bin/acp-tool')
     expect(mcp[0]?.env).toEqual({ TOKEN: 'secret', MODE: 'x' })
 
-    const idFallback = parseProviderInputs('{"servers":[{"id":"fallback-agent","command":"npx","args":["agent.js"]}]}')
+    const idFallback = await parseProviderInputs('{"servers":[{"id":"fallback-agent","command":"npx","args":["agent.js"]}]}')
     expect(idFallback[0]?.name).toBe('fallback-agent')
 
-    const objectMap = parseProviderInputs({ servers: { 'map-agent': { command: 'node', args: ['m.js'] } } })
+    const objectMap = await parseProviderInputs({ servers: { 'map-agent': { command: 'node', args: ['m.js'] } } })
     expect(objectMap[0]?.name).toBe('map-agent')
     expect(objectMap[0]?.args).toEqual(['m.js'])
 
-    const yaml = parseProviderInputs('name: yaml-agent\ncommand: node\nargs:\n  - y.js\nextensions:\n  - zcode')
+    const yaml = await parseProviderInputs('name: yaml-agent\ncommand: node\nargs:\n  - y.js\nextensions:\n  - zcode')
     expect(yaml[0]?.name).toBe('yaml-agent')
     expect(yaml[0]?.args).toEqual(['y.js'])
     expect(yaml[0]?.declaredExtensions).toEqual(['zcode'])
 
-    const fenced = parseProviderInputs('```yaml\nname: fenced-agent\ncommand: node\nargs: f.js\n```')
+    const fenced = await parseProviderInputs('```yaml\nname: fenced-agent\ncommand: node\nargs: f.js\n```')
     expect(fenced[0]?.name).toBe('fenced-agent')
     expect(fenced[0]?.args).toEqual(['f.js'])
 
-    const loose = parseProviderInputs('Some ACP protocol doc\nname = loose-agent\ncommand = npx\nargs = --serve,--port 8080\nextensions = zcode')
+    const loose = await parseProviderInputs('Some ACP protocol doc\nname = loose-agent\ncommand = npx\nargs = --serve,--port 8080\nextensions = zcode')
     expect(loose[0]?.name).toBe('loose-agent')
     expect(loose[0]?.args).toEqual(['--serve', '--port', '8080'])
     expect(loose[0]?.declaredExtensions).toEqual(['zcode'])
 
-    const singleLine = parseProviderInputs('name: single-agent command: node args: s.js extensions: zcode')
+    const singleLine = await parseProviderInputs('name: single-agent command: node args: s.js extensions: zcode')
     expect(singleLine[0]?.name).toBe('single-agent')
     expect(singleLine[0]?.args).toEqual(['s.js'])
     expect(singleLine[0]?.declaredExtensions).toEqual(['zcode'])
 
-    const withAddPrefix = parseProviderInputs('provider add {"name":"prefix-agent","command":"node"}')
+    const withAddPrefix = await parseProviderInputs('provider add {"name":"prefix-agent","command":"node"}')
     expect(withAddPrefix[0]?.name).toBe('prefix-agent')
-    const withBareAdd = parseProviderInputs('add {"name":"bare-add-agent","command":"node"}')
+    const withBareAdd = await parseProviderInputs('add {"name":"bare-add-agent","command":"node"}')
     expect(withBareAdd[0]?.name).toBe('bare-add-agent')
 
-    expect(() => parseProviderInputs([])).toThrowError(/不能为空/)
-    expect(() => parseProviderInputs({ providers: [] })).toThrowError(/不能为空/)
+    await expect(parseProviderInputs([])).rejects.toThrowError(/不能为空/)
+    await expect(parseProviderInputs({ providers: [] })).rejects.toThrowError(/不能为空/)
   })
 })
 
 describe('registerStoredAcpProviders 生命周期', () => {
-  function makeLifecycleEnv() {
+  async function makeLifecycleEnv() {
     const root = tmpRoot()
     const store = new ProviderStore({ file: join(root, 'providers.json') })
-    store.add({ name: 'p1', transport: 'stdio', command: 'node', protocol: 'acp' })
-    store.add({ name: 'p2', transport: 'stdio', command: 'node', protocol: 'acp' })
+    await store.add({ name: 'p1', transport: 'stdio', command: 'node', protocol: 'acp' })
+    await store.add({ name: 'p2', transport: 'stdio', command: 'node', protocol: 'acp' })
     const lowLevelCalls: string[] = []
     const wrapperCalls: string[] = []
     return { root, store, lowLevelCalls, wrapperCalls }
   }
 
-  it('按 provider 名隔离 disposers，remove 一个不影响另一个', () => {
-    const env = makeLifecycleEnv()
-    const result = registerStoredAcpProviders({
+  it('按 provider 名隔离 disposers，remove 一个不影响另一个', async () => {
+    const env = await makeLifecycleEnv()
+    const result = await registerStoredAcpProviders({
       providersFile: join(env.root, 'providers.json'),
       subagents: { registerProvider: (provider) => {
         const name = (provider as { name: string }).name
@@ -389,9 +389,9 @@ describe('registerStoredAcpProviders 生命周期', () => {
     expect(env.lowLevelCalls).not.toContain('dispose-p2')
   })
 
-  it('registry 注册失败时回滚低层 provider，且不误报成功', () => {
-    const env = makeLifecycleEnv()
-    const result = registerStoredAcpProviders({
+  it('registry 注册失败时回滚低层 provider，且不误报成功', async () => {
+    const env = await makeLifecycleEnv()
+    const result = await registerStoredAcpProviders({
       providersFile: join(env.root, 'providers.json'),
       names: ['p1'],
       subagents: { registerProvider: (provider) => {
@@ -428,12 +428,12 @@ describe('/weave provider add/list/remove 命令', () => {
     const ok = await add.handler('{"name":"agent7","transport":"stdio","command":"node","args":["a.js"],"protocol":"acp","declaredExtensions":["zcode"]}')
     expect(ok.kind).toBe('success')
     expect(ok.text).toContain('已注册执行器 agent7')
-    expect(env.store.get('agent7')?.declaredExtensions).toEqual(['zcode'])
+    expect((await env.store.get('agent7'))?.declaredExtensions).toEqual(['zcode'])
     expect(env.hotCalls).toContain('agent7')
 
     const bad = await add.handler('{ broken')
     expect(bad.kind).toBe('error')
-    expect(env.store.get('agent8')).toBeUndefined()
+    expect(await env.store.get('agent8')).toBeUndefined()
   })
 
   it('add-provider：JSON 数组与 mcpServers 协议可一次注册多个', async () => {
@@ -445,13 +445,13 @@ describe('/weave provider add/list/remove 命令', () => {
     expect(ok.kind).toBe('success')
     expect(ok.text).toContain('已注册执行器 alpha')
     expect(ok.text).toContain('已注册执行器 beta')
-    expect(env.store.get('alpha')?.command).toBe('node')
-    expect(env.store.get('beta')?.env).toEqual({ K: 'v' })
+    expect((await env.store.get('alpha'))?.command).toBe('node')
+    expect((await env.store.get('beta'))?.env).toEqual({ K: 'v' })
     expect(env.hotCalls).toEqual(['alpha', 'beta'])
 
     const arr = await add.handler('[{"name":"gamma","command":"deno","args":["g.ts"]}]')
     expect(arr.kind).toBe('success')
-    expect(env.store.get('gamma')?.args).toEqual(['g.ts'])
+    expect((await env.store.get('gamma'))?.args).toEqual(['g.ts'])
   })
 
   it('add-provider：真实 ZCode JSON 命令可保存，且容忍 add/provider add 前缀', async () => {
@@ -460,12 +460,12 @@ describe('/weave provider add/list/remove 命令', () => {
     const raw = '{"name":"zcode","transport":"stdio","command":"node","args":["C:/work/project/weave/node_modules/zcode-acp-server/dist/index.js"],"env":{"ZCODE_BIN":"D:/Program Files/ZCode/resources/glm/zcode.cjs","ZCODE_NODE":"C:/Program Files/nodejs/node.exe"},"protocol":"acp","declaredExtensions":["zcode"]}'
     const ok = await add.handler(raw)
     expect(ok.kind).toBe('success')
-    expect(env.store.get('zcode')?.declaredExtensions).toEqual(['zcode'])
-    expect(env.store.get('zcode')?.args).toEqual(['C:/work/project/weave/node_modules/zcode-acp-server/dist/index.js'])
+    expect((await env.store.get('zcode'))?.declaredExtensions).toEqual(['zcode'])
+    expect((await env.store.get('zcode'))?.args).toEqual(['C:/work/project/weave/node_modules/zcode-acp-server/dist/index.js'])
 
     const prefixed = await add.handler(`provider add ${raw}`)
     expect(prefixed.kind).toBe('success')
-    expect(env.store.get('zcode')?.command).toBe('node')
+    expect((await env.store.get('zcode'))?.command).toBe('node')
   })
 
   it('list/remove 子命令；remove 未知名报错', async () => {
@@ -486,6 +486,6 @@ describe('/weave provider add/list/remove 命令', () => {
 
     const removed = await manage.handler('remove p9')
     expect(removed.kind).toBe('success')
-    expect(env.store.list()).toHaveLength(0)
+    expect(await env.store.list()).toHaveLength(0)
   })
 })

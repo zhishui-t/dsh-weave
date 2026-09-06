@@ -160,7 +160,7 @@ export class WeaveMcp {
 
   /** weave_team_list：可用团队列表（按文件名排序）。 */
   async teamList(): Promise<{ teams: Array<{ team_id: string; name: string; default: boolean; roles: string[] }> }> {
-    const teams = this.#deps.teamManager.listTeams()
+    const teams = await this.#deps.teamManager.listTeams()
     return {
       teams: teams.map((t) => ({
         team_id: t.team_id,
@@ -173,7 +173,7 @@ export class WeaveMcp {
 
   /** weave_team_switch：校验并持久化会话绑定（team_bindings，ME-4）。 */
   async teamSwitch(input: { team_id: string; session_id?: string }): Promise<{ session_id: string; team_id: string }> {
-    this.#deps.teamManager.loadTeam(input.team_id) // 不存在 → invalid_team
+    await this.#deps.teamManager.loadTeam(input.team_id) // 不存在 → invalid_team
     await this.#deps.teamManager.bindTeam(input.session_id ?? 'cli-session', input.team_id)
     return { session_id: input.session_id ?? 'cli-session', team_id: input.team_id }
   }

@@ -788,7 +788,13 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   const obsidianRoot = options.obsidianDir ?? join(homedir(), '.dsh', 'obsidian')
   return {
     persistence,
-    teamManager: new TeamManager(registry, { teamsDir, persistence }),
+    teamManager: new TeamManager(registry, {
+      teamsDir,
+      persistence,
+      // pre-step（每条用户消息）与 Team Tab 1s 心跳都会解析团队；1s 缓存把
+      // 目录扫描+逐 YAML 读取合并为一次，import/delete/setDefault 写后立即失效。
+      cacheTtlMs: 1000,
+    }),
     executorRegistry: registry,
     feedbackRouter: router,
     dagRepository: new DagRepository(persistence, { statusNotifier, audit }),

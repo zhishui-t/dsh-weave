@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -222,7 +222,7 @@ function tryExtractProviderText(text: string): Record<string, unknown> | undefin
 }
 
 /** 解析多 provider 输入：单对象、JSON 数组、或 `{providers|servers|mcpServers:[]}`，也支持 YAML/文件路径。 */
-export function parseProviderInputs(raw: string | unknown): StoredProviderConfig[] {
+export async function parseProviderInputs(raw: string | unknown): Promise<StoredProviderConfig[]> {
   if (typeof raw !== 'string') {
     return normalizeProviderCandidates(raw)
   }
@@ -241,11 +241,12 @@ export function parseProviderInputs(raw: string | unknown): StoredProviderConfig
   }
   const fenceMatch = trimmed.match(/```(?:json|yaml|yml)?\s*\n([\s\S]*?)\n```/)
   if (fenceMatch?.[1]) {
-    return parseProviderInputs(fenceMatch[1].trim())
+    return await parseProviderInputs(fenceMatch[1].trim())
   }
-  if (existsSync(trimmed)) {
-    const content = readFileSync(trimmed, 'utf8')
-    return parseProviderInputs(content)
+  // 输入恰好是现存文件路径时按文件内容解析（异步读取，失败回落到文本解析分支）。
+  const fileContent = await readFile(trimmed, 'utf8').catch(() => null)
+  if (fileContent !== null) {
+    return await parseProviderInputs(fileContent)
   }
   const yamlCandidate = looksLikeYaml(trimmed)
   if (yamlCandidate) {
@@ -403,10 +404,15 @@ export class ProviderStore {
     this.file = options.file ?? DEFAULT_PROVIDERS_FILE
   }
 
-  list(): StoredProviderConfig[] {
-    if (!readSafe(this.file)) return []
+  async list(): Promise<StoredProviderConfig[]> {
+    let raw: string
     try {
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
+      raw = await readFile(this.file, 'utf8')
+    } catch {
+      return []
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return []
       const providers = (parsed as { providers?: unknown }).providers
       if (!Array.isArray(providers)) return []
@@ -420,42 +426,33 @@ export class ProviderStore {
     }
   }
 
-  get(name: string): StoredProviderConfig | undefined {
-    return this.list().find((item) => item.name === name)
+  async get(name: string): Promise<StoredProviderConfig | undefined> {
+    return (await this.list()).find((item) => item.name === name)
   }
 
-  add(config: StoredProviderConfig): StoredProviderConfig {
+  async add(config: StoredProviderConfig): Promise<StoredProviderConfig> {
     const normalized = validateProviderConfig(config)
-    const providers = this.list().filter((item) => item.name !== normalized.name)
+    const providers = (await this.list()).filter((item) => item.name !== normalized.name)
     providers.push(normalized)
-    this.#write(providers)
+    await this.#write(providers)
     return normalized
   }
 
-  remove(name: string): boolean {
-    const providers = this.list()
+  async remove(name: string): Promise<boolean> {
+    const providers = await this.list()
     const next = providers.filter((item) => item.name !== name)
     if (next.length === providers.length) return false
-    this.#write(next)
+    await this.#write(next)
     return true
   }
 
-  #write(providers: StoredProviderConfig[]): void {
-    mkdirSync(dirname(this.file), { recursive: true })
-    writeFileSync(this.file, `${JSON.stringify({ version: 1, providers }, null, 2)}\n`, 'utf8')
-  }
-}
-
-function readSafe(file: string): boolean {
-  try {
-    readFileSync(file)
-    return true
-  } catch {
-    return false
+  async #write(providers: StoredProviderConfig[]): Promise<void> {
+    await mkdir(dirname(this.file), { recursive: true })
+    await writeFile(this.file, `${JSON.stringify({ version: 1, providers }, null, 2)}\n`, 'utf8')
   }
 }
 
 /** 测试辅助：清掉临时文件。 */
-export function removeProviderFile(file: string): void {
-  rmSync(file, { force: true })
+export function removeProviderFile(file: string): Promise<void> {
+  return rm(file, { force: true })
 }

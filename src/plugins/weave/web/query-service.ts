@@ -784,7 +784,7 @@ export class WeaveQueryService {
     const p = asPayload(input)
     const sessionId = requireString(p, 'sessionId', 'session_id')
     const teamId = requireString(p, 'teamId', 'team_id')
-    this.teamManager.loadTeam(teamId) // 不存在 → invalid_team 冒泡
+    await this.teamManager.loadTeam(teamId) // 不存在 → invalid_team 冒泡
     await this.teamManager.bindTeam(sessionId, teamId)
     return { session_id: sessionId, team_id: teamId }
   }

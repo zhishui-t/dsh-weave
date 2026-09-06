@@ -36,19 +36,25 @@ export function createExecutorLayer(options: ExecutorLayerOptions): ExecutorLaye
       childrenStore: new ExecutorChildStore(deps.persistence.core),
     })
     target.executorProviders = executorProviders
-    const storedProviders = registerStoredAcpProviders({
-      providersFile,
-      ...acpRegistryContextFrom(runtime),
-      registry: executorProviders,
-    })
-    for (const name of storedProviders.registered) {
-      dynamicProviderDisposers.set(name, storedProviders.disposersByName[name] ?? [])
-    }
-    runtime.effect(() => () => {
-      for (const disposers of dynamicProviderDisposers.values()) {
-        for (const dispose of disposers) dispose()
+    // 启动注册改为异步续体：providers.json 读取不再阻塞宿主事件循环；
+    // 失败只降级（配置已持久化，重启后仍会加载）。
+    void (async () => {
+      const storedProviders = await registerStoredAcpProviders({
+        providersFile,
+        ...acpRegistryContextFrom(runtime),
+        registry: executorProviders,
+      })
+      for (const name of storedProviders.registered) {
+        dynamicProviderDisposers.set(name, storedProviders.disposersByName[name] ?? [])
       }
-    }, 'dsh-weave dynamic provider lifecycle')
+      runtime.effect(() => () => {
+        for (const disposers of dynamicProviderDisposers.values()) {
+          for (const dispose of disposers) dispose()
+        }
+      }, 'dsh-weave dynamic provider lifecycle')
+    })().catch((error) => {
+      console.warn('[dsh-weave] stored provider registration failed:', error)
+    })
   } catch (error) {
     console.warn('[dsh-weave] executor provider registration failed:', error)
   }
@@ -61,8 +67,8 @@ export function createExecutorLayer(options: ExecutorLayerOptions): ExecutorLaye
 
   const providerCommands = createWeaveProviderCommandDefinitions({
     providersFile,
-    hotRegister: (config) => {
-      const result = registerStoredAcpProviders({
+    hotRegister: async (config) => {
+      const result = await registerStoredAcpProviders({
         providersFile,
         ...acpRegistryContextFrom(runtime),
         registry: executorProviders,

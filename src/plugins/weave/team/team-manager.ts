@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
@@ -112,8 +112,16 @@ export interface TeamManagerOptions {
   /**
    * ACP provider 清单来源（备用模型同执行器校验用）；缺省读本机
    * ~/.dsh/weave/providers.json。清单为空/不可读时跳过该校验（降级不误杀）。
+   * 兼容同步与异步 list（异步读取不阻塞宿主事件循环）。
    */
-  acpProviders?: { list(): Array<{ name: string }> }
+  acpProviders?: { list(): Array<{ name: string }> | Promise<Array<{ name: string }>> }
+  /**
+   * 团队配置读取缓存 TTL（毫秒）：listTeams/loadTeam 在窗口内复用已解析结果，
+   * 写操作（import/delete/setDefault）立即失效。0 = 关闭（默认，测试保持读盘即时性）。
+   * 生产接线建议 1000：pre-step 钩子（每条用户消息）与 Team Tab 1s 心跳
+   * 都会触发团队解析，缓存把每秒的目录扫描+逐文件读合并成一次。
+   */
+  cacheTtlMs?: number
 }
 
 export const DEFAULT_TEAMS_DIR = join(homedir(), '.dsh', 'teams')
@@ -163,8 +171,12 @@ function asStringArray(value: unknown, field: string): string[] {
 export class TeamManager {
   readonly teamsDir: string
   readonly persistence?: WeavePersistence
-  readonly #acpProviders: { list(): Array<{ name: string }> }
+  readonly #acpProviders: { list(): Array<{ name: string }> | Promise<Array<{ name: string }>> }
   #bindingsReady = false
+  readonly #cacheTtlMs: number
+  #cacheAt = 0
+  #cacheList: TeamConfig[] | undefined
+  readonly #cacheById = new Map<string, TeamConfig>()
 
   constructor(
     private readonly lookup: ExecutorLookup,
@@ -173,6 +185,18 @@ export class TeamManager {
     this.teamsDir = options.teamsDir ?? DEFAULT_TEAMS_DIR
     this.persistence = options.persistence
     this.#acpProviders = options.acpProviders ?? new ProviderStore()
+    this.#cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 0)
+  }
+
+  /** 缓存仅在读路径生效；时间戳只由 listTeams 全量重建推进。 */
+  #cacheFresh(): boolean {
+    return this.#cacheTtlMs > 0 && Date.now() - this.#cacheAt < this.#cacheTtlMs
+  }
+
+  #invalidateTeamCache(): void {
+    this.#cacheAt = 0
+    this.#cacheList = undefined
+    this.#cacheById.clear()
   }
 
   /** 团队配置文件的规范路径：{teamsDir}/{team_id}.yaml */
@@ -273,7 +297,7 @@ export class TeamManager {
    * @throws WeaveError('executor_unavailable') 角色绑定执行器未注册
    * @throws WeaveError('invalid_team') 其余校验项失败
    */
-  validateTeam(team: TeamConfig, lookup: ExecutorLookup = this.lookup): TeamConfig {
+  async validateTeam(team: TeamConfig, lookup: ExecutorLookup = this.lookup): Promise<TeamConfig> {
     const seen = new Set<string>()
     for (const role of team.roles) {
       if (seen.has(role.id)) {
@@ -316,7 +340,7 @@ export class TeamManager {
       // 与执行器注册检查同一降级哲学：清单波动不得让团队从 listTeams 消失。
       if (role.fallback_provider !== undefined) {
         const kind = lookup.get(role.executor)?.kind ?? classifyProvider(role.executor)
-        const acpNames = this.#acpProviders.list().map((item) => item.name)
+        const acpNames = (await this.#acpProviders.list()).map((item) => item.name)
         if (acpNames.length > 0) {
           const isAcpProvider = acpNames.includes(role.fallback_provider)
           if (kind === 'acp' && !isAcpProvider) {
@@ -363,11 +387,15 @@ export class TeamManager {
   }
 
   /** 读取并校验单个团队（校验失败抛 invalid_team / executor_unavailable）。 */
-  loadTeam(teamId: string): TeamConfig {
+  async loadTeam(teamId: string): Promise<TeamConfig> {
+    if (this.#cacheFresh()) {
+      const cached = this.#cacheById.get(teamId)
+      if (cached) return cached
+    }
     const file = this.teamFile(teamId)
     let raw: string
     try {
-      raw = readFileSync(file, 'utf8')
+      raw = await readFile(file, 'utf8')
     } catch {
       throw new WeaveError('invalid_team', `未找到团队配置: ${file}`, { teamId })
     }
@@ -378,17 +406,20 @@ export class TeamManager {
         declared: team.team_id,
       })
     }
-    return this.validateTeam(team)
+    const validated = await this.validateTeam(team)
+    if (this.#cacheFresh()) this.#cacheById.set(teamId, validated)
+    return validated
   }
 
   /**
    * 全部可用团队（按文件名排序）。
    * 仅返回校验通过的团队；单个团队的具体错误用 loadTeam 诊断。
    */
-  listTeams(): TeamConfig[] {
+  async listTeams(): Promise<TeamConfig[]> {
+    if (this.#cacheFresh() && this.#cacheList) return this.#cacheList
     let files: string[]
     try {
-      files = readdirSync(this.teamsDir)
+      files = await readdir(this.teamsDir)
     } catch {
       return []
     }
@@ -396,10 +427,16 @@ export class TeamManager {
     for (const file of files.filter((f) => f.endsWith('.yaml')).sort()) {
       const teamId = file.slice(0, -'.yaml'.length)
       try {
-        teams.push(this.loadTeam(teamId))
+        teams.push(await this.loadTeam(teamId))
       } catch {
         // 非法团队不进入调度（TDD §1.5.1：非法团队直接加载失败）
       }
+    }
+    if (this.#cacheTtlMs > 0) {
+      this.#cacheAt = Date.now()
+      this.#cacheList = teams
+      this.#cacheById.clear()
+      for (const team of teams) this.#cacheById.set(team.team_id, team)
     }
     return teams
   }
@@ -408,27 +445,28 @@ export class TeamManager {
    * 校验并持久化团队 YAML。用于 Web/CLI 导入：先完整解析与语义校验，
    * 再落盘，避免把不可用团队写入调度目录。
    */
-  importTeam(raw: string, options: { overwrite?: boolean } = {}): TeamConfig {
-    const team = this.validateTeam(this.parseTeam(raw, 'inline'))
+  async importTeam(raw: string, options: { overwrite?: boolean } = {}): Promise<TeamConfig> {
+    const team = await this.validateTeam(this.parseTeam(raw, 'inline'))
     if (!TEAM_ID_PATTERN.test(team.team_id)) {
       throw new WeaveError('invalid_team', `team_id 含非法字符: ${team.team_id}`, { teamId: team.team_id })
     }
 
     const file = this.teamFile(team.team_id)
-    if (!options.overwrite && existsSync(file)) {
+    if (!options.overwrite && (await readFile(file, 'utf8').then(() => true, () => false))) {
       throw new WeaveError('conflict', `团队已存在: ${team.team_id}`, { teamId: team.team_id })
     }
 
     try {
-      mkdirSync(this.teamsDir, { recursive: true })
+      await mkdir(this.teamsDir, { recursive: true })
       // 保留原始 YAML（含 schema_version 与注释）；parse/validate 已确认其结构安全。
-      writeFileSync(file, raw, { encoding: 'utf8', flag: 'w' })
+      await writeFile(file, raw, { encoding: 'utf8', flag: 'w' })
     } catch (error) {
       throw new WeaveError('configuration_error', `团队配置写入失败: ${file}`, {
         teamId: team.team_id,
         cause: String(error),
       })
     }
+    this.#invalidateTeamCache()
     return team
   }
 
@@ -442,27 +480,27 @@ export class TeamManager {
    *   （changan.yaml 等手工调优文件不受损；importTeam 的整文件重写做不到这点）；
    * - 缺行时插入到头部元信息之后；写后 parse 校验翻转结果，失败即抛不落盘。
    */
-  setDefaultTeam(teamId: string): { team_id: string; flipped: string[] } {
-    const target = this.loadTeam(teamId) // invalid_team / executor_unavailable 冒泡
+  async setDefaultTeam(teamId: string): Promise<{ team_id: string; flipped: string[] }> {
+    const target = await this.loadTeam(teamId) // invalid_team / executor_unavailable 冒泡
     const flipped: string[] = []
-    for (const other of this.listTeams()) {
+    for (const other of await this.listTeams()) {
       if (other.team_id !== teamId && other.default === true) {
-        this.#writeDefaultFlag(other.team_id, false)
+        await this.#writeDefaultFlag(other.team_id, false)
         flipped.push(other.team_id)
       }
     }
     if (target.default !== true) {
-      this.#writeDefaultFlag(teamId, true)
+      await this.#writeDefaultFlag(teamId, true)
     }
     return { team_id: teamId, flipped }
   }
 
   /** 改写单个团队 YAML 的顶层 default 标记；写前解析自检，异常即抛不落盘。 */
-  #writeDefaultFlag(teamId: string, value: boolean): void {
+  async #writeDefaultFlag(teamId: string, value: boolean): Promise<void> {
     const file = this.teamFile(teamId)
     let raw: string
     try {
-      raw = readFileSync(file, 'utf8')
+      raw = await readFile(file, 'utf8')
     } catch {
       throw new WeaveError('invalid_team', `未找到团队配置: ${file}`, { teamId })
     }
@@ -473,13 +511,14 @@ export class TeamManager {
       throw new WeaveError('invalid_team', `default 标记改写失败（解析结果不一致）: ${file}`, { teamId, want: value })
     }
     try {
-      writeFileSync(file, updated, { encoding: 'utf8', flag: 'w' })
+      await writeFile(file, updated, { encoding: 'utf8', flag: 'w' })
     } catch (error) {
       throw new WeaveError('configuration_error', `团队配置写入失败: ${file}`, {
         teamId,
         cause: String(error),
       })
     }
+    this.#invalidateTeamCache()
   }
 
     /* ----------------------------- 会话绑定（ME-4） ----------------------------- */
@@ -544,13 +583,13 @@ export class TeamManager {
    */
   async selectTeam(sessionId: string, explicit?: string): Promise<TeamConfig | null> {
     if (explicit !== undefined && explicit !== '') {
-      return this.loadTeam(explicit)
+      return await this.loadTeam(explicit)
     }
     const bound = await this.getBoundTeam(sessionId)
     if (bound) {
-      return this.loadTeam(bound)
+      return await this.loadTeam(bound)
     }
-    const teams = this.listTeams()
+    const teams = await this.listTeams()
     const fallback = teams.find((t) => t.default) ?? (teams.length === 1 ? teams[0] : undefined)
     return fallback ?? null
   }
@@ -571,17 +610,18 @@ export class TeamManager {
     if (!resolvedFile.startsWith(resolvedDir + sep)) {
       throw new WeaveError('invalid_argument', `拒绝路径穿越: ${teamId}`, { teamId })
     }
-    if (!existsSync(resolvedFile)) {
+    if (!(await readFile(resolvedFile, 'utf8').then(() => true, () => false))) {
       throw new WeaveError('invalid_team', `未找到团队配置: ${resolvedFile}`, { teamId })
     }
     try {
-      unlinkSync(resolvedFile)
+      await unlink(resolvedFile)
     } catch (error) {
       throw new WeaveError('configuration_error', `团队配置删除失败: ${resolvedFile}`, {
         teamId,
         cause: String(error),
       })
     }
+    this.#invalidateTeamCache()
     if (this.persistence) {
       try {
         await this.persistence.core.run((db) => db.prepare('DELETE FROM team_bindings WHERE team_id = ?').run(teamId))
@@ -633,12 +673,12 @@ export class TeamManager {
   ): Promise<{ team: TeamConfig | null; via: 'binding' | 'default' | 'single' | null }> {
     const bound = await this.getSelection(sessionId)
     if (bound) {
-      return { team: this.loadTeam(bound.team_id), via: 'binding' }
+      return { team: await this.loadTeam(bound.team_id), via: 'binding' }
     }
-    const teams = this.listTeams()
+    const teams = await this.listTeams()
     const fallback = teams.find((t) => t.default) ?? (teams.length === 1 ? teams[0] : undefined)
     if (!fallback) return { team: null, via: null }
-    return { team: this.loadTeam(fallback.team_id), via: fallback.default ? 'default' : 'single' }
+    return { team: await this.loadTeam(fallback.team_id), via: fallback.default ? 'default' : 'single' }
   }
 
   /* --------------------- 团队双向消息（稳定通信） --------------------- */

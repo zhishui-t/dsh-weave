@@ -64,8 +64,8 @@ export type SchedulerNotifyFn = (sessionId: string, text: string, session?: Noti
 export interface WeaveSchedulerOptions {
   delegation: SchedulerDelegationLike
   persistence: WeavePersistence
-  /** 团队加载器（start 时快照团队配置）。 */
-  loadTeam: (teamId: string) => TeamConfig
+  /** 团队加载器（start 时快照团队配置）；允许异步实现。 */
+  loadTeam: (teamId: string) => TeamConfig | Promise<TeamConfig>
   /** 会话通知通道（生产绑定 session-delegation.notifySession 的安全包装）。 */
   notify: SchedulerNotifyFn
   /** 失败后是否用 fallback_provider/model 重试一次（默认 true）。 */
@@ -205,7 +205,7 @@ export class WeaveScheduler {
     if (!existing) {
       throw new WeaveError('task_not_found', `DAG 不存在: ${dagId}`, { dagId })
     }
-    const team = this.#opts.loadTeam(existing.team_id)
+    const team = await this.#opts.loadTeam(existing.team_id)
     const sessionRow = await this.#persistence.tasks.run((db) => {
       return db.prepare('SELECT session_id FROM tasks WHERE dag_id = ? LIMIT 1').get(dagId) as
         | { session_id: string }

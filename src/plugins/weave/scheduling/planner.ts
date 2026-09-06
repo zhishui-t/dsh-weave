@@ -134,7 +134,7 @@ export class TeamPlanner {
     // 仅当「多团队且无默认」时才要求一次显式指定。
     const resolved = await this.#teamManager.resolveSessionTeam(sessionId)
     if (resolved.team) return resolved.team
-    const count = this.#teamManager.listTeams().length
+    const count = (await this.#teamManager.listTeams()).length
     throw new WeaveError(
       'invalid_team',
       count === 0

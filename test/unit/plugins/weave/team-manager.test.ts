@@ -113,9 +113,9 @@ function manager(executors: string[], persistence?: WeavePersistence): TeamManag
   return new TeamManager(makeLookup(executors), { teamsDir: dir, persistence })
 }
 
-function expectCode(fn: () => unknown, code: string): WeaveError {
+async function expectCode(fn: () => unknown | Promise<unknown>, code: string): Promise<WeaveError> {
   try {
-    fn()
+    await fn()
   } catch (error) {
     expect(error).toBeInstanceOf(WeaveError)
     expect((error as WeaveError).code).toBe(code)
@@ -127,13 +127,13 @@ function expectCode(fn: () => unknown, code: string): WeaveError {
 /* ------------------------------- parse/validate ------------------------------- */
 
 describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () => {
-  it('合法配置（GOOD_TEAM）解析并校验通过', () => {
+  it('合法配置（GOOD_TEAM）解析并校验通过', async () => {
     const team = manager(['codex', 'zcode']).parseTeam(GOOD_TEAM, 'fixture')
     expect(team.team_id).toBe('alpha-team')
     expect(team.roles).toHaveLength(3)
     expect(team.task_decomposition.default_difficulty).toBe('hard')
     expect(team.roles[0]?.stages).toEqual(['prepare', 'design'])
-    manager(['codex', 'zcode']).validateTeam(team)
+    await manager(['codex', 'zcode']).validateTeam(team)
   })
 
   it('parseTeam 保留可选 description（团队简介）', () => {
@@ -141,24 +141,24 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
     const team = manager(['codex', 'zcode']).parseTeam(withDesc, 'fixture')
     expect(team.description).toBe('负责端到端协作交付')
   })
-  it('schema_version 非法 → invalid_team', () => {
+  it('schema_version 非法 → invalid_team', async () => {
     const mgr = manager(['codex', 'zcode'])
-    expectCode(() => mgr.parseTeam(GOOD_TEAM.replace('schema_version: "1"', 'schema_version: "2"'), 'f'), 'invalid_team')
+    await expectCode(() => mgr.parseTeam(GOOD_TEAM.replace('schema_version: "1"', 'schema_version: "2"'), 'f'), 'invalid_team')
   })
 
-  it('角色 id 重复 → invalid_team', () => {
+  it('角色 id 重复 → invalid_team', async () => {
     const mgr = manager(['codex', 'zcode'])
     const dup = GOOD_TEAM.replace('  - id: reviewer', '  - id: designer')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(dup, 'f')), 'invalid_team')
+    await expectCode(() => mgr.validateTeam(mgr.parseTeam(dup, 'f')), 'invalid_team')
   })
 
-  it('max_concurrent_tasks <= 0 → invalid_team', () => {
+  it('max_concurrent_tasks <= 0 → invalid_team', async () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('    max_concurrent_tasks: 1', '    max_concurrent_tasks: 0')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    await expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('角色 provider/model 可选配置解析并校验通过', () => {
+  it('角色 provider/model 可选配置解析并校验通过', async () => {
     const teamYaml = GOOD_TEAM.replace(
       '    personality: 你追求代码质量。',
       '    personality: 你追求代码质量。\n    provider: deepseek-official\n    model: deepseek-v4-flash-vision-exp\n    thought_level: max',
@@ -169,40 +169,40 @@ describe('TeamManager parseTeam/validateTeam（P0-TEAM-003 核心校验）', () 
       model: 'deepseek-v4-flash-vision-exp',
       thought_level: 'max',
     })
-    manager(['codex', 'zcode']).validateTeam(team)
+    await manager(['codex', 'zcode']).validateTeam(team)
   })
 
-  it('executor 未注册不在 validateTeam 硬失败（委托期由 DelegationService 兜底）', () => {
+  it('executor 未注册不在 validateTeam 硬失败（委托期由 DelegationService 兜底）', async () => {
     const mgr = manager(['codex'])
-    const team = mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))
+    const team = await mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))
     expect(team.team_id).toBe('alpha-team')
   })
 
-  it('stages 缺失 → invalid_team（HI-4）', () => {
+  it('stages 缺失 → invalid_team（HI-4）', async () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('    stages: [prepare, design]\n', '')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    await expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('模板阶段未被角色标签绑定 → 允许：任务按需兜底匹配', () => {
+  it('模板阶段未被角色标签绑定 → 允许：任务按需兜底匹配', async () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('    stages: [implement, test, integrate, execute, deploy]', '    stages: [implement, test, execute, deploy]')
-    expect(() => mgr.validateTeam(mgr.parseTeam(bad, 'f'))).not.toThrow()
+    await expect(mgr.validateTeam(mgr.parseTeam(bad, 'f'))).resolves.toBeDefined()
   })
 
-  it('default_difficulty 对应模板缺失 → invalid_team（HI-4）', () => {
+  it('default_difficulty 对应模板缺失 → invalid_team（HI-4）', async () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('  default_difficulty: hard', '  default_difficulty: medium').replace(
       '    medium: ["design", "implement", "test"]\n',
       '',
     )
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    await expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
-  it('matcher 正则非法 → invalid_team', () => {
+  it('matcher 正则非法 → invalid_team', async () => {
     const mgr = manager(['codex', 'zcode'])
     const bad = GOOD_TEAM.replace('pattern: "修复|调整"', 'pattern: "("')
-    expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
+    await expectCode(() => mgr.validateTeam(mgr.parseTeam(bad, 'f')), 'invalid_team')
   })
 
 })
@@ -224,68 +224,68 @@ describe('TeamManager 备用模型同执行器校验（用户裁定）', () => {
       `    personality: 你追求代码质量。\n    fallback_provider: ${fallback}\n    fallback_model: fb-model`,
     )
 
-  it('同执行器通过：zcode 角色的 fallback_provider 在本机 ACP 清单内', () => {
+  it('同执行器通过：zcode 角色的 fallback_provider 在本机 ACP 清单内', async () => {
     const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
-    const team = mgr.validateTeam(mgr.parseTeam(withCoderFallback('zcode'), 'f'))
+    const team = await mgr.validateTeam(mgr.parseTeam(withCoderFallback('zcode'), 'f'))
     expect(team.roles[1]).toMatchObject({ fallback_provider: 'zcode', fallback_model: 'fb-model' })
   })
 
-  it('跨执行器拒绝：zcode 角色 fallback_provider 指向 DSH LLM provider → invalid_team 并提示可用清单', () => {
+  it('跨执行器拒绝：zcode 角色 fallback_provider 指向 DSH LLM provider → invalid_team 并提示可用清单', async () => {
     const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
-    const error = expectCode(() => mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f')), 'invalid_team')
+    const error = await expectCode(() => mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f')), 'invalid_team')
     expect(error.message).toContain('跨执行器')
     expect(error.message).toContain("实际为 'deepseek-official'")
     expect(error.message).toContain('可用: zcode')
   })
 
-  it('反向跨执行器拒绝：DSH 系角色（codex）fallback_provider 指向 ACP provider → invalid_team', () => {
+  it('反向跨执行器拒绝：DSH 系角色（codex）fallback_provider 指向 ACP provider → invalid_team', async () => {
     // lookup 故意不含 codex → kind 走 classifyProvider 兜底（codex ≠ acp）
     const mgr = managerWithAcp(['zcode'], ['zcode'])
     const teamYaml = GOOD_TEAM.replace(
       '    personality: 你是方案设计师。',
       '    personality: 你是方案设计师。\n    fallback_provider: zcode\n    fallback_model: fb-model',
     )
-    const error = expectCode(() => mgr.validateTeam(mgr.parseTeam(teamYaml, 'f')), 'invalid_team')
+    const error = await expectCode(() => mgr.validateTeam(mgr.parseTeam(teamYaml, 'f')), 'invalid_team')
     expect(error.message).toContain('不能指向 ACP provider')
     expect(error.message).toContain('应为 DSH LLM provider')
   })
 
-  it('ACP 清单为空 → 跳过校验（降级不误杀，与执行器注册检查同一哲学）', () => {
+  it('ACP 清单为空 → 跳过校验（降级不误杀，与执行器注册检查同一哲学）', async () => {
     const mgr = managerWithAcp(['codex', 'zcode'], [])
-    const team = mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f'))
+    const team = await mgr.validateTeam(mgr.parseTeam(withCoderFallback('deepseek-official'), 'f'))
     expect(team.roles[1]?.fallback_provider).toBe('deepseek-official')
   })
 
-  it('未配置 fallback 的团队不受影响（GOOD_TEAM 基线）', () => {
+  it('未配置 fallback 的团队不受影响（GOOD_TEAM 基线）', async () => {
     const mgr = managerWithAcp(['codex', 'zcode'], ['zcode'])
-    expect(() => mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))).not.toThrow()
+    await expect(mgr.validateTeam(mgr.parseTeam(GOOD_TEAM, 'f'))).resolves.toBeDefined()
   })
 })
 
 describe('TeamManager loadTeam/listTeams', () => {
-  it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', () => {
+  it('loadTeam 成功（含仓库内 examples/team.yaml 样例）', async () => {
     // 样例文件已是长安 9 角色完整配置；仅把 team_id 对齐到夹具文件名后加载
     writeTeam('alpha-team', readFileSync(EXAMPLES_TEAM_YAML, 'utf8').replace('team_id: changan', 'team_id: alpha-team'))
-    const team = manager(['codex', 'zcode']).loadTeam('alpha-team')
+    const team = await manager(['codex', 'zcode']).loadTeam('alpha-team')
     expect(team.roles.map((r: TeamConfig['roles'][number]) => r.id)).toEqual([
       'developer-1', 'developer-2', 'developer-3', 'ui-designer', 'frontend-1', 'frontend-2', 'qa', 'tester-1', 'tester-2',
     ])
   })
 
-  it('团队不存在 → invalid_team', () => {
-    expectCode(() => manager(['codex']).loadTeam('ghost'), 'invalid_team')
+  it('团队不存在 → invalid_team', async () => {
+    await expectCode(() => manager(['codex']).loadTeam('ghost'), 'invalid_team')
   })
 
-  it('文件 team_id 与文件名不一致 → invalid_team', () => {
+  it('文件 team_id 与文件名不一致 → invalid_team', async () => {
     writeTeam('alpha-team', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: other-team'))
-    expectCode(() => manager(['codex', 'zcode']).loadTeam('alpha-team'), 'invalid_team')
+    await expectCode(() => manager(['codex', 'zcode']).loadTeam('alpha-team'), 'invalid_team')
   })
 
-  it('listTeams 仅返回校验通过的团队（非法团队不进入调度）', () => {
+  it('listTeams 仅返回校验通过的团队（非法团队不进入调度）', async () => {
     writeTeam('team-a', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-a'))
     writeTeam('team-b', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-b').replace('executor: zcode', 'executor: ghost'))
     writeTeam('team-c', GOOD_TEAM.replace('team_id: alpha-team', 'team_id: team-c'))
-    const ids = manager(['codex', 'zcode']).listTeams().map((t) => t.team_id)
+    const ids = (await manager(['codex', 'zcode']).listTeams()).map((t) => t.team_id)
     // iso-1/v4 hotfix：执行器注册检查降级到委派期，listTeams 不再因 registry 波动清空团队。
     expect(ids).toEqual(['team-a', 'team-b', 'team-c'])
   })
@@ -357,27 +357,27 @@ describe('TeamManager selectTeam 优先级链 + team_bindings（ME-4）', () => 
 })
 
 describe('TeamManager importTeam（Web 创建团队）', () => {
-  it('校验通过后写入 YAML，并可重新加载', () => {
+  it('校验通过后写入 YAML，并可重新加载', async () => {
     const mgr = manager(['codex', 'zcode'])
-    const team = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: imported'))
+    const team = await mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: imported'))
     expect(team.team_id).toBe('imported')
-    expect(mgr.loadTeam('imported').team_id).toBe('imported')
+    expect((await mgr.loadTeam('imported')).team_id).toBe('imported')
   })
 
-  it('已存在默认拒绝，overwrite=true 允许更新', () => {
+  it('已存在默认拒绝，overwrite=true 允许更新', async () => {
     const mgr = manager(['codex', 'zcode'])
     const yaml = GOOD_TEAM.replace('team_id: alpha-team', 'team_id: imported')
-    mgr.importTeam(yaml)
-    expectCode(() => mgr.importTeam(yaml), 'conflict')
-    expect(mgr.importTeam(yaml, { overwrite: true }).team_id).toBe('imported')
+    await mgr.importTeam(yaml)
+    await expectCode(() => mgr.importTeam(yaml), 'conflict')
+    expect((await mgr.importTeam(yaml, { overwrite: true })).team_id).toBe('imported')
   })
 
-  it('校验失败不落盘；路径非法直接拒绝', () => {
+  it('校验失败不落盘；路径非法直接拒绝', async () => {
     const mgr = manager(['codex'])
-    const imported = mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: bad'))
+    const imported = await mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: bad'))
     expect(imported.team_id).toBe('bad')
     expect(existsSync(join(dir, 'bad.yaml'))).toBe(true)
-    expectCode(
+    await expectCode(
       () => manager(['codex', 'zcode']).importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: ../bad')),
       'invalid_team',
     )
@@ -392,7 +392,7 @@ describe('TeamManager deleteTeam / unbindTeam / listBindings（Web team/delete�
   it('deleteTeam 删除 YAML 并清理该团队遗留绑定', async () => {
     const persistence = openPersistence()
     const mgr = manager(['codex', 'zcode'], persistence)
-    mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: gone'))
+    await mgr.importTeam(GOOD_TEAM.replace('team_id: alpha-team', 'team_id: gone'))
     await mgr.bindTeam('s9', 'gone')
     expect(existsSync(join(dir, 'gone.yaml'))).toBe(true)
 

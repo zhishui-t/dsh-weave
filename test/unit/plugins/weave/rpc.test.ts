@@ -127,7 +127,7 @@ describe('Weave Connection RPC：snapshot / import（既有契约）', () => {
   it('team/import 接收结构化 config 并持久化', async () => {
     const result = await handler()('team/import', { overwrite: true, config })
     expect(result).toMatchObject({ ok: true, value: { team_id: 'rpc-team', roles: 1 } })
-    expect(new TeamManager(lookup, { teamsDir: dir }).loadTeam('rpc-team')).toMatchObject({
+    expect(await new TeamManager(lookup, { teamsDir: dir }).loadTeam('rpc-team')).toMatchObject({
       roles: [{ provider: 'provider-id', model: 'deepseek-v4-flash' }],
     })
   })

@@ -40,11 +40,11 @@ let persistence: WeavePersistence
 let manager: TeamManager
 let planner: TeamPlanner
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'weave-sched-'))
   persistence = new WeavePersistence({ inMemory: true })
   manager = new TeamManager(lookup, { teamsDir: dir, persistence })
-  manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+  await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
   planner = new TeamPlanner({ persistence, teamManager: manager })
 })
 
@@ -309,7 +309,7 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
       notify: (_sessionId, text) => { notices.push({ text }) },
     })
     const imported = { ...TEAM, roles: [{ ...TEAM.roles[0]!, fallback_provider: 'fb', fallback_model: 'fb-model' }, ...TEAM.roles.slice(1)] }
-    manager.importTeam(stringifyYaml({ schema_version: '1', ...imported }), { overwrite: true })
+    await manager.importTeam(stringifyYaml({ schema_version: '1', ...imported }), { overwrite: true })
 
     // 主模型抛基础设施异常 → 备用模型（provider='fb'）成功
     delegation.executeTask = async (task, role, _team, context) => {
@@ -438,7 +438,7 @@ describe('WeaveScheduler（DAG 依赖调度）', () => {
       ...TEAM,
       roles: [{ ...TEAM.roles[0]!, max_concurrent_tasks: 3 }, ...TEAM.roles.slice(1)],
     }
-    manager.importTeam(stringifyYaml({ schema_version: '1', ...imported }), { overwrite: true })
+    await manager.importTeam(stringifyYaml({ schema_version: '1', ...imported }), { overwrite: true })
     await manager.bindTeam('sess-one', 'alpha')
 
     const { scheduler, delegation } = await makeScheduler()

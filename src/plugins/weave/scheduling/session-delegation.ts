@@ -136,7 +136,7 @@ export function notifySession(session: NoticeSessionLike, text: string): void {
 /* ------------------------------ pre-step hook ------------------------------ */
 
 export interface PreStepHookDeps {
-  listTeams(): TeamConfig[]
+  listTeams(): TeamConfig[] | Promise<TeamConfig[]>
   setSelection(sessionId: string, teamId: string | null): Promise<void>
   /** 会话 notice 写入（prod 绑定 notifySession；session 缺席时实现方自行降级告警）。 */
   notify: (sessionId: string, text: string, session?: NoticeSessionLike) => void
@@ -275,7 +275,7 @@ async function appendTeamAwareness(
   session?: NoticeSessionLike,
 ): Promise<PreStepDecisionLike> {
   try {
-    const teams = deps.listTeams()
+    const teams = await deps.listTeams()
     if (teams.length === 0) return decision
     let boundTeamId: string | null = null
     try {
@@ -354,7 +354,10 @@ export function createPreStepDelegationHook(deps: PreStepHookDeps) {
         .trim()
       if (text === '') return await next()
 
-      const command = parseTeamSelectionCommand(text, deps.listTeams())
+      const command = parseTeamSelectionCommand(text, await deps.listTeams())
+      // listTeams 异步化后首个 await 前移：并发投递的同一消息会全部通过首检，
+      // 必须在 await 恢复后复查占位表，否则 markProcessed 迟到导致重复 notice。
+      if (processedMessages.has(latest.id)) return await next()
       if (!command) {
         const downstream = await next()
         return await appendTeamAwareness(deps, sessionId, latest.id, text, downstream, payload.agent?.session)

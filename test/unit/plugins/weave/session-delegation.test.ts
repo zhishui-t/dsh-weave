@@ -51,10 +51,10 @@ let dir = ''
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'weave-sessdel-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-function makeHookEnv() {
+async function makeHookEnv() {
   const persistence = new WeavePersistence({ inMemory: true })
   const manager = new TeamManager(lookup, { teamsDir: dir, persistence })
-  manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+  await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
   const notices: Array<{ sessionId: string; text: string }> = []
   const hook = createPreStepDelegationHook({
     listTeams: () => manager.listTeams(),
@@ -103,7 +103,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
   })
 
   it('自然语言启用会写入绑定并通知，然后 reject 该消息', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const payload = makePayload('nl-enable', '启用 pipe-team')
     const decision = await env.hook(payload.payload, nextOk)
 
@@ -114,7 +114,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
   })
 
   it('自然语言关闭会清除绑定并通知', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     await env.manager.bindTeam('sess-1', 'pipe-team')
     const payload = makePayload('nl-disable', '关闭团队')
     const decision = await env.hook(payload.payload, nextOk)
@@ -125,7 +125,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
   })
 
   it('绑定态目标消息注入纪律后放行（派发仍由队长经 weave_plan_tasks 完成）', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     await env.manager.bindTeam('sess-1', 'pipe-team')
     const payload = makePayload('m-task', '做一个新的登录页面')
     const decision = await env.hook(payload.payload, nextOk)
@@ -138,7 +138,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
   })
 
   it('同一 message.id 只处理一次；非 user 来源消息忽略', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const first = makePayload('dup-1', '启用 pipe-team')
     await env.hook(first.payload, nextOk)
     expect(env.notices).toHaveLength(1)
@@ -158,7 +158,7 @@ describe('自然语言团队启停（会话控制通道）', () => {
   })
 
   it('同一消息并发投递只发一条 notice（先占位再 await，防 3 连通知）', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const { payload } = makePayload('dup-concurrent', '启用 pipe-team')
     const decisions = await Promise.all([
       env.hook(payload, nextOk),
@@ -244,15 +244,15 @@ describe('自然语言团队启停（会话控制通道）', () => {
 })
 
 describe('session/team-selection RPC（复用 team_bindings，绑定=启用）', () => {
-  function rpcEnv() {
+  async function rpcEnv() {
     const persistence = new WeavePersistence({ inMemory: true })
     const teamManager = new TeamManager(lookup, { teamsDir: dir, persistence })
-    teamManager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+    await teamManager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
     return createWeaveRpcHandler({ teamManager, executorRegistry: { list: () => [], get: () => undefined }, persistence } as never)
   }
 
   it('set 缺 sessionId → 明确拒绝，绝不默认 cli-session', async () => {
-    const call = rpcEnv()
+    const call = await rpcEnv()
     await expect(call('session/team-selection/set', { teamId: 'pipe-team' })).resolves.toMatchObject({
       ok: false,
       error: { code: 'bad-request', message: expect.stringContaining('显式'), details: { original_code: 'invalid_argument' } },
@@ -260,7 +260,7 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
   })
 
   it('set/get/clear 全链路：enabled 与 updated_at 真实回读', async () => {
-    const call = rpcEnv()
+    const call = await rpcEnv()
     await expect(call('session/team-selection/set', { sessionId: 'web-s1', teamId: 'pipe-team' })).resolves.toMatchObject({
       ok: true,
       value: { session_id: 'web-s1', enabled: true, team_id: 'pipe-team' },
@@ -280,7 +280,7 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
   })
 
   it('启用未知团队 → invalid_team；get 缺 sessionId 同样明确拒绝', async () => {
-    const call = rpcEnv()
+    const call = await rpcEnv()
     await expect(call('session/team-selection/set', { sessionId: 's', teamId: 'ghost' })).resolves.toMatchObject({
       ok: false,
       error: { code: 'bad-request', details: { original_code: 'invalid_team' } },
@@ -294,7 +294,7 @@ describe('session/team-selection RPC（复用 team_bindings，绑定=启用）',
 
 describe('团队感知提醒（非控制指令路径）', () => {
   it('命中团队关键词时注入提醒并放行本回合', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const { payload } = makePayload('aw-1', '启动 deepseek zcode 测试小队开发个小游戏', 'aw-sess-1')
     const decision = await env.hook(payload, nextOk)
 
@@ -311,7 +311,7 @@ describe('团队感知提醒（非控制指令路径）', () => {
   })
 
   it('同一会话同一团队清单只注入一次', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const first = await env.hook(makePayload('aw-2a', '用团队做个工具', 'aw-sess-2').payload, nextOk)
     const second = await env.hook(makePayload('aw-2b', '再说一次团队派单', 'aw-sess-2').payload, nextOk)
     expect(first.kind).toBe('enter')
@@ -322,7 +322,7 @@ describe('团队感知提醒（非控制指令路径）', () => {
   })
 
   it('未命中关键词不注入', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     const decision = await env.hook(makePayload('aw-3', '帮我写一个纯函数', 'aw-sess-3').payload, nextOk)
     expect(decision.kind).toBe('enter')
     if (decision.kind !== 'enter') return
@@ -330,7 +330,7 @@ describe('团队感知提醒（非控制指令路径）', () => {
   })
 
   it('已绑定会话的目标消息注入队长纪律硬指令（按消息 id 去重）', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     await env.manager.bindTeam('aw-sess-4', 'pipe-team')
     const decision = await env.hook(makePayload('aw-4', 'weave 派单：重构登录模块', 'aw-sess-4').payload, nextOk)
     expect(decision.kind).toBe('enter')
@@ -350,7 +350,7 @@ describe('团队感知提醒（非控制指令路径）', () => {
   })
 
   it('绑定态下的非目标短消息仍走团队感知提醒', async () => {
-    const env = makeHookEnv()
+    const env = await makeHookEnv()
     await env.manager.bindTeam('aw-sess-5', 'pipe-team')
     const decision = await env.hook(makePayload('aw-5', '团队现在有哪些人', 'aw-sess-5').payload, nextOk)
     expect(decision.kind).toBe('enter')

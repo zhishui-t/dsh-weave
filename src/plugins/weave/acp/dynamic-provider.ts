@@ -81,8 +81,8 @@ export interface LoadProviderConfigsOptions {
 }
 
 /** 读取全部动态 provider 配置（默认路径；文件缺失/损坏返回 []）。 */
-export function loadProviderConfigs(options: LoadProviderConfigsOptions = {}): StoredProviderConfig[] {
-  return new ProviderStore({ file: options.providersFile }).list()
+export async function loadProviderConfigs(options: LoadProviderConfigsOptions = {}): Promise<StoredProviderConfig[]> {
+  return await new ProviderStore({ file: options.providersFile }).list()
 }
 
 export interface RegisterStoredAcpProvidersOptions extends LoadProviderConfigsOptions {
@@ -109,9 +109,9 @@ export interface RegisterStoredAcpProvidersResult {
  * 把 providers.json（或其子集）热注册到当前会话；无需重启即可出现在执行器列表。
  * 不抛异常：单个 provider 失败记入 failed，其余继续。
  */
-export function registerStoredAcpProviders(
+export async function registerStoredAcpProviders(
   options: RegisterStoredAcpProvidersOptions = {},
-): RegisterStoredAcpProvidersResult {
+): Promise<RegisterStoredAcpProvidersResult> {
   const result: RegisterStoredAcpProvidersResult = { registered: [], failed: [], disposers: [], disposersByName: {} }
   if (!options.subagents || !options.subprocess) {
     result.failed.push({
@@ -120,7 +120,7 @@ export function registerStoredAcpProviders(
     })
     return result
   }
-  const configs = loadProviderConfigs(options).filter(
+  const configs = (await loadProviderConfigs(options)).filter(
     (cfg) => options.names === undefined || options.names.includes(cfg.name),
   )
   for (const cfg of configs) {
@@ -178,8 +178,8 @@ export function createWeaveProviderCommandDefinitions(
   options: CreateWeaveProviderCommandDefinitionsOptions = {},
 ): { add: WeaveProviderCommandDefinition; manage: WeaveProviderCommandDefinition } {
   const store = new ProviderStore({ file: options.providersFile })
-  const hotRegister = options.hotRegister ?? ((cfg: StoredProviderConfig): string | null => {
-    const outcome = registerStoredAcpProviders({ providersFile: options.providersFile, ...(options.onRemove !== undefined ? {} : {}) })
+  const hotRegister = options.hotRegister ?? (async (cfg: StoredProviderConfig): Promise<string | null> => {
+    const outcome = await registerStoredAcpProviders({ providersFile: options.providersFile, ...(options.onRemove !== undefined ? {} : {}) })
     // 默认实现按名字单注册；失败信息直接透出。
     const failed = outcome.failed.find((f) => f.name === cfg.name)
     return failed ? `热注册失败（配置已持久化）: ${failed.error}` : null
@@ -194,11 +194,11 @@ export function createWeaveProviderCommandDefinitions(
     },
     async handler(rawInput) {
       try {
-        const cfgs = parseProviderInputs(rawInput.trim())
+        const cfgs = await parseProviderInputs(rawInput.trim())
         const lines: string[] = []
         for (const cfg of cfgs) {
-          store.add(cfg)
-          const warn = options.hotRegister ? await options.hotRegister(cfg) : hotRegister(cfg)
+          await store.add(cfg)
+          const warn = await hotRegister(cfg)
           const exts = cfg.declaredExtensions && cfg.declaredExtensions.length > 0 ? cfg.declaredExtensions.join(',') : '无'
           lines.push(`已注册执行器 ${cfg.name}（executor id=${cfg.name}，声明扩展=${exts}）`)
           lines.push(warn ? `提示：${warn}` : `  ${cfg.name} 已在本会话生效。`)
@@ -219,7 +219,7 @@ export function createWeaveProviderCommandDefinitions(
       const argv = rawInput.trim().split(/\s+/).filter((item) => item !== '')
       const command = argv[0] ?? 'list'
       if (command === 'list') {
-        const items = store.list()
+        const items = await store.list()
         if (items.length === 0) return { kind: 'success', text: '（无动态 provider）' }
         return {
           kind: 'success',
@@ -231,7 +231,7 @@ export function createWeaveProviderCommandDefinitions(
       if (command === 'remove') {
         const name = argv[1] ?? ''
         if (!name) return { kind: 'error', text: '用法: provider remove <name>' }
-        const removed = store.remove(name)
+        const removed = await store.remove(name)
         if (!removed) return { kind: 'error', text: `未找到动态 provider: ${name}` }
         options.onRemove?.(name)
         return { kind: 'success', text: `已移除并注销 ${name}` }

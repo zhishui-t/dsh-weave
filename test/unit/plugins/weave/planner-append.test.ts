@@ -37,11 +37,11 @@ let persistence: WeavePersistence
 let manager: TeamManager
 let planner: TeamPlanner
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'weave-planner-append-'))
   persistence = new WeavePersistence({ inMemory: true })
   manager = new TeamManager(lookup, { teamsDir: dir, persistence })
-  manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
+  await manager.importTeam(stringifyYaml({ schema_version: '1', ...TEAM }))
   planner = new TeamPlanner({ persistence, teamManager: manager })
 })
 
