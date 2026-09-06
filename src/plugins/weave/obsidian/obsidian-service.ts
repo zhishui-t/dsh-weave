@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -148,10 +148,10 @@ export class ObsidianService {
   /** 生成/刷新 Vault：Weave 知识 → Obsidian Markdown（增量、冲突保护）。 */
   async generate(input: ObsidianGenerateInput = {}): Promise<ObsidianGenerateResult> {
     const vault = this.resolveVaultPath(input.vaultPath)
-    this.#ensureVault(vault)
+    await this.#ensureVault(vault)
 
     const now = new Date().toISOString()
-    const state = this.#readState(vault)
+    const state = await this.#readState(vault)
     const entries = await this.#listKnowledge()
     let generated = 0
     let updated = 0
@@ -171,14 +171,14 @@ export class ObsidianService {
       const sourceText = await this.#sourceText(meta)
       if (sourceText === null) continue
       const sourceHash = sha256(sourceText)
-      const destExists = existsSync(dest)
+      const destExists = await pathExists(dest)
 
       if (!destExists) {
         // 用户重命名：保留用户命名，把最新 Weave 内容写到新路径，并记录 alias。
         if (old) {
-          const renamed = this.#findRenameTarget(vault, rel, old.destHash, state)
+          const renamed = await this.#findRenameTarget(vault, rel, old.destHash, state)
           if (renamed !== undefined && renamed !== rel) {
-            this.#applyRename(vault, rel, renamed, sourceText, sourceHash, state, now)
+            await this.#applyRename(vault, rel, renamed, sourceText, sourceHash, state, now)
             updated += 1
             this.#removeConflict(state.conflicts, rel)
             continue
@@ -190,7 +190,7 @@ export class ObsidianService {
           this.#removeConflict(state.conflicts, rel)
           continue
         }
-        this.#writeTextFile(dest, sourceText)
+        await this.#writeTextFile(dest, sourceText)
         generated += 1
         state.files[rel] = fingerprintFor(sourceHash, sourceHash, now)
         this.#removeConflict(state.conflicts, rel)
@@ -203,7 +203,7 @@ export class ObsidianService {
         continue
       }
 
-      const destHash = hashFile(dest)
+      const destHash = await hashFile(dest)
       const userModified = destHash !== old.destHash
       const sourceModified = sourceHash !== old.sourceHash
       if (!userModified && !sourceModified) {
@@ -219,7 +219,7 @@ export class ObsidianService {
             weaveHash: sourceHash,
           })
         }
-        const backupPath = this.#backupSource(vault, rel, sourceText)
+        const backupPath = await this.#backupSource(vault, rel, sourceText)
         this.#upsertConflict(state.conflicts, {
           path: rel,
           kind: 'both_modified',
@@ -251,14 +251,14 @@ export class ObsidianService {
       }
 
       // 用户未改、Weave 更新：覆盖。
-      this.#writeTextFile(dest, sourceText)
+      await this.#writeTextFile(dest, sourceText)
       updated += 1
       state.files[rel] = fingerprintFor(sourceHash, sourceHash, now)
       this.#removeConflict(state.conflicts, rel)
     }
 
     state.generatedAt = now
-    this.#writeState(vault, state)
+    await this.#writeState(vault, state)
     return {
       generated,
       updated,
@@ -274,7 +274,7 @@ export class ObsidianService {
   /** 返回 Obsidian 打开协议 URI（CLI/宿主可另行 spawn）。 */
   async open(input: ObsidianOpenInput = {}): Promise<ObsidianOpenResult> {
     const vault = this.resolveVaultPath(input.vaultPath)
-    if (!existsSync(vault) || !statSync(vault).isDirectory()) {
+    if (!(await directoryExists(vault))) {
       throw new WeaveError('configuration_error', 'Obsidian Vault 不存在或不可用', { vaultPath: vault })
     }
     const uri = `obsidian://open?path=${encodeURIComponent(vault)}`
@@ -284,13 +284,13 @@ export class ObsidianService {
   /** 手动回索引：扫描 Vault 内 Markdown，把用户侧 hash 更新进指纹。 */
   async reindex(input: ObsidianReindexInput = {}): Promise<ObsidianReindexResult> {
     const vault = this.resolveVaultPath(input.vaultPath)
-    if (!existsSync(vault) || !statSync(vault).isDirectory()) {
+    if (!(await directoryExists(vault))) {
       throw new WeaveError('configuration_error', 'Obsidian Vault 不存在或不可用', { vaultPath: vault })
     }
 
     const now = new Date().toISOString()
-    const state = this.#readState(vault)
-    const files = collectMarkdown(vault)
+    const state = await this.#readState(vault)
+    const files = await collectMarkdown(vault)
     const seen = new Set<string>()
     for (const rel of files) {
       seen.add(rel)
@@ -301,8 +301,8 @@ export class ObsidianService {
       const dest = join(vault, rel)
       state.files[rel] = {
         sourceHash: old.sourceHash,
-        destHash: hashFile(dest),
-        mtimeMs: mtimeOf(dest),
+        destHash: await hashFile(dest),
+        mtimeMs: await mtimeOf(dest),
         syncedAt: now,
       }
       this.#removeConflict(state.conflicts, rel)
@@ -311,11 +311,11 @@ export class ObsidianService {
     for (const rel of Object.keys(state.files)) {
       if (seen.has(rel)) continue
       const dest = join(vault, rel)
-      if (!existsSync(dest)) {
+      if (!(await pathExists(dest))) {
         this.#upsertTombstone(state.tombstones, { path: rel, detectedAt: now })
       }
     }
-    this.#writeState(vault, state)
+    await this.#writeState(vault, state)
     return {
       reindexed: true,
       entries: files.length,
@@ -327,12 +327,12 @@ export class ObsidianService {
   /** 状态摘要：Vault 存在性 / 最近生成时间 / 冲突计数。 */
   async status(input: ObsidianStatusInput = {}): Promise<ObsidianStatusResult> {
     const vault = this.resolveVaultPath(input.vaultPath)
-    const exists = existsSync(vault) && statSync(vault).isDirectory()
+    const exists = await directoryExists(vault)
     if (!exists) {
       return { exists, vaultPath: vault, lastGeneratedAt: null, conflictCount: 0 }
     }
-    const state = this.#readState(vault)
-    const files = collectMarkdown(vault)
+    const state = await this.#readState(vault)
+    const files = await collectMarkdown(vault)
     const knowledgeCount = (await this.#listKnowledge()).length
     return {
       exists: true,
@@ -353,10 +353,10 @@ export class ObsidianService {
     aliases?: ObsidianAlias[]
   }> {
     const vault = this.resolveVaultPath(input.vaultPath)
-    if (!existsSync(vault) || !statSync(vault).isDirectory()) {
+    if (!(await directoryExists(vault))) {
       throw new WeaveError('configuration_error', 'Obsidian Vault 不存在或不可用', { vaultPath: vault })
     }
-    const state = this.#readState(vault)
+    const state = await this.#readState(vault)
     return {
       vaultPath: vault,
       conflicts: [...state.conflicts],
@@ -367,10 +367,10 @@ export class ObsidianService {
 
   /* ------------------------------ 内部实现 ------------------------------ */
 
-  #ensureVault(vault: string): void {
+  async #ensureVault(vault: string): Promise<void> {
     try {
-      mkdirSync(vault, { recursive: true })
-      const meta = statSync(vault)
+      await mkdir(vault, { recursive: true })
+      const meta = await stat(vault)
       if (!meta.isDirectory()) {
         throw new Error(`路径不是目录: ${vault}`)
       }
@@ -382,14 +382,16 @@ export class ObsidianService {
     }
   }
 
-  #readState(vault: string): ObsidianState {
+  async #readState(vault: string): Promise<ObsidianState> {
     const file = join(vault, STATE_FILE)
-    if (!existsSync(file)) {
+    let raw: string | null = null
+    try {
+      raw = await readFile(file, 'utf8')
+    } catch {
       return emptyState()
     }
     try {
-      const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<ObsidianState>
-      return normalizeState(raw)
+      return normalizeState(JSON.parse(raw) as Partial<ObsidianState>)
     } catch (error) {
       throw new WeaveError('internal', `Obsidian 指纹读取失败: ${file}`, {
         vaultPath: vault,
@@ -399,10 +401,12 @@ export class ObsidianService {
     }
   }
 
-  #writeState(vault: string, state: ObsidianState): void {
+  async #writeState(vault: string, state: ObsidianState): Promise<void> {
     const file = join(vault, STATE_FILE)
     try {
-      writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+      const temp = `${file}.tmp`
+      await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+      await rename(temp, file)
     } catch (error) {
       throw new WeaveError('internal', `Obsidian 指纹写入失败: ${file}`, {
         vaultPath: vault,
@@ -440,17 +444,17 @@ export class ObsidianService {
     return !rel.includes('\0')
   }
 
-  #writeTextFile(dest: string, text: string): void {
-    mkdirSync(dirname(dest), { recursive: true })
-    writeFileSync(dest, text, 'utf8')
+  async #writeTextFile(dest: string, text: string): Promise<void> {
+    await mkdir(dirname(dest), { recursive: true })
+    await writeFile(dest, text, 'utf8')
   }
 
-  #backupSource(vault: string, rel: string, sourceText: string): string {
+  async #backupSource(vault: string, rel: string, sourceText: string): Promise<string> {
     const backupDir = join(vault, BACKUP_DIR, dirname(rel))
-    mkdirSync(backupDir, { recursive: true })
+    await mkdir(backupDir, { recursive: true })
     const name = `${basename(rel).replace(/\.md$/i, '')}-${Date.now()}.md`
     const backupPath = join(backupDir, name)
-    writeFileSync(backupPath, sourceText, 'utf8')
+    await writeFile(backupPath, sourceText, 'utf8')
     return normalizeSlashes(relative(vault, backupPath))
   }
 
@@ -489,24 +493,24 @@ export class ObsidianService {
    * 用户重命名启发：旧路径缺失时，在 Vault 中寻找一个内容 hash 与上次同步目标一致的
    * 未跟踪 Markdown。命中即视为“纯改名”，保留用户命名并把最新 Weave 内容写到新路径。
    */
-  #findRenameTarget(vault: string, fromRel: string, oldDestHash: string, state: ObsidianState): string | undefined {
+  async #findRenameTarget(vault: string, fromRel: string, oldDestHash: string, state: ObsidianState): Promise<string | undefined> {
     if (oldDestHash === '') return undefined
-    const candidates = collectMarkdown(vault).filter((candidate) => {
-      if (candidate === fromRel) return false
-      if (state.files[candidate] !== undefined) return false
-      if (this.#hasTombstone(state.tombstones, candidate)) return false
+    for (const candidate of await collectMarkdown(vault)) {
+      if (candidate === fromRel) continue
+      if (state.files[candidate] !== undefined) continue
+      if (this.#hasTombstone(state.tombstones, candidate)) continue
       const candidatePath = join(vault, candidate)
-      if (!existsSync(candidatePath)) return false
+      if (!(await pathExists(candidatePath))) continue
       try {
-        return hashFile(candidatePath) === oldDestHash
+        if ((await hashFile(candidatePath)) === oldDestHash) return candidate
       } catch {
-        return false
+        // 读取失败按 hash 不匹配处理。
       }
-    })
-    return candidates[0]
+    }
+    return undefined
   }
 
-  #applyRename(
+  async #applyRename(
     vault: string,
     fromRel: string,
     toRel: string,
@@ -514,8 +518,8 @@ export class ObsidianService {
     sourceHash: string,
     state: ObsidianState,
     now: string,
-  ): void {
-    this.#writeTextFile(join(vault, toRel), sourceText)
+  ): Promise<void> {
+    await this.#writeTextFile(join(vault, toRel), sourceText)
     delete state.files[fromRel]
     state.files[toRel] = fingerprintFor(sourceHash, sourceHash, now)
     this.#removeConflict(state.conflicts, fromRel)
@@ -591,20 +595,38 @@ function sha256(text: string | Buffer): string {
   return createHash('sha256').update(text).digest('hex')
 }
 
-function hashFile(file: string): string {
-  return sha256(readFileSync(file))
+async function hashFile(file: string): Promise<string> {
+  // sha256 计算本身是同步 CPU（单文件 buffer 级）；I/O 已异步，不再阻塞事件循环于读盘。
+  return sha256(await readFile(file))
 }
 
-function mtimeOf(file: string): number {
-  return statSync(file).mtimeMs
+async function mtimeOf(file: string): Promise<number> {
+  return (await stat(file)).mtimeMs
 }
 
-function collectMarkdown(root: string): string[] {
+async function pathExists(file: string): Promise<boolean> {
+  try {
+    await stat(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function collectMarkdown(root: string): Promise<string[]> {
   const out: string[] = []
-  const walk = (current: string): void => {
+  const walk = async (current: string): Promise<void> => {
     let children: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>
     try {
-      children = readdirSync(current, { withFileTypes: true }) as unknown as Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>
+      children = (await readdir(current, { withFileTypes: true })) as unknown as Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>
     } catch {
       return
     }
@@ -612,12 +634,12 @@ function collectMarkdown(root: string): string[] {
       if (entry.name.startsWith('.weave')) continue
       const full = join(current, entry.name)
       if (entry.isDirectory()) {
-        walk(full)
+        await walk(full)
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
         out.push(normalizeSlashes(relative(root, full)))
       }
     }
   }
-  walk(root)
+  await walk(root)
   return out.sort()
 }
