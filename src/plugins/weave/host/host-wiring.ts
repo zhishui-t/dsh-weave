@@ -732,6 +732,8 @@ export interface CreateDefaultExecutorProviderRegistryOptions {
   includeDsh?: boolean
   /** 可选持久映射（executor_children，core.db v3）：continuable 子代理跨重启恢复对账用。 */
   childrenStore?: ExecutorChildPersistence
+  /** 追加进每个 ACP 会话的 MCP server（如 prism：prism_kb_* 工具面）。 */
+  extraMcpServers?: unknown[]
 }
 
 /**
@@ -766,6 +768,10 @@ export function createDefaultExecutorProviderRegistry(
     const acp = new AcpSessionProvider(
       {
         ...zcodeConfig,
+        // prism MCP 注入：agent 会话内直接使用 prism_kb_* / prism_graph_* 工具面。
+        ...(options.extraMcpServers?.length
+          ? { mcpServers: [...(zcodeConfig.mcpServers ?? []), ...options.extraMcpServers] }
+          : {}),
         // iso-1：sessionKey→acpSid 持久索引，跨重启保持「同键续接、异键隔离」。
         sessionIndexFile: DEFAULT_ACP_SESSION_INDEX_FILE,
       },

@@ -148,6 +148,34 @@ export class PrismSupervisor {
     return { running: false, spawned: true, script, reason: `prism serve 健康等待超时（${this.#startTimeoutMs}ms）` }
   }
 
+  /** 解析 prism MCP stdio 入口（packages/server/dist/mcp/server.js；WEAVE_PRISM_MCP_ENTRY 覆盖）。 */
+  resolveMcpEntry(): string | undefined {
+    const candidates = [
+      process.env.WEAVE_PRISM_MCP_ENTRY,
+      join(repoRoot(), '..', 'prism', 'packages', 'server', 'dist', 'mcp', 'server.js'),
+    ].filter((path): path is string => typeof path === 'string' && path !== '')
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return resolve(candidate)
+    }
+    return undefined
+  }
+
+  /**
+   * ACP 会话 mcp_servers 条目（agent 拉取 prism_kb_* 工具的通道）。
+   * 形状对齐 ZCode MCP 配置（type:'stdio' + command/args/env）；入口缺失返回 undefined。
+   */
+  mcpServerEntry(): { name: string; type: 'stdio'; command: string; args: string[]; env: Record<string, string> } | undefined {
+    const entry = this.resolveMcpEntry()
+    if (!entry) return undefined
+    return {
+      name: 'prism',
+      type: 'stdio',
+      command: process.execPath,
+      args: [entry],
+      env: { PRISM_HOME: this.#prismHome },
+    }
+  }
+
   /** 运行 prism CLI 子命令（kb convert / kb export 等无 HTTP 路由的能力）。 */
   async runCli(args: string[], options: { timeoutMs?: number } = {}): Promise<PrismCliResult> {
     const script = this.resolveScript()

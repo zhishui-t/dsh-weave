@@ -34,6 +34,10 @@ export function createExecutorLayer(options: ExecutorLayerOptions): ExecutorLaye
     executorProviders = createDefaultExecutorProviderRegistry(runtime, {
       // continuable 子代理映射持久镜像（core.db v3）：重启后恢复对账「可续」判定数据源。
       childrenStore: new ExecutorChildStore(deps.persistence.core),
+      // prism MCP 注入：ACP 会话内 agent 直接拉取 prism_kb_* 知识工具面。
+      ...(deps.prismSupervisor?.mcpServerEntry()
+        ? { extraMcpServers: [deps.prismSupervisor.mcpServerEntry()] }
+        : {}),
     })
     target.executorProviders = executorProviders
     // 启动注册改为异步续体：providers.json 读取不再阻塞宿主事件循环；
