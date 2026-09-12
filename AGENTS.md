@@ -6,8 +6,8 @@ Weave 仓库的开发与维护指南。先读本文件，再改代码。
 
 - 包名：`@deepseek-ai/dsh-plugin-weave`
 - 形态：DSH（DeepSeek Harness）Web/会话插件
-- 目标：多 Agent 团队协作、任务 DAG 调度、知识库与反思、代码图谱、文档转换、Obsidian 同步
-- 当前分支约定：核心开发在 `restore/own-team-engine`
+- 目标：多 Agent 团队协作、任务 DAG 调度、治理、ACP 会话接入（知识库/图谱/文档转换由子项目 prism 承接，见 doc/architecture/prism-adoption.md）
+- 当前分支约定：prism 接入开发在 `master_prism_0912`
 
 ## 2. 目录结构
 
@@ -20,15 +20,12 @@ Weave 仓库的开发与维护指南。先读本文件，再改代码。
 │       ├── index.ts              # 插件唯一服务端入口：name/inject/apply
 │       ├── acp/                  # ACP/ZCode 会话与动态 provider
 │       ├── audit/                # 审计日志
-│       ├── convert/              # 文档转换（AnyDoc）
 │       ├── core/                 # 运行时组合层：capabilities/executors/team-runtime/on-duty
 │       ├── dag/                  # DAG 数据仓库（repository）
 │       ├── executors/            # 执行器注册表与 provider
-│       ├── graph/                # Graphify 代码图谱与知识图谱服务
 │       ├── host/                 # 宿主接线：host-wiring / CLI-MCP / RPC / settings
-│       ├── knowledge/            # 知识模型、引擎、审核、反思、导入
+│       ├── prism/                # Prism 控制面接入层：client/supervisor/staging/gateway/反思
 │       ├── mcp/                  # MCP 入口
-│       ├── obsidian/             # Obsidian Vault 同步
 │       ├── persistence/          # SQLite 持久化与单写队列
 │       ├── safety/               # 熔断与循环保护
 │       ├── scheduling/           # 调度、委托、会话流、状态通知、恢复
@@ -54,7 +51,7 @@ Weave 仓库的开发与维护指南。先读本文件，再改代码。
 2. **会话团队页签必须存在**：`conversation.view` 槽位注册为 `Weave 团队`，对应 `WeaveSessionPanel`。不要删除或迁移到别处。
 3. **服务端入口固定**：`src/plugins/weave/index.ts` 的 `apply(ctx)` 是 Cordis 插件入口；`host/` 负责宿主接线，业务模块不得绕过 `core/team-runtime.ts` 自行组合运行时。
 4. **RPC channel 固定**：`/dsh-weave`。RPC handler 位于 `src/plugins/weave/host/rpc.ts`。
-5. **团队配置目录**：`~/.dsh/teams/*.yaml`；项目级团队运行态在 `<project>/.dsh/weave/team/`；知识库在 `~/.dsh/knowledge`。
+5. **团队配置目录**：`~/.dsh/teams/*.yaml`；项目级团队运行态在 `<project>/.dsh/weave/team/`。知识库由 prism 承接（数据在 `~/.dsh/prism`，HTTP 127.0.0.1:7777）；weave 只持反思暂存区 `~/.dsh/state/knowledge-staging/`（先审后发，approve 落 prism）。
 6. 团队面板过程输出只允许 ACP 执行器接入；DSH `spawn`/`fork` 输出不进 Team Tab。
 7. `fork` 首次创建 continuable 子会话后，同 sessionKey 后续任务必须 followup 同一会话，不得再次 fork。
 8. **不要提交**：`node_modules/`、`dist/`、`.artifacts/`、`subprojects/`、任何非根目录的 `.graphify/`。
@@ -69,7 +66,6 @@ pnpm test                  # 全部 Vitest 单元/组件测试
 pnpm test:ui               # UI 组件测试
 pnpm test:e2e:harness      # Playwright harness（stub RPC，不依赖真实 DSH）
 WEAVE_E2E_LIVE=1 pnpm test:e2e:live   # 真实 DSH Web E2E
-pnpm code:scan             # 生成根目录 .graphify
 ```
 
 ## 5. 开发验证顺序
@@ -107,10 +103,9 @@ pnpm code:scan             # 生成根目录 .graphify
 | --- | --- |
 | `team/` | 团队 YAML、绑定、项目运行态、邮箱、迁移 |
 | `scheduling/` | DAG 调度、委托执行、会话事件回灌、状态通知 |
-| `knowledge/` | 知识存储、审核、反思、导入管线 |
+| `prism/` | Prism 控制面接入：注入检索、暂存区审核、图谱/转换代理、serve 托管 |
 | `host/` | Cordis 宿主接线、`/weave` CLI、MCP 工具、RPC |
 | `executors/` | 执行器注册与 provider（zcode/spawn/fork/acp） |
-| `graph/` | Graphify 代码图谱、知识图谱 |
 | `web/` | 给 RPC 使用的查询服务 |
 | `ui/` | 独立 React UI（测试与参考实现） |
 | `core/` | 分层运行时组合（勿放业务逻辑） |
