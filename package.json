@@ -37,6 +37,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "vendor:prism": "node scripts/vendor-prism.mjs",
     "test:client-ui": "pnpm build && pnpm vitest run test/unit/plugins/weave/client-bundle.ui.test.tsx",
     "test:ui": "pnpm vitest run test/unit/plugins/weave/dashboard.test.tsx test/unit/plugins/weave/dag-panel.test.tsx test/unit/plugins/weave/import-ui.test.tsx test/unit/plugins/weave/client-bundle.ui.test.tsx",
     "test:e2e": "playwright test",

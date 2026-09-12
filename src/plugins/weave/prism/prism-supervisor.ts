@@ -74,10 +74,11 @@ export class PrismSupervisor {
     this.#log = options.log ?? console
   }
 
-  /** 解析 prism CLI 入口；找不到返回 undefined。 */
+  /** 解析 prism CLI/serve 入口：显式/env > 插件内 vendor 布局 > dev 同级仓库。 */
   resolveScript(): string | undefined {
     const candidates = [
       this.#scriptPath,
+      join(repoRoot(), 'dist', 'vendor', 'prism', 'bin', 'prism.js'),
       join(repoRoot(), '..', 'prism', 'packages', 'cli', 'dist', 'index.js'),
     ].filter((path): path is string => typeof path === 'string' && path !== '')
     for (const candidate of candidates) {
@@ -148,10 +149,11 @@ export class PrismSupervisor {
     return { running: false, spawned: true, script, reason: `prism serve 健康等待超时（${this.#startTimeoutMs}ms）` }
   }
 
-  /** 解析 prism MCP stdio 入口（packages/server/dist/mcp/server.js；WEAVE_PRISM_MCP_ENTRY 覆盖）。 */
+/** 解析 prism MCP stdio 入口：env > 插件内 vendor 布局 > dev 同级仓库。 */
   resolveMcpEntry(): string | undefined {
     const candidates = [
       process.env.WEAVE_PRISM_MCP_ENTRY,
+      join(repoRoot(), 'dist', 'vendor', 'prism', 'packages', 'server', 'dist', 'mcp', 'server.js'),
       join(repoRoot(), '..', 'prism', 'packages', 'server', 'dist', 'mcp', 'server.js'),
     ].filter((path): path is string => typeof path === 'string' && path !== '')
     for (const candidate of candidates) {
