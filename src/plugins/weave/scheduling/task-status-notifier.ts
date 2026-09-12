@@ -38,6 +38,11 @@ export interface TaskStatusNotifierOptions {
   notify: (sessionId: string, text: string) => void
   /** 回声抑制开关：true 时 captain/user 动作也通知；默认 false（不回声）。 */
   echoSelfActions?: boolean
+  /**
+   * 状态变更旁路（P3 prism 台账镜像）：单条/批量路径的每次变更都会原样回调；
+   * 回调自身负责容错（抛错按吞掉处理，与通知同哲学），绝不阻断主通知。
+   */
+  onChange?: (change: TaskStatusChange) => void
 }
 
 /** 批量汇总单条消息最多展开的变更行数，超出折叠为计数。 */
@@ -48,14 +53,17 @@ const SELF_ACTORS: ReadonlySet<TaskStatusActor> = new Set(['captain', 'user'])
 export class TaskStatusNotifier {
   readonly #notify: (sessionId: string, text: string) => void
   readonly #echoSelfActions: boolean
+  readonly #onChange?: (change: TaskStatusChange) => void
 
   constructor(options: TaskStatusNotifierOptions) {
     this.#notify = options.notify
     this.#echoSelfActions = options.echoSelfActions ?? false
+    this.#onChange = options.onChange
   }
 
   /** 单条状态变更通知；文案统一，异常吞掉。 */
   notify(change: TaskStatusChange): void {
+    this.#onChange?.(change)
     try {
       if (this.#isSuppressed(change)) return
       this.#notify(change.sessionId, TaskStatusNotifier.formatChange(change))
@@ -70,6 +78,7 @@ export class TaskStatusNotifier {
    */
   notifyBatch(changes: TaskStatusChange[]): void {
     try {
+      for (const change of changes) this.#onChange?.(change)
       const visible = changes.filter((change) => !this.#isSuppressed(change))
       if (visible.length === 0) return
       const byDag = new Map<string, TaskStatusChange[]>()

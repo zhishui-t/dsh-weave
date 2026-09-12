@@ -14,6 +14,7 @@ import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
 import { GraphRefresher } from './graph-refresh.js'
+import { TaskLedgerMirror } from '../prism/task-ledger.js'
 import { OnDutyController } from './on-duty.js'
 import {
   createWeaveNoticeMessage,
@@ -87,10 +88,14 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
 
   const { auditLog, reflection } = capabilities
 
+  // P3 任务台账镜像（prism 承接）：状态变更逐条回报，prism 故障只告警。
+  const ledgerMirror = deps.prism ? new TaskLedgerMirror({ gateway: deps.prism }) : undefined
+
   const statusNotifier = new TaskStatusNotifier({
     notify: (sessionId, text) => {
       notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId))
     },
+    ...(ledgerMirror ? { onChange: (change) => ledgerMirror.report(change) } : {}),
   })
 
   const delegation = new DelegationService(
@@ -173,6 +178,30 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
       // 团队启动：先新建/更新代码图谱（去抖合并，不阻塞派发）。
       graphRefresher.request('team-start', input.sessionId)
       await scheduler.start(input)
+      // P3：DAG 派发后向 prism 台账登记（fire-and-forget，不阻塞派发主链路）。
+      if (ledgerMirror) {
+        void (async () => {
+          try {
+            const dag = await deps.dagRepository.loadDag(input.dagId)
+            const meta = await deps.persistence.tasks.run((db) => {
+              return db.prepare('SELECT team_id, project_id, version, difficulty FROM dags WHERE dag_id = ?').get(input.dagId) as
+                | { team_id: string; project_id: string; version: string; difficulty: string }
+                | undefined
+            })
+            if (!meta) return
+            ledgerMirror.registerDag({
+              dag_id: input.dagId,
+              session_id: input.sessionId,
+              team_id: meta.team_id,
+              project_id: meta.project_id,
+              version: meta.version,
+              difficulty: meta.difficulty,
+            }, dag.tasks)
+          } catch (error) {
+            console.warn('[dsh-weave] prism 任务台账登记读取失败（不影响调度）:', error)
+          }
+        })()
+      }
     },
     log: console,
     getAgentById: (id) => agentsRegistry?.get(id as never),

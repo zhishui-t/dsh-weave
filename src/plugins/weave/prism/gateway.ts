@@ -423,4 +423,14 @@ export class PrismGateway {
   async listRoles(): Promise<{ roles?: Array<unknown>; roles_dir?: string }> {
     return await this.client.request('GET', '/api/roles')
   }
+
+  /** POST /api/tasks/register（P3 台账镜像：批量登记 DAG，不触发 prism 执行）。 */
+  async taskRegister(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return await this.client.request('POST', '/api/tasks/register', { body: payload })
+  }
+
+  /** POST /api/tasks/report（P3 台账镜像：状态回报，prism 侧状态机校验）。 */
+  async taskReport(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return await this.client.request('POST', '/api/tasks/report', { body: payload })
+  }
 }
