@@ -89,6 +89,8 @@ export interface SubagentRunLike {
 
 /** DSH SubagentCapabilities 的 Weave 侧快照（outputSchema/depthLimit/toolFilter/persona）。 */
 export interface SubagentCapabilitiesLike {
+  /** 0.1.5 起新增：provider 是否接受 model/provider/推理档覆盖。 */
+  agentOptions?: boolean;
   outputSchema: boolean;
   depthLimit: boolean;
   toolFilter: boolean;

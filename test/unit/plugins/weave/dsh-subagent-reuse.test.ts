@@ -11,6 +11,7 @@ function turnEvents(text: string): Array<{ type: string; data: Record<string, un
         message: {
           content: [{ type: 'text', text }],
         },
+        stream: [{ type: 'text-chunks', texts: [text] }],
       },
     },
     { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
@@ -78,7 +79,7 @@ describe('DshSubagentExecutorProvider continuable 会话复用', () => {
         snapshot.push(
           { type: 'turn/start', seq: base, data: { turn: 2 } },
           { type: 'step/start', seq: base + 1, data: { turn: 2 } },
-          { type: 'assistant/message', seq: base + 2, data: { message: { content: [{ type: 'text', text: 'done-new-host' }] } } },
+          { type: 'assistant/message', seq: base + 2, data: { message: { content: [{ type: 'text', text: 'done-new-host' }] }, stream: [{ type: 'text-chunks', texts: ['done-new-host'] }] } },
           { type: 'turn/end', seq: base + 3, data: { turn: 2, reason: { kind: 'completed' } } },
         )
       }),

@@ -17,11 +17,11 @@ import { WeaveQueryService } from '../../../../src/plugins/weave/web/query-servi
 
 const lookup: ExecutorLookup = {
   get(id) {
-    return id === 'zcode' ? { id, name: id, kind: 'acp', capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false } } : undefined
+    return id === 'zcode' ? { id, name: id, kind: 'acp', capabilities: { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false } } : undefined
   },
 }
 
-const EXECUTOR = { id: 'zcode', name: 'zcode', kind: 'acp', capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false } }
+const EXECUTOR = { id: 'zcode', name: 'zcode', kind: 'acp', capabilities: { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false } }
 
 const config = {
   schema_version: '1',

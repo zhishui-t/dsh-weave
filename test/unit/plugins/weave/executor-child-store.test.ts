@@ -12,7 +12,7 @@ function turnEvents(text: string): Array<{ type: string; data: Record<string, un
   return [
     { type: 'turn/start', data: { turn: 1 } },
     { type: 'step/start', data: { turn: 1 } },
-    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] }, stream: [{ type: 'text-chunks', texts: [text] }] } },
     { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
   ]
 }

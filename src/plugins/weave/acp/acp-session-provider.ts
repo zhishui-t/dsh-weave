@@ -395,7 +395,7 @@ function normalizeAcpStopReason(reason: string): 'completed' | 'aborted' | 'erro
 
 export class AcpSessionProvider {
   readonly name: string
-  readonly capabilities = { outputSchema: false, depthLimit: false, toolFilter: false, persona: false }
+  readonly capabilities = { agentOptions: true, outputSchema: false, depthLimit: false, toolFilter: false, persona: false }
   readonly inheritsParentContext = false
 
   readonly #command: string

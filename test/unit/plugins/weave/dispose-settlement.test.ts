@@ -14,7 +14,7 @@ import type { SubagentTaskOutput } from '../../../../src/plugins/weave/schedulin
 const lookup: ExecutorLookup = {
   get(id) {
     return id === 'codex'
-      ? { id, name: id, kind: 'codex', capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false } }
+      ? { id, name: id, kind: 'codex', capabilities: { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false } }
       : undefined
   },
 }

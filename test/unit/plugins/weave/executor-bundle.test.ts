@@ -295,7 +295,7 @@ describe.skipIf(hostModule === undefined)('C. 版本与 peer 满足实证（宿�
     '@deepseek-ai/dsh-agent',
   ] as const;
   const CORDIS_PKG = '@deepseek-ai/cordis';
-  const SUPPORTED_PEER_VERSIONS = ['0.1.1-rc.2', '0.1.2-rc.1'];
+  const SUPPORTED_PEER_VERSIONS = ['0.1.1-rc.2', '0.1.2-rc.1', '0.1.5-rc.1', '0.1.5-rc.2'];
 
   const peerProbe = (() => {
     const require = createRequire(import.meta.url);

@@ -145,6 +145,7 @@ describe('ExecutorRegistry（P0-REG-002）', () => {
     const registry = new ExecutorRegistry()
     registry.load(asContext(stubSubagents(['codex'])))
     expect(registry.get('codex')?.capabilities).toEqual({
+      agentOptions: false,
       outputSchema: false,
       depthLimit: false,
       toolFilter: false,

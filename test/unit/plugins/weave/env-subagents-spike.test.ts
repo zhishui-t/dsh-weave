@@ -202,7 +202,7 @@ describe('A. MockSubagentsContext（文档 5.3 API 验证夹具）', () => {
 
     const provider: SubagentProviderLike = {
       name: 'spike-mock',
-      capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+      capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true, agentOptions: true },
       inheritsParentContext: false,
       start: async () => ({ id: 'x', localAgent: undefined, result: Promise.resolve({ output: [], stopReason: 'completed' }), dispose: async () => {} }),
     };
@@ -382,7 +382,7 @@ describe.skipIf(realEnv === undefined)('B. 真实 DSH SubagentRuntime（@deepsee
 function makeFakeProvider(name: string): SubagentProviderLike {
   return {
     name,
-    capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+    capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true, agentOptions: true },
     inheritsParentContext: false,
     start: async (_request: SubagentStartRequestLike) => ({
       id: `fake-session-${name}`,

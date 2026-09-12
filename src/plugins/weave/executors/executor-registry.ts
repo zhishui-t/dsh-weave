@@ -46,6 +46,7 @@ export function classifyProvider(provider: string): ExecutorKind {
 }
 
 const NO_CAPABILITIES: SubagentCapabilities = {
+  agentOptions: false,
   outputSchema: false,
   depthLimit: false,
   toolFilter: false,
