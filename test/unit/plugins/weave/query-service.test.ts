@@ -2,7 +2,7 @@
  * t2 —— Web 真实数据查询/操作服务测试。
  *
  * 覆盖：task/list 分页/过滤（含 sessionId）/排序、task/get 双入口、下发通道已删除（队长模式）、
- * task/action 六动作状态机路径、knowledge 三端点、audit/list 过滤校验、
+ * task/action 六动作状态机路径、audit/list 过滤校验、
  * 会话绑定直读与复用 TeamManager、session/revisions 最近优先、依赖缺失
  * configuration_error 与 endpoint 分发器。
  *
@@ -18,8 +18,6 @@ import { WeaveMcp, type CliMcpDeps } from '../../../../src/plugins/weave/host/cl
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository.js'
 import { ExecutorRegistry } from '../../../../src/plugins/weave/executors/executor-registry.js'
 import { FeedbackRouter } from '../../../../src/plugins/weave/scheduling/feedback-router.js'
-import { KnowledgeStore, type CreateCandidateInput } from '../../../../src/plugins/weave/knowledge/knowledge-model.js'
-import { KnowledgeReviewService } from '../../../../src/plugins/weave/knowledge/knowledge-review.js'
 import { openPersistence, type WeavePersistence } from '../../../../src/plugins/weave/persistence/index.js'
 import { SessionTracker } from '../../../../src/plugins/weave/scheduling/session-tracker.js'
 import { TeamManager } from '../../../../src/plugins/weave/team/team-manager.js'
@@ -88,7 +86,6 @@ interface Env {
   svc: WeaveQueryService
   audit: AuditLog
   tracker: SessionTracker
-  store: KnowledgeStore
   teams: TeamManager
   rootDir: string
   close: () => void
@@ -108,9 +105,7 @@ async function newEnv(): Promise<Env> {
   registry.load({ subagents: new MockSubagentsContext() } as never)
   const tracker = new SessionTracker(p.feedback)
   const router = new FeedbackRouter({ tasks: p.tasks, feedback: p.feedback, sessionTracker: tracker })
-  const store = new KnowledgeStore({ rootDir: join(rootDir, 'knowledge'), metaDb: p.knowledgeMeta })
   const audit = new AuditLog({ dir: join(rootDir, 'audit') })
-  const review = new KnowledgeReviewService({ knowledge: store, audit })
   const teams = new TeamManager(registry, { teamsDir: rootDir, persistence: p })
   const mcp = new WeaveMcp({
     persistence: p,
@@ -118,8 +113,6 @@ async function newEnv(): Promise<Env> {
     executorRegistry: registry,
     feedbackRouter: router,
     dagRepository: new DagRepository(p),
-    knowledgeReview: review,
-    knowledgeStore: store,
   })
   const svc = new WeaveQueryService({
     persistence: p,
@@ -127,7 +120,6 @@ async function newEnv(): Promise<Env> {
     auditLog: audit,
     sessionTracker: tracker,
     teamManager: teams,
-    knowledgeStore: store,
   })
   const env: Env = {
     p,
@@ -135,7 +127,6 @@ async function newEnv(): Promise<Env> {
     svc,
     audit,
     tracker,
-    store,
     teams,
     rootDir,
     close: () => {
@@ -364,128 +355,6 @@ describe('WeaveQueryService task 域', () => {
 
 /* --------------------------------- 知识域 --------------------------------- */
 
-describe('WeaveQueryService knowledge 域', () => {
-  async function seedCandidate(env: Env, overrides: Partial<CreateCandidateInput> = {}) {
-    return env.store.createCandidate({
-      layer: 'project',
-      scope: { projectId: 'demo', version: 'v1' },
-      filename: `k-${Math.random().toString(36).slice(2, 10)}.md`,
-      frontmatter: { title: '项目指南', type: 'doc', visibility: 'project_only', tags: ['指南'] },
-      body: '# 正文',
-      ...overrides,
-    })
-  }
-
-  it('knowledge/list：默认 candidate 队列带标题标签；layer 过滤；active 走元数据查询', async () => {
-    const env = await newEnv()
-    const a = await seedCandidate(env, { frontmatter: { title: 'A 指南', type: 'doc', visibility: 'project_only', tags: ['a'] } })
-    await seedCandidate(env, {
-      layer: 'role',
-      scope: { roleId: 'designer' },
-      frontmatter: { title: 'C 规范', type: 'guide', visibility: 'role_only', tags: ['c'] },
-    })
-
-    const queue = (await env.svc.knowledgeList({})) as { candidates: Array<{ id: string; title?: string }> }
-    expect(queue.candidates.map((c) => c.title)).toEqual(['A 指南', 'C 规范'])
-
-    const roleOnly = (await env.svc.knowledgeList({ layer: 'role' })) as { candidates: Array<{ layer: string }> }
-    expect(roleOnly.candidates).toHaveLength(1)
-    expect(roleOnly.candidates[0]!.layer).toBe('role')
-
-    // approve 一条后 active 状态可查
-    await env.svc.knowledgeApprove({ id: a.id })
-    const activeList = (await env.svc.knowledgeList({ status: 'active' })) as { candidates: Array<{ id: string }> }
-    expect(activeList.candidates.map((c) => c.id)).toEqual([a.id])
-  })
-
-  it('knowledge/list：非法 status/layer/limit 报 invalid_argument', async () => {
-    const env = await newEnv()
-    expect(await errorCodeOf(() => env.svc.knowledgeList({ status: 'archived' }))).toBe('invalid_argument')
-    expect(await errorCodeOf(() => env.svc.knowledgeList({ layer: 'galaxy' }))).toBe('invalid_argument')
-    expect(await errorCodeOf(() => env.svc.knowledgeList({ limit: -1 }))).toBe('invalid_argument')
-  })
-
-  it('knowledge/approve+reject：真实生命周期；重复审核与未知 id 报错', async () => {
-    const env = await newEnv()
-    const ok = await seedCandidate(env)
-    const bad = await seedCandidate(env)
-
-    const approved = (await env.svc.knowledgeApprove({ knowledgeId: ok.id })) as { status: string }
-    expect(approved.status).toBe('active')
-    const rejected = (await env.svc.knowledgeReject({ id: bad.id, reason: '内容过时' })) as { status: string }
-    expect(rejected.status).toBe('deprecated')
-
-    expect(await errorCodeOf(() => env.svc.knowledgeApprove({ id: ok.id }))).toBe('invalid_knowledge_status')
-    expect(await errorCodeOf(() => env.svc.knowledgeReject({ id: 'ghost' }))).toBe('knowledge_not_found')
-  })
-})
-
-/* --------------------------------- 审计域 --------------------------------- */
-
-describe('WeaveQueryService knowledge/graph', () => {
-  it('读取真实 Markdown/frontmatter，解析 [[双链]] 并标记缺失目标', async () => {
-    const env = await newEnv()
-    const a = await env.store.createCandidate({
-      layer: 'project',
-      scope: { projectId: 'demo', version: 'v1' },
-      filename: 'graph-a.md',
-      frontmatter: { title: 'A 指南', type: 'doc', visibility: 'project_only', tags: ['图谱'] },
-      body: '参见 [[B 指南]] 和 [[缺失想法]]。',
-    })
-    const b = await env.store.createCandidate({
-      layer: 'project',
-      scope: { projectId: 'demo', version: 'v1' },
-      filename: 'graph-b.md',
-      frontmatter: { title: 'B 指南', type: 'guide', visibility: 'project_only', tags: ['双链'] },
-      body: '反向引用 [[A 指南]]。',
-    })
-
-    const graph = await env.svc.knowledgeGraph({})
-    expect(graph.counts).toMatchObject({ knowledge: 2, missing: 1, edges: 3, unresolved: 1, skipped: 0 })
-    expect(graph.nodes.find((node) => node.id === a.id)).toMatchObject({ title: 'A 指南', kind: 'knowledge' })
-    expect(graph.nodes.find((node) => node.title === '缺失想法')).toMatchObject({ kind: 'missing' })
-    expect(graph.edges).toEqual(expect.arrayContaining([
-      { source: a.id, target: b.id },
-      { source: a.id, target: `missing:缺失想法` },
-      { source: b.id, target: a.id },
-    ]))
-
-    const activeOnly = await env.svc.knowledgeGraph({ status: 'active' })
-    expect(activeOnly.counts.knowledge).toBe(0)
-    expect(await errorCodeOf(() => env.svc.knowledgeGraph({ status: 'archived' }))).toBe('invalid_argument')
-  })
-
-  it('knowledge/graph：project 透传按项目过滤；空串视为未提供；非字符串报错', async () => {
-    const env = await newEnv()
-    const demo = await env.store.createCandidate({
-      layer: 'project',
-      scope: { projectId: 'demo', version: 'v1' },
-      filename: 'demo.md',
-      frontmatter: { title: 'Demo 指南', type: 'doc', visibility: 'project_only', tags: [] },
-      body: '# 正文',
-    })
-    const other = await env.store.createCandidate({
-      layer: 'project',
-      scope: { projectId: 'proj-b', version: 'v1' },
-      filename: 'other.md',
-      frontmatter: { title: 'Other 指南', type: 'doc', visibility: 'project_only', tags: [] },
-      body: '# 正文',
-    })
-
-    const demoGraph = await env.svc.knowledgeGraph({ project: 'demo' })
-    expect(demoGraph.nodes.filter((node) => node.kind === 'knowledge').map((node) => node.id)).toEqual([demo.id])
-    expect(demoGraph.projects).toEqual(['demo', 'proj-b'])
-
-    const otherGraph = await env.svc.knowledgeGraph({ project: 'proj-b' })
-    expect(otherGraph.nodes.filter((node) => node.kind === 'knowledge').map((node) => node.id)).toEqual([other.id])
-
-    // 空串按 optionalString 语义视为未提供 → 不过滤
-    const all = await env.svc.knowledgeGraph({ project: '' })
-    expect(all.counts.knowledge).toBe(2)
-    expect(await errorCodeOf(() => env.svc.knowledgeGraph({ project: 42 }))).toBe('invalid_argument')
-  })
-})
-
 describe('WeaveQueryService audit 域', () => {
   async function seedAudit(env: Env): Promise<void> {
     await env.audit.record({
@@ -607,7 +476,6 @@ describe('WeaveQueryService session 域：session/status', () => {
       sessionTracker: base.tracker,
       teamManager: base.teams,
       ...(scheduler ? { scheduler: scheduler as never } : {}),
-      knowledgeStore: base.store,
     })
   }
 
@@ -737,7 +605,6 @@ describe('WeaveQueryService dispatch 与依赖降级', () => {
       const bare = new WeaveQueryService({ persistence: p })
       expect(await errorCodeOf(() => bare.dispatch('task/create', {}))).toBe('invalid_argument')
       expect(await errorCodeOf(() => bare.taskAction({ action: 'accept', taskId: 'x' }))).toBe('configuration_error')
-      expect(await errorCodeOf(() => bare.knowledgeList({}))).toBe('configuration_error')
       expect(await errorCodeOf(() => bare.auditList({}))).toBe('configuration_error')
       expect(await errorCodeOf(() => bare.sessionRevisions({}))).toBe('configuration_error')
       expect(await errorCodeOf(() => bare.sessionSetBinding({ sessionId: 's', teamId: 't' }))).toBe('configuration_error')
@@ -754,121 +621,21 @@ describe('WeaveQueryService dispatch 与依赖降级', () => {
 /* ------------------------------- 图谱/Obsidian/Document 服务组装 ------------------------------- */
 
 describe('createWeaveQueryServiceFromCliDeps 服务组装', () => {
-  it('从 CliMcpDeps 自组装 graph/obsidian/document 服务并可经 dispatch 路由', async () => {
+  it('从 CliMcpDeps 组装 task/audit/session 域并可经 dispatch 路由（知识域已移交 prism）', async () => {
     const p = openPersistence({ inMemory: true })
     try {
-      const fakeGraph = {
-        hasGraph: () => true,
-        hasFlows: () => true,
-        graphSummary: async () => ({
-          graphPath: '/repo/.graphify/graph.json',
-          flowsPath: '/repo/.graphify/flows.json',
-          nodeCount: 0,
-          edgeCount: 0,
-          communityCount: 0,
-          hasFlows: true,
-        }),
-        path: async (source: string, target: string) => `path ${source} -> ${target}`,
-        explain: async (node: string) => `explain ${node}`,
-        affectedFlows: async (files: string[]) => ({
-          changedFiles: files,
-          matchedNodeIds: [],
-          unmatchedFiles: [],
-          affectedFlows: [],
-        }),
-        listFlows: async () => [],
-        getFlow: async (id: string) => ({
-          id,
-          name: id,
-          entryPoint: `src/${id}.ts`,
-          entryPointId: id,
-          path: [id],
-          qualifiedPath: [`src/${id}.ts`],
-          depth: 1,
-          nodeCount: 0,
-          fileCount: 0,
-          files: [],
-          criticality: 0,
-          warnings: [],
-        }),
-      } as unknown as import('../../../../src/plugins/weave/graph/graph-service.js').GraphService
+      const svc = createWeaveQueryServiceFromCliDeps({ persistence: p } as unknown as CliMcpDeps)
 
-      const fakeObsidian = {
-        generate: async () => ({ generated: 0, updated: 0, vaultPath: '/tmp/vault', conflictCount: 0 }),
-        open: async () => ({ opened: true as const, vaultPath: '/tmp/vault', uri: 'obsidian://open?path=' }),
-        reindex: async () => ({ reindexed: true as const, entries: 0, vaultPath: '/tmp/vault', conflictCount: 0 }),
-        status: async () => ({ exists: true, vaultPath: '/tmp/vault', lastGeneratedAt: null, conflictCount: 0 }),
-        conflicts: async () => ({ vaultPath: '/tmp/vault', conflicts: [] }),
-      } as unknown as import('../../../../src/plugins/weave/obsidian/obsidian-service.js').ObsidianService
+      // 知识/图谱/转换端点不再存在（prism 承接）
+      await expect(svc.dispatch('code/graph', {})).rejects.toMatchObject({ code: 'invalid_argument' })
+      await expect(svc.dispatch('obsidian/status', {})).rejects.toMatchObject({ code: 'invalid_argument' })
+      await expect(svc.dispatch('document/convert', { file: 'x.pdf' })).rejects.toMatchObject({ code: 'invalid_argument' })
+      await expect(svc.dispatch('knowledge/list', {})).rejects.toMatchObject({ code: 'invalid_argument' })
 
-      const fakeDocument = {
-        convert: async () => ({ jobId: 'doc_1', status: 'queued' as const, filename: 'x.pdf' }),
-        status: async () => ({
-          jobId: 'doc_1',
-          status: 'queued' as const,
-          filename: 'x.pdf',
-          warnings: [],
-          created_at: '',
-          updated_at: '',
-        }),
-        preview: async () => ({ jobId: 'doc_1', status: 'done' as const, markdown: '# x', warnings: [] }),
-        history: async () => [],
-      } as unknown as import('../../../../src/plugins/weave/convert/document-converter.js').DocumentConverter
-
-      const svc = createWeaveQueryServiceFromCliDeps({
-        persistence: p,
-        graphService: fakeGraph,
-        obsidianService: fakeObsidian,
-        documentConverter: fakeDocument,
-      } as unknown as CliMcpDeps)
-
-      await expect(svc.dispatch('code/graph', {})).resolves.toMatchObject({ nodeCount: 0 })
-      await expect(svc.dispatch('obsidian/status', {})).resolves.toMatchObject({ exists: true })
-      await expect(svc.dispatch('document/convert', { file: 'x.pdf' })).resolves.toMatchObject({ status: 'queued' })
-
-      // RPC 层前缀路由：code/、obsidian/、document/ 均透传到 WeaveQueryService.dispatch。
-      const call = createWeaveRpcHandler({ queryService: svc } as never)
-      await expect(call('code/graph', {})).resolves.toMatchObject({ ok: true, value: { nodeCount: 0 } })
-      await expect(call('obsidian/status', {})).resolves.toMatchObject({ ok: true, value: { exists: true } })
-      await expect(call('document/convert', { file: 'x.pdf' })).resolves.toMatchObject({ ok: true, value: { status: 'queued' } })
-    } finally {
-      p.close()
-    }
-  })
-
-  it('extras 可覆盖 deps 图谱实例', async () => {
-    const p = openPersistence({ inMemory: true })
-    try {
-      const depsGraph = {
-        hasGraph: () => true,
-        hasFlows: () => true,
-        graphSummary: async () => ({
-          graphPath: '/from-deps',
-          flowsPath: '/from-deps-flows',
-          nodeCount: 1,
-          edgeCount: 0,
-          communityCount: 0,
-          hasFlows: true,
-        }),
-      } as unknown as import('../../../../src/plugins/weave/graph/graph-service.js').GraphService
-      const extraGraph = {
-        hasGraph: () => true,
-        hasFlows: () => true,
-        graphSummary: async () => ({
-          graphPath: '/from-extras',
-          flowsPath: '/from-extras-flows',
-          nodeCount: 2,
-          edgeCount: 0,
-          communityCount: 0,
-          hasFlows: true,
-        }),
-      } as unknown as import('../../../../src/plugins/weave/graph/graph-service.js').GraphService
-      const svc = createWeaveQueryServiceFromCliDeps(
-        { persistence: p, graphService: depsGraph } as unknown as CliMcpDeps,
-        { graphService: extraGraph },
-      )
-      const result = await svc.codeGraph({}) as { graphPath: string }
-      expect(result.graphPath).toBe('/from-extras')
+      // task/audit/session 域仍可用
+      const listed = await svc.taskList({})
+      expect(listed.total).toBe(0)
+      expect(((await svc.sessionBindings()) as { bindings: unknown[] }).bindings).toEqual([])
     } finally {
       p.close()
     }

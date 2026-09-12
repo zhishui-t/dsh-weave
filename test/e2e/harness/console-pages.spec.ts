@@ -25,7 +25,7 @@ test.describe(HARNESS_DESCRIBE, () => {
     await expect(page.getByTestId('overview-card-executors')).toContainText('执行器（2）')
     await expect(page.getByTestId('overview-card-tasks')).toContainText('任务总数（7）')
     await expect(page.getByTestId('overview-card-banned')).toContainText('熔断/禁用任务（1）')
-    await expect(page.getByTestId('overview-card-knowledge')).toContainText('待审知识（1）')
+    await expect(page.getByTestId('overview-card-knowledge')).toContainText('知识库（Prism）')
 
     // 最近审计卡来自 audit/list（≤3 条）
     await expect(page.getByTestId('overview-card-audit')).toContainText('task.status_changed')
@@ -35,7 +35,7 @@ test.describe(HARNESS_DESCRIBE, () => {
     await expect(page.getByTestId('page-teams')).toBeVisible()
     await page.getByTestId('nav-overview').click()
     await page.getByTestId('overview-card-knowledge').click()
-    await expect(page.getByTestId('page-knowledge')).toBeVisible()
+    await expect(page.getByTestId('page-knowledge-prism')).toBeVisible()
   })
 
   test('audit: 事件渲染 + 过滤控件齐备，变更过滤触发携带参数的重新请求', async ({ page }) => {
@@ -66,36 +66,6 @@ test.describe(HARNESS_DESCRIBE, () => {
     const options = await page.getByTestId('audit-type-filter').locator('option').allInnerTexts()
     expect(options.length).toBeGreaterThan(1)
     expect(options.join('|')).toContain('task.status_changed')
-  })
-
-  test('knowledge: approve 单击即发 knowledge/approve{id}', async ({ page }) => {
-    await openHarnessPage(page)
-    await openDashboardHarness(page)
-    await page.getByTestId('nav-knowledge').click()
-    await expect(page.getByTestId('knowledge-item-kn-1')).toBeVisible()
-    await page.getByTestId('knowledge-approve-kn-1').click()
-    const calls = await readCalls(page)
-    const approve = calls.find((call) => call.endpoint === 'knowledge/approve')
-    expect(approve, 'approve 应直接发送 knowledge/approve').toBeTruthy()
-    expect(approve!.payload).toMatchObject({ id: 'kn-1' })
-  })
-
-  test('knowledge: status/layer 过滤选项齐全，切换触发重新请求', async ({ page }) => {
-    await openHarnessPage(page)
-    await openDashboardHarness(page)
-    await page.getByTestId('nav-knowledge').click()
-    const statusOptions = await page.getByTestId('knowledge-status-filter').locator('option').count()
-    expect(statusOptions).toBe(4) // candidate/active/deprecated/superseded
-    const layerOptions = await page.getByTestId('knowledge-layer-filter').locator('option').count()
-    expect(layerOptions).toBe(5) // 全部 + project/role/instance/shared
-
-    await page.getByTestId('knowledge-status-filter').selectOption('active')
-    await expect
-      .poll(async () => {
-        const calls = await readCalls(page)
-        return calls.filter((call) => call.endpoint === 'knowledge/list' && call.payload['status'] === 'active').length
-      }, { timeout: 5_000 })
-      .toBeGreaterThan(0)
   })
 
   test('executors: 执行器卡来自 snapshot，无 zcode 目录时不渲染 zcode-catalog', async ({ page }) => {
@@ -134,11 +104,9 @@ test.describe(HARNESS_DESCRIBE, () => {
     expect(JSON.stringify(update!.payload)).toContain('weave-e2e')
   })
 
-  test('empty-state: teams/knowledge/audit 空数据渲染 page-empty', async ({ page }) => {
+  test('empty-state: teams/audit 空数据渲染 page-empty', async ({ page }) => {
     await openHarnessPage(page, {
       snapshot: { ok: true, value: { teams: [], executors: [{ id: 'spawn', kind: 'dsh_subagent' }] } },
-      'knowledge/list': { ok: true, value: { candidates: [] } },
-      'knowledge/graph': { ok: true, value: { nodes: [], edges: [], counts: { knowledge: 0, missing: 0, edges: 0, unresolved: 0, skipped: 0 } } },
       'audit/list': { ok: true, value: { events: [] } },
     })
     await openDashboardHarness(page)
@@ -146,9 +114,6 @@ test.describe(HARNESS_DESCRIBE, () => {
     await page.getByTestId('nav-teams').click()
     await expect(page.getByTestId('page-empty').first()).toBeVisible()
     await expect(page.getByTestId('team-card-seed-team')).toHaveCount(0)
-
-    await page.getByTestId('nav-knowledge').click()
-    await expect(page.getByTestId('page-empty').first()).toBeVisible()
 
     await page.getByTestId('nav-audit').click()
     await expect(page.getByTestId('page-empty').first()).toBeVisible()

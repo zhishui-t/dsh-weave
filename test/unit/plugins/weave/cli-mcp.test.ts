@@ -10,12 +10,11 @@ import { CircuitBreaker } from '../../../../src/plugins/weave/safety/circuit-bre
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository'
 import { ExecutorRegistry } from '../../../../src/plugins/weave/executors/executor-registry'
 import { FeedbackRouter } from '../../../../src/plugins/weave/scheduling/feedback-router'
-import { KnowledgeReviewService } from '../../../../src/plugins/weave/knowledge/knowledge-review'
-import { KnowledgeStore } from '../../../../src/plugins/weave/knowledge/knowledge-model'
+import { KnowledgeStaging } from '../../../../src/plugins/weave/prism/knowledge-staging'
+import type { PrismGateway } from '../../../../src/plugins/weave/prism/gateway'
 import { openPersistence, type WeavePersistence } from '../../../../src/plugins/weave/persistence/index'
 import { SessionTracker } from '../../../../src/plugins/weave/scheduling/session-tracker'
 import { TaskStatusNotifier } from '../../../../src/plugins/weave/scheduling/task-status-notifier'
-import type { GraphService } from '../../../../src/plugins/weave/graph/graph-service'
 import { MockSubagentsContext } from './fixtures/mock-subagents'
 
 const GOOD_TEAM = `schema_version: "1"
@@ -80,7 +79,7 @@ interface Env {
   rootDir: string
   router: FeedbackRouter
   breaker: CircuitBreaker
-  kstore: KnowledgeStore
+  staging: KnowledgeStaging
   close: () => void
 }
 
@@ -89,6 +88,44 @@ const envs: Env[] = []
 afterAll(() => {
   for (const env of envs) env.close()
 })
+
+/**
+ * 测试桩 PrismGateway：暂存区走真实 KnowledgeStaging（文件制），
+ * deposit/search/graph 返回固定形状——本文件验证的是 MCP/CLI 编排层。
+ */
+function fakePrism(staging: KnowledgeStaging): PrismGateway {
+  return {
+    staging,
+    reviewQueue: async (limit?: number) => {
+      const list = await staging.list()
+      return typeof limit === 'number' ? list.slice(0, limit) : list
+    },
+    countStaged: async () => await staging.count(),
+    approveStaged: async (id: string) => {
+      const staged = await staging.get(id)
+      if (!staged) throw new (await import('../../../../src/plugins/weave/state/weave-error')).WeaveError('knowledge_not_found', `暂存知识不存在: ${id}`)
+      await staging.remove(id)
+      return { staged, deposit: { id: `KB-${id}`, version: 1, path: `/kb/${id}`, action: 'created' as const } }
+    },
+    rejectStaged: async (id: string) => {
+      const staged = await staging.get(id)
+      if (!staged) throw new (await import('../../../../src/plugins/weave/state/weave-error')).WeaveError('knowledge_not_found', `暂存知识不存在: ${id}`)
+      await staging.remove(id)
+      return staged
+    },
+    search: async ({ query }: { query: string }) =>
+      query.includes('未命中') ? [] : [{
+        id: 'KB-1', version: 1, title: `命中:${query}`, type: 'doc' as const, layer: 'project' as const,
+        book: 'weave-execution', module: 'doc', excerpt: `正文 ${query}`, score: 1, source: 'project/p/weave-execution/doc/KB-1@v1', freshness: 1,
+      }],
+    graphBuild: async () => ({ project: 'weave', status: 'done', job: { job_id: 'j1', project: 'weave', status: 'done' }, ok: true }),
+    graphQuery: async ({ question }: { question: string }) => ({ project: 'weave', output: `查询结果:${question}` }),
+    graphPath: async ({ source, target }: { source: string; target: string }) => ({ project: 'weave', path: `路径:${source} -> ${target}` }),
+    graphExplain: async ({ node }: { node: string }) => ({ project: 'weave', explain: `解释:${node}` }),
+    graphAffected: async ({ files }: { files: string[] }) => ({ project: 'weave', affected: files }),
+  } as unknown as PrismGateway
+}
+
 
 async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNotifier, audit?: AuditLog): Promise<Env> {
   const rootDir = mkdtempSync(join(tmpdir(), 'weave-cli-'))
@@ -106,8 +143,7 @@ async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNo
     feedback: p.feedback,
     sessionTracker: tracker,
   })
-  const kstore = new KnowledgeStore({ rootDir: join(rootDir, 'knowledge'), metaDb: p.knowledgeMeta })
-  const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: join(rootDir, 'audit') }) })
+  const staging = new KnowledgeStaging({ dir: join(rootDir, 'knowledge-staging') })
   const breaker = new CircuitBreaker()
   const mcp = new WeaveMcp({
     persistence: p,
@@ -117,8 +153,7 @@ async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNo
     executorRegistry: registry2,
     feedbackRouter: router,
     dagRepository: new DagRepository(p),
-    knowledgeReview: kreview,
-    knowledgeStore: kstore,
+    prism: fakePrism(staging),
     circuitBreaker: breaker,
   })
   const env: Env = {
@@ -129,7 +164,7 @@ async function newEnv(registry?: ExecutorRegistry, statusNotifier?: TaskStatusNo
     rootDir,
     router,
     breaker,
-    kstore,
+    staging,
     close: () => {
       p.close()
       rmSync(rootDir, { recursive: true, force: true })
@@ -353,55 +388,52 @@ describe('WeaveCli（/weave 命令）', () => {
 })
 
 describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）', () => {
-  async function makeCandidate(env: Env, id: string): Promise<string> {
-    const meta = await env.kstore.createCandidate({
-      layer: 'shared',
-      scope: {},
-      filename: `${id}.md`,
-      frontmatter: { title: `知识-${id}`, type: 'pitfall', visibility: 'global', tags: ['t36'] },
-      body: `正文 ${id}`,
+  async function stageEntry(env: Env, id: string): Promise<string> {
+    const staged = await env.staging.append({
+      title: `知识-${id}`,
+      type: 'pitfall',
+      content: `正文 ${id}`,
+      tags: ['t36'],
+      task_id: 'T1',
+      role_id: 'coder',
+      project_id: 'proj-a',
+      version: 'v1',
     })
-    return meta.id
+    return staged.id
   }
 
-  it('knowledgeReview：空队列 []；candidate 队列含标题字段；limit 生效', async () => {
+  it('knowledgeReview：空队列 []；暂存队列含标题字段；limit 生效', async () => {
     const env = await newEnv()
     expect(await env.mcp.knowledgeReview()).toEqual({ candidates: [] })
-    const candId = await makeCandidate(env, 'k1')
+    const stagedId = await stageEntry(env, 'k1')
     const { candidates } = await env.mcp.knowledgeReview()
     expect(candidates).toHaveLength(1)
-    expect(candidates[0]).toMatchObject({ id: candId, status: 'candidate', title: '知识-k1' })
+    expect(candidates[0]).toMatchObject({ id: stagedId, status: 'candidate', title: '知识-k1' })
     const limited = await env.mcp.knowledgeReview({ limit: 1 })
     expect(limited.candidates).toHaveLength(1)
     await expect(env.mcp.knowledgeReview({ limit: 0 })).rejects.toMatchObject({ code: 'invalid_argument' })
-    await expect(env.mcp.knowledgeReview({ status: 'nope' })).rejects.toMatchObject({ code: 'invalid_argument' })
   })
 
-  it('knowledgeReview status=active：走 listMeta；approve/reject 生命周期与非法态', async () => {
+  it('knowledgeApprove/reject：暂存 → 落库/删除；未知 id knowledge_not_found', async () => {
     const env = await newEnv()
-    const candId = await makeCandidate(env, 'k2')
-    await env.mcp.knowledgeApprove(candId)
-    const active = await env.mcp.knowledgeReview({ status: 'active' })
-    expect(active.candidates.map((c) => c.id)).toContain(candId)
-    // 非 candidate 不可再审核
-    await expect(env.mcp.knowledgeApprove(candId)).rejects.toMatchObject({ code: 'invalid_knowledge_status' })
-    const cand2 = await makeCandidate(env, 'k3')
-    await env.mcp.knowledgeReject(cand2, '与现有重复')
-    const deprecated = await env.mcp.knowledgeReview({ status: 'deprecated' })
-    expect(deprecated.candidates.map((c) => c.id)).toContain(cand2)
+    const stagedId = await stageEntry(env, 'k2')
+    const approved = await env.mcp.knowledgeApprove(stagedId)
+    expect(approved).toMatchObject({ id: `KB-${stagedId}`, status: 'active' })
+    expect(await env.staging.count()).toBe(0)
+    const staged2 = await stageEntry(env, 'k3')
+    const rejected = await env.mcp.knowledgeReject(staged2, '与现有重复')
+    expect(rejected).toMatchObject({ id: staged2, status: 'rejected' })
     await expect(env.mcp.knowledgeApprove('ghost-id')).rejects.toMatchObject({ code: 'knowledge_not_found' })
+    await expect(env.mcp.knowledgeReject('ghost-id')).rejects.toMatchObject({ code: 'knowledge_not_found' })
   })
 
-  it('knowledgeSearch：只检索 active，支持关键词命中；缺 query 报错', async () => {
+  it('knowledgeSearch：代理 prism 检索；缺 query 报错', async () => {
     const env = await newEnv()
-    const candId = await makeCandidate(env, 'search1')
-    // candidate 不应被检索到
-    const before = await env.mcp.knowledgeSearch({ query: '正文' })
+    const before = await env.mcp.knowledgeSearch({ query: '未命中关键词' })
     expect(before.total_hits).toBe(0)
-    await env.mcp.knowledgeApprove(candId)
-    const after = await env.mcp.knowledgeSearch({ query: 'search1' })
+    const after = await env.mcp.knowledgeSearch({ query: '登录链路' })
     expect(after.total_hits).toBeGreaterThan(0)
-    expect(after.results.some((r) => r.id === candId)).toBe(true)
+    expect(after.results[0]).toMatchObject({ layer: 'project', status: 'active' })
     await expect(env.mcp.knowledgeSearch({})).rejects.toMatchObject({ code: 'invalid_argument' })
   })
 
@@ -482,29 +514,25 @@ describe('WeaveMcp 补充：知识审核 / 任务运维 / 禁令列表（t36）'
 })
 
 describe('WeaveCli 补充命令（t36）', () => {
-  it('knowledge review/approve/reject：文本与 --json', async () => {
+  it('knowledge review/approve/reject：暂存区审核文本与 --json', async () => {
     const env = await newEnv()
-    const candId = await env.kstore.createCandidate({
-      layer: 'shared',
-      scope: {},
-      filename: 'cli-k.md',
-      frontmatter: { title: 'CLI 审核', type: 'pitfall', visibility: 'global', tags: [] },
-      body: '内容',
+    const staged = await env.staging.append({
+      title: 'CLI 审核', type: 'pitfall', content: '内容', tags: [],
+      task_id: 'T1', role_id: 'coder', project_id: 'proj-a', version: 'v1',
     })
     const list = await env.cli.run(['knowledge', 'review'])
     expect(list.exitCode).toBe(0)
-    expect(list.text).toContain(candId.id)
-    const approved = await env.cli.run(['knowledge', 'approve', candId.id])
+    expect(list.text).toContain(staged.id)
+    const approved = await env.cli.run(['knowledge', 'approve', staged.id])
     expect(approved.text).toContain('active')
     const parsed = JSON.parse(approved.json) as { ok: boolean; data: { status: string } }
     expect(parsed.data.status).toBe('active')
-    const cand2 = await env.kstore.createCandidate({
-      layer: 'shared', scope: {}, filename: 'cli-k2.md',
-      frontmatter: { title: 'CLI 驳回', type: 'pitfall', visibility: 'global', tags: [] },
-      body: '内容',
+    const staged2 = await env.staging.append({
+      title: 'CLI 驳回', type: 'pitfall', content: '内容', tags: [],
+      task_id: 'T2', role_id: 'coder', project_id: 'proj-a', version: 'v1',
     })
-    const rejected = await env.cli.run(['knowledge', 'reject', cand2.id, '重复'])
-    expect(rejected.text).toContain('deprecated')
+    const rejected = await env.cli.run(['knowledge', 'reject', staged2.id, '重复'])
+    expect(rejected.text).toContain('rejected')
   })
 
   it('task retry/skip/cancel/reopen：文本输出与 --json', async () => {
@@ -544,45 +572,15 @@ describe('WeaveCli 补充命令（t36）', () => {
   })
 })
 
-describe('WeaveMcp/WeaveCli：图谱工具（doc/09 §2.4）', () => {
-  function fakeGraphService(): GraphService {
-    return {
-      build: async () => ({ graphPath: '/tmp/.graphify/graph.json', flowsPath: '/tmp/.graphify/flows.json' }),
-      query: async (question: string) => `查询结果:${question}`,
-      path: async (source: string, target: string) => `路径:${source} -> ${target}`,
-      explain: async (node: string) => `解释:${node}`,
-      affectedFlows: async (files: string[]) => ({
-        changedFiles: files,
-        matchedNodeIds: files.length === 0 ? [] : ['src/login.ts'],
-        unmatchedFiles: [],
-        affectedFlows: files.length === 0 ? [] : [{
-          id: 'flow-1',
-          name: '登录',
-          entryPoint: 'src/login.ts',
-          entryPointId: 'n1',
-          path: ['n1'],
-          qualifiedPath: ['Q.n1'],
-          depth: 1,
-          nodeCount: 1,
-          fileCount: 1,
-          files: ['src/login.ts'],
-          criticality: 1,
-          warnings: [],
-        }],
-      }),
-      hasGraph: () => true,
-      listFlows: async () => [],
-      getFlow: async () => ({} as never),
-    } as unknown as GraphService
-  }
-
+describe('WeaveMcp/WeaveCli：图谱工具（prism 代理）', () => {
   function graphMcp(): WeaveMcp {
-    return new WeaveMcp({ graphService: fakeGraphService() } as never)
+    const staging = new KnowledgeStaging({ dir: mkdtempSync(join(tmpdir(), 'weave-graph-')) })
+    return new WeaveMcp({ prism: fakePrism(staging) } as never)
   }
 
   it('WeaveMcp graph* 正常路径与入参校验', async () => {
     const mcp = graphMcp()
-    expect(await mcp.graphBuild()).toEqual({ graphPath: '/tmp/.graphify/graph.json', flowsPath: '/tmp/.graphify/flows.json' })
+    expect(await mcp.graphBuild()).toMatchObject({ project: 'weave', status: 'done' })
     expect(await mcp.graphQuery({ question: '登录调用链' })).toMatchObject({
       question: '登录调用链',
       result: '查询结果:登录调用链',
@@ -590,25 +588,24 @@ describe('WeaveMcp/WeaveCli：图谱工具（doc/09 §2.4）', () => {
     expect(await mcp.graphPath({ source: 'a', target: 'b' })).toMatchObject({
       source: 'a',
       target: 'b',
-      path: '路径:a -> b',
+      path: expect.stringContaining('路径:a -> b'),
     })
     expect(await mcp.graphExplain({ node: 'n1' })).toMatchObject({
       node: 'n1',
-      explain: '解释:n1',
+      explain: expect.stringContaining('解释:n1'),
     })
     const affected = await mcp.graphAffected({ files: ['src/login.ts'] })
-    expect(affected.changedFiles).toEqual(['src/login.ts'])
-    expect(affected.affectedFlows).toHaveLength(1)
+    expect(affected).toMatchObject({ project: 'weave', affected: ['src/login.ts'] })
 
     await expect(mcp.graphQuery({ question: '  ' })).rejects.toMatchObject({ code: 'invalid_argument' })
     await expect(mcp.graphPath({ source: '', target: 'b' })).rejects.toMatchObject({ code: 'invalid_argument' })
     await expect(mcp.graphExplain({ node: '' })).rejects.toMatchObject({ code: 'invalid_argument' })
     await expect(mcp.graphAffected({ files: [1 as unknown as string] })).rejects.toMatchObject({ code: 'invalid_argument' })
     await expect(mcp.graphAffected({ files: [''] })).rejects.toMatchObject({ code: 'invalid_argument' })
-    expect(await mcp.graphAffected({ files: [] })).toMatchObject({ changedFiles: [], affectedFlows: [] })
+    expect(await mcp.graphAffected({ files: [] })).toMatchObject({ project: 'weave', affected: [] })
   })
 
-  it('WeaveMcp 未注入 graphService 时返回 configuration_error', async () => {
+  it('WeaveMcp 未注入 prism 时返回 configuration_error', async () => {
     const mcp = new WeaveMcp({} as never)
     await expect(mcp.graphBuild()).rejects.toMatchObject({ code: 'configuration_error' })
     await expect(mcp.graphQuery({ question: 'x' })).rejects.toMatchObject({ code: 'configuration_error' })
@@ -622,9 +619,9 @@ describe('WeaveMcp/WeaveCli：图谱工具（doc/09 §2.4）', () => {
     const build = await cli.run(['graph', 'build'])
     expect(build.exitCode).toBe(0)
     expect(build.text).toContain('图谱已构建')
-    expect(build.text).toContain('flows.json')
+    expect(build.text).toContain('done')
 
-    const query = await cli.run(['graph', 'query', '登录', '链路', '--dfs'])
+    const query = await cli.run(['graph', 'query', '登录', '链路'])
     expect(query.exitCode).toBe(0)
     expect(query.text).toContain('查询结果:登录 链路')
     const parsedQuery = JSON.parse(query.json) as { ok: boolean; data: { question: string; result: string } }
@@ -637,8 +634,7 @@ describe('WeaveMcp/WeaveCli：图谱工具（doc/09 §2.4）', () => {
 
     const affected = await cli.run(['graph', 'affected', 'src/login.ts'])
     expect(affected.exitCode).toBe(0)
-    expect(affected.text).toContain('影响执行流 1 条')
-    expect(affected.text).toContain('flow-1')
+    expect(affected.text).toContain('影响节点 1 个')
 
     const bad = await cli.run(['graph', 'path', 'only-source'])
     expect(bad.exitCode).toBe(1)

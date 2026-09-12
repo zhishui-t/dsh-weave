@@ -68,9 +68,6 @@ describe('RecoveryService 恢复对账（liveness 探针三分支）', () => {
     makeRecovery = (probe?: unknown): RecoveryService =>
       new RecoveryService({
         tasksDb: p.tasks,
-        importsDb: p.imports,
-        knowledgeMetaDb: p.knowledgeMeta,
-        knowledgeRoot: join(root, 'knowledge'),
         audit,
         liveness: probe as never,
       })

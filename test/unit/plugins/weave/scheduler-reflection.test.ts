@@ -9,8 +9,10 @@ import { openPersistence } from '../../../../src/plugins/weave/persistence/index
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../../../../src/plugins/weave/team/team-manager.js'
 import { TeamPlanner } from '../../../../src/plugins/weave/scheduling/planner'
 import { WeaveScheduler, subjectLabel, type SchedulerDelegationLike, type WeaveSchedulerOptions } from '../../../../src/plugins/weave/scheduling/scheduler'
-import { ReflectionService } from '../../../../src/plugins/weave/knowledge/reflection-service'
-import { KnowledgeStore } from '../../../../src/plugins/weave/knowledge/knowledge-model'
+import { PrismGateway } from '../../../../src/plugins/weave/prism/gateway'
+import { PrismClient } from '../../../../src/plugins/weave/prism/prism-client'
+import { KnowledgeStaging } from '../../../../src/plugins/weave/prism/knowledge-staging'
+import { PrismReflectionService } from '../../../../src/plugins/weave/prism/reflection'
 import type { SubagentTaskOutput } from '../../../../src/plugins/weave/scheduling/delegation-service'
 
 const lookup: ExecutorLookup = {
@@ -202,23 +204,25 @@ describe('WeaveScheduler.onTaskSettledText', () => {
   })
 })
 
-describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionService）', () => {
-  function newKnowledgeEnv(): { store: KnowledgeStore; cleanup: () => void } {
-    const rootDir = mkdtempSync(join(tmpdir(), 'weave-sched-kb-'))
-    const db = openPersistence({ inMemory: true })
-    const store = new KnowledgeStore({ rootDir, metaDb: db.knowledgeMeta })
+describe('WeaveScheduler 反思→暂存区链路兑底（真实 PrismReflectionService）', () => {
+  function newKnowledgeEnv(): { staging: KnowledgeStaging; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'weave-sched-kb-'))
+    const staging = new KnowledgeStaging({ dir })
     return {
-      store,
+      staging,
       cleanup: () => {
-        db.close()
-        rmSync(rootDir, { recursive: true, force: true })
+        rmSync(dir, { recursive: true, force: true })
       },
     }
   }
 
-  /** 生产同构钩子（index.ts onTaskSettledText）：真实 ReflectionService + taskSubject 溯源。 */
-  function makeHook(store: KnowledgeStore): NonNullable<WeaveSchedulerOptions['onTaskSettledText']> {
-    const reflection = new ReflectionService({ knowledge: store })
+  /** 生产同构钩子（team-runtime onTaskSettledText）：真实 PrismReflectionService + taskSubject 溯源。 */
+  function makeHook(staging: KnowledgeStaging): NonNullable<WeaveSchedulerOptions['onTaskSettledText']> {
+    const gateway = new PrismGateway({
+      client: new PrismClient({ baseUrl: 'http://127.0.0.1:1', timeoutMs: 500 }),
+      staging,
+    })
+    const reflection = new PrismReflectionService({ gateway })
     return async ({ task, role, text }) => {
       const result = await reflection.depositFromOutput({
         taskId: task.id,
@@ -235,14 +239,14 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
 
   it('输出无 WEAVE_KNOWLEDGE 标记 → 自动合成 1 条候选（source:weave-reflection-auto）并通知', async () => {
     const delegation = new FakeDelegation() // FakeDelegation 输出 'coder-done'，无标记
-    const { store, cleanup } = newKnowledgeEnv()
+    const { staging, cleanup } = newKnowledgeEnv()
     const notices: Array<{ text: string }> = []
     const scheduler = new WeaveScheduler({
       delegation,
       persistence,
       loadTeam: (teamId) => manager.loadTeam(teamId),
       notify: (_sessionId, text) => { notices.push({ text }) },
-      onTaskSettledText: makeHook(store),
+      onTaskSettledText: makeHook(staging),
     })
 
     try {
@@ -251,15 +255,14 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
       await flush()
 
       expect(notices.some((notice) => notice.text.includes('反思沉淀 1 条候选知识（待审核）'))).toBe(true)
-      const metas = await store.listMeta({ status: 'candidate' })
-      expect(metas).toHaveLength(1)
-      const file = await store.getKnowledgeFile(metas[0]!.id)
-      expect(file?.frontmatter.type).toBe('pattern')
-      expect(file?.frontmatter.title).toBe('单一任务')
-      expect(file?.frontmatter.tags).toEqual(
+      const staged = await staging.list()
+      expect(staged).toHaveLength(1)
+      expect(staged[0]?.type).toBe('pattern')
+      expect(staged[0]?.title).toBe('单一任务')
+      expect(staged[0]?.tags).toEqual(
         expect.arrayContaining(['executor:codex', 'role:coder', 'source:weave-reflection-auto']),
       )
-      expect(file?.body.trim()).toBe('coder-done')
+      expect(staged[0]?.content.trim()).toBe('coder-done')
     } finally {
       cleanup()
     }
@@ -267,13 +270,13 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
 
   it('输出带标记 → 只沉淀真实块，不追加自动合成候选', async () => {
     const delegation = new FakeDelegation()
-    const { store, cleanup } = newKnowledgeEnv()
+    const { staging, cleanup } = newKnowledgeEnv()
     const scheduler = new WeaveScheduler({
       delegation,
       persistence,
       loadTeam: (teamId) => manager.loadTeam(teamId),
       notify: () => undefined,
-      onTaskSettledText: makeHook(store),
+      onTaskSettledText: makeHook(staging),
     })
 
     try {
@@ -287,12 +290,11 @@ describe('WeaveScheduler 反思→知识库链路兑底（真实 ReflectionServi
       await scheduler.start({ dagId, sessionId: 'sess-r' })
       await flush()
 
-      const metas = await store.listMeta({ status: 'candidate' })
-      expect(metas).toHaveLength(1)
-      const file = await store.getKnowledgeFile(metas[0]!.id)
-      expect(file?.frontmatter.title).toBe('显式经验')
-      expect(file?.frontmatter.tags).toEqual(expect.arrayContaining(['source:weave-reflection']))
-      expect(file?.frontmatter.tags).not.toContain('source:weave-reflection-auto')
+      const staged = await staging.list()
+      expect(staged).toHaveLength(1)
+      expect(staged[0]?.title).toBe('显式经验')
+      expect(staged[0]?.tags).toEqual(expect.arrayContaining(['source:weave-reflection']))
+      expect(staged[0]?.tags).not.toContain('source:weave-reflection-auto')
     } finally {
       cleanup()
     }

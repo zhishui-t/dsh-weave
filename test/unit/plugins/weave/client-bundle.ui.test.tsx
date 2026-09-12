@@ -234,93 +234,16 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     expect(screen.getByTestId('weave-nav')).toBeTruthy()
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['overview', 'teams', 'knowledge', 'code', 'convert', 'obsidian', 'executors', 'audit', 'settings']) {
+    for (const route of ['overview', 'teams', 'knowledge', 'executors', 'audit', 'settings']) {
+      // 知识/图谱/转换页已移交 Prism：knowledge 变占位卡，其余三页删除
       expect(screen.getByTestId(`nav-${route}`)).toBeTruthy()
     }
-    // 任务中心与会话管理已从导航中移除
+    // 任务中心与会话管理已从导航中移除；代码图谱/文档转换/Obsidian 随知识域移交 Prism
     expect(screen.queryByTestId('nav-tasks')).toBeNull()
     expect(screen.queryByTestId('nav-sessions')).toBeNull()
-  })
-
-  it('代码图谱页未构建时展示空态与构建入口', async () => {
-    const moduleRequire = (id: string) => {
-      if (id === 'react') return React
-      if (id === 'react-dom') return ReactDOM
-      throw new Error(`unexpected client dependency: ${id}`)
-    }
-    const exported = getCapturedBundle().factory(moduleRequire)
-    const fixture = makeClientContext(
-      { 'document/history': { jobs: [] } },
-      undefined,
-      { 'code/graph': { code: 'configuration_error', message: '代码图谱尚未构建，请先执行 pnpm code:scan' } },
-    )
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-code'))
-    await screen.findByTestId('page-code')
-    expect(screen.getByTestId('code-empty')).toBeTruthy()
-    expect(screen.getByTestId('code-build')).toBeTruthy()
-    expect(screen.getByTestId('code-copy-command')).toBeTruthy()
-  })
-
-  it('代码图谱页展示摘要与影响面工具页签', async () => {
-    const moduleRequire = (id: string) => {
-      if (id === 'react') return React
-      if (id === 'react-dom') return ReactDOM
-      throw new Error(`unexpected client dependency: ${id}`)
-    }
-    const exported = getCapturedBundle().factory(moduleRequire)
-    const fixture = makeClientContext({
-      'code/graph': {
-        nodeCount: 12,
-        edgeCount: 34,
-        communityCount: 5,
-        graphPath: 'K:/work/project/weave/.graphify/graph.json',
-        flowsPath: 'K:/work/project/weave/.graphify/flows.json',
-        hasFlows: true,
-      },
-      'document/history': { jobs: [] },
-    })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-code'))
-    await screen.findByTestId('page-code')
-    expect(screen.getByTestId('code-summary-nodes').textContent).toContain('12')
-    expect(screen.getByTestId('code-summary-edges').textContent).toContain('34')
-    expect(screen.getByTestId('code-tab-affected')).toBeTruthy()
-    fireEvent.click(screen.getByTestId('code-tab-affected'))
-    await screen.findByTestId('code-affected-files')
-    expect(screen.getByTestId('code-affected-submit')).toBeTruthy()
-  })
-
-  it('文档转换页展示上传表单与历史空态', async () => {
-    const moduleRequire = (id: string) => {
-      if (id === 'react') return React
-      if (id === 'react-dom') return ReactDOM
-      throw new Error(`unexpected client dependency: ${id}`)
-    }
-    const exported = getCapturedBundle().factory(moduleRequire)
-    const fixture = makeClientContext({
-      'code/graph': {
-        nodeCount: 0,
-        edgeCount: 0,
-        communityCount: 0,
-        graphPath: 'K:/work/project/weave/.graphify/graph.json',
-        flowsPath: 'K:/work/project/weave/.graphify/flows.json',
-        hasFlows: false,
-      },
-      'document/history': { jobs: [] },
-    })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-convert'))
-    await screen.findByTestId('page-convert')
-    expect(screen.getByTestId('convert-file')).toBeTruthy()
-    expect(screen.getByTestId('convert-submit')).toBeTruthy()
-    expect(screen.getByTestId('convert-history')).toBeTruthy()
+    expect(screen.queryByTestId('nav-code')).toBeNull()
+    expect(screen.queryByTestId('nav-convert')).toBeNull()
+    expect(screen.queryByTestId('nav-obsidian')).toBeNull()
   })
 
   it('非 ZCode 角色也展示 Provider/Model 下拉', async () => {
@@ -415,7 +338,7 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
   })
 
 
-  it('Dashboard 内部导航可切换 7 个页面，关闭按钮可退出', async () => {
+  it('Dashboard 内部导航可切换 6 个页面，关闭按钮可退出', async () => {
     const moduleRequire = (id: string) => {
       if (id === 'react') return React
       if (id === 'react-dom') return ReactDOM
@@ -459,9 +382,10 @@ describe('dsh-weave 左侧导航 + Dashboard 界面', () => {
     fireEvent.click(screen.getByTestId('weave-open'))
     expect(screen.getByTestId('page-overview')).toBeTruthy()
 
-    for (const route of ['teams', 'knowledge', 'obsidian', 'executors', 'audit', 'settings', 'manual']) {
+    for (const route of ['teams', 'knowledge', 'executors', 'audit', 'settings', 'manual']) {
       fireEvent.click(screen.getByTestId(`nav-${route}`))
-      expect(screen.getByTestId(`page-${route}`)).toBeTruthy()
+      // knowledge 页已改为 Prism 占位卡，testid 为 page-knowledge-prism
+      expect(screen.getByTestId(route === 'knowledge' ? 'page-knowledge-prism' : `page-${route}`)).toBeTruthy()
       expect(screen.getByTestId(`nav-${route}`).getAttribute('data-active')).toBe('true')
     }
 
@@ -511,28 +435,18 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     expect(screen.getByTestId('team-create-submit').textContent).toContain('包含 1 个角色')
   })
 
-  it('知识库：candidate 审核通过会调用 knowledge/approve', async () => {
+  it('知识库页为 Prism 占位卡：控制台外链与主会话审核指引', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'knowledge/list': {
-        candidates: [
-          { id: 'k-1', title: '部署手册', layer: 'project', status: 'candidate', confidence: 0.9, freshness_score: 0.8, path: '/k/deploy.md' },
-        ],
-      },
-      'knowledge/approve': {},
-    })
+    const fixture = makeClientContext({})
     exported.apply(fixture.ctx as never)
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-knowledge'))
-    await screen.findByTestId('knowledge-item-k-1')
-    fireEvent.click(screen.getByTestId('knowledge-approve-k-1'))
-    await waitFor(() => {
-      expect(fixture.calls.some((item) => item.endpoint === 'knowledge/approve')).toBe(true)
-    })
-    const approved = fixture.calls.find((item) => item.endpoint === 'knowledge/approve')
-    expect((approved?.payload as Record<string, unknown>).id).toBe('k-1')
-    await screen.findByText('已通过：k-1')
+    await screen.findByTestId('page-knowledge-prism')
+    expect(screen.getByTestId('prism-console-link').textContent).toContain('127.0.0.1:7777/studio')
+    expect(screen.getByTestId('prism-review-hint').textContent).toContain('/weave knowledge review')
+    // 占位页不发起任何知识 RPC
+    expect(fixture.calls.some((item) => item.endpoint.startsWith('knowledge/'))).toBe(false)
   })
 
   it('设置页只读配置渲染；会话绑定职责已移交会话面板', async () => {
@@ -594,106 +508,6 @@ describe('t8 会话优先模型与治理化改造', () => {
     expect(source).not.toContain('conversation.input.right')
     expect(source).not.toContain('session-team-selector')
   })
-  it('知识页：Obsidian 控制台入口可用，图谱按 Graphify 数据源渲染', async () => {
-    const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'settings/describe': {
-        version: '9.9.9-test',
-        node_version: process.version,
-        state_dir: '/state',
-        teams_dir: '/teams',
-        audit_dir: '/audit',
-        providers_file: '/f/providers.json',
-        obsidian_dir: '~/.dsh/obsidian',
-      },
-      'knowledge/graph': {
-        nodes: [
-          { id: 'g-a', title: 'A 指南', status: 'active', layer: 'project', tags: ['图谱'], kind: 'knowledge' },
-          { id: 'g-b', title: 'B 指南', status: 'candidate', layer: 'project', tags: [], kind: 'knowledge' },
-          { id: 'missing:未收录', title: '未收录', status: 'missing', layer: 'shared', tags: [], kind: 'missing' },
-        ],
-        edges: [
-          { source: 'g-a', target: 'g-b' },
-          { source: 'g-a', target: 'missing:未收录' },
-        ],
-        projects: ['proj-alpha', 'proj-beta'],
-        counts: { knowledge: 2, missing: 1, edges: 2, unresolved: 1, skipped: 0 },
-      },
-      'knowledge/list': {
-        candidates: [
-          { id: 'g-b', title: 'B 指南', layer: 'project', status: 'candidate', confidence: 0.5, freshness_score: 0.5 },
-        ],
-      },
-    })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-knowledge'))
-
-    await screen.findByTestId('knowledge-obsidian-entry')
-    expect(screen.getByTestId('knowledge-obsidian-entry-button').textContent).toContain('前往 Obsidian 页')
-    await screen.findByTestId('knowledge-graph')
-    expect(screen.getByTestId('knowledge-graph-source-badge').textContent).toContain('Graphify')
-    expect(screen.getByTestId('knowledge-node-g-a').getAttribute('data-kind')).toBe('knowledge')
-    fireEvent.click(screen.getByTestId('knowledge-node-g-a'))
-    await screen.findByTestId('knowledge-graph-detail')
-    expect(screen.getByTestId('knowledge-graph-detail').textContent).toContain('A 指南')
-
-    fireEvent.change(screen.getByTestId('knowledge-graph-layer-filter'), { target: { value: 'project' } })
-    await waitFor(() => {
-      expect(fixture.calls.some((call) => call.endpoint === 'knowledge/graph' && (call.payload as Record<string, unknown>).layer === 'project')).toBe(true)
-    })
-
-    // 项目下拉：选项来自服务端 projects 去重清单；选中后 graph 请求带 project
-    const projectFilter = screen.getByTestId('knowledge-graph-project-filter')
-    expect(projectFilter.textContent).toContain('全部项目')
-    expect(projectFilter.textContent).toContain('proj-alpha')
-    expect(projectFilter.textContent).toContain('proj-beta')
-    fireEvent.change(projectFilter, { target: { value: 'proj-alpha' } })
-    await waitFor(() => {
-      expect(fixture.calls.some((call) => call.endpoint === 'knowledge/graph' && (call.payload as Record<string, unknown>).project === 'proj-alpha')).toBe(true)
-    })
-  })
-
-  it('Obsidian 页展示 Vault 状态、生成/回索引/冲突列表', async () => {
-    const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({
-      'settings/describe': {
-        version: '9.9.9-test',
-        node_version: process.version,
-        state_dir: '/state',
-        teams_dir: '/teams',
-        audit_dir: '/audit',
-        providers_file: '/f/providers.json',
-        obsidian_dir: '~/.dsh/obsidian',
-      },
-      'obsidian/status': {
-        exists: true,
-        vaultPath: '~/.dsh/obsidian',
-        lastGeneratedAt: new Date().toISOString(),
-        conflictCount: 1,
-        fileCount: 12,
-        knowledgeCount: 8,
-        conflicts: [
-          { path: 'notes/deploy.md', kind: 'user_modified', detectedAt: new Date().toISOString(), externalHash: 'a', weaveHash: 'b' },
-        ],
-      },
-    })
-    exported.apply(fixture.ctx as never)
-    render(createElement(fixture.component!, { wide: true }))
-    fireEvent.click(screen.getByTestId('weave-open'))
-    fireEvent.click(screen.getByTestId('nav-obsidian'))
-    await screen.findByTestId('page-obsidian')
-    await screen.findByTestId('obsidian-status')
-    expect(screen.getByTestId('obsidian-vault-path').textContent).toContain('~/.dsh/obsidian')
-    expect(screen.getByTestId('obsidian-file-count').textContent).toBe('12')
-    expect(screen.getByTestId('obsidian-knowledge-count').textContent).toBe('8')
-    expect(screen.getByTestId('obsidian-conflict-count').textContent).toBe('1')
-    expect(screen.getByTestId('obsidian-open').getAttribute('href')).toBe('obsidian://open?path=~%2F.dsh%2Fobsidian')
-    await screen.findByTestId('obsidian-conflict-notes/deploy.md')
-    expect(screen.getByTestId('obsidian-conflict-notes/deploy.md').textContent).toContain('外部修改')
-  })
-
   it('独立命令手册页展示全部 /weave 命令', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
     const fixture = makeClientContext({

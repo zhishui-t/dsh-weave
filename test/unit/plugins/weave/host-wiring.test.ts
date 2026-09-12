@@ -9,8 +9,7 @@ import { CircuitBreaker } from '../../../../src/plugins/weave/safety/circuit-bre
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository'
 import { ExecutorRegistry } from '../../../../src/plugins/weave/executors/executor-registry'
 import { FeedbackRouter } from '../../../../src/plugins/weave/scheduling/feedback-router'
-import { KnowledgeReviewService } from '../../../../src/plugins/weave/knowledge/knowledge-review'
-import { KnowledgeStore } from '../../../../src/plugins/weave/knowledge/knowledge-model'
+import { KnowledgeStaging } from '../../../../src/plugins/weave/prism/knowledge-staging'
 import {
   buildWeaveToolDefinitions,
   registerWeaveHost,
@@ -69,7 +68,7 @@ interface Env {
   p: WeavePersistence
   rootDir: string
   deps: CliMcpDeps
-  kstore: KnowledgeStore
+  staging: KnowledgeStaging
   close: () => void
 }
 
@@ -103,6 +102,23 @@ afterAll(() => {
   for (const env of envs) env.close()
 })
 
+/** 测试桩 PrismGateway：MCP/CLI 编排层冒烟用，暂存区走真实文件。 */
+function fakePrism(staging: KnowledgeStaging): import('../../../../src/plugins/weave/prism/gateway').PrismGateway {
+  return {
+    staging,
+    reviewQueue: async () => [],
+    countStaged: async () => 0,
+    approveStaged: async () => { throw new Error('not used in this suite') },
+    rejectStaged: async () => { throw new Error('not used in this suite') },
+    search: async () => [],
+    graphBuild: async () => ({ project: 'weave', status: 'done', job: { job_id: 'j1', project: 'weave', status: 'done' }, ok: true }),
+    graphQuery: async ({ question }: { question: string }) => ({ project: 'weave', output: `查询结果:${question}` }),
+    graphPath: async ({ source, target }: { source: string; target: string }) => ({ project: 'weave', path: `路径:${source} -> ${target}` }),
+    graphExplain: async ({ node }: { node: string }) => ({ project: 'weave', explain: `解释:${node}` }),
+    graphAffected: async ({ files }: { files: string[] }) => ({ project: 'weave', affected: files }),
+  } as unknown as import('../../../../src/plugins/weave/prism/gateway').PrismGateway
+}
+
 async function newEnv(): Promise<Env> {
   const rootDir = mkdtempSync(join(tmpdir(), 'weave-host-'))
   writeFileSync(join(rootDir, 'alpha-squad.yaml'), GOOD_TEAM)
@@ -112,8 +128,7 @@ async function newEnv(): Promise<Env> {
   registry.load(({ subagents: { list: () => ['zcode'] } }) as never)
   const tracker = new SessionTracker(p.feedback)
   const router = new FeedbackRouter({ tasks: p.tasks, feedback: p.feedback, sessionTracker: tracker })
-  const kstore = new KnowledgeStore({ rootDir: join(rootDir, 'knowledge'), metaDb: p.knowledgeMeta })
-  const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: join(rootDir, 'audit') }) })
+  const staging = new KnowledgeStaging({ dir: join(rootDir, 'knowledge-staging') })
   const ctx = new Context()
   const plugin = weavePlugin as unknown as Plugin
   const fiber = ctx.plugin(plugin)
@@ -124,8 +139,7 @@ async function newEnv(): Promise<Env> {
     executorRegistry: registry,
     feedbackRouter: router,
     dagRepository: new DagRepository(p),
-    knowledgeReview: kreview,
-    knowledgeStore: kstore,
+    prism: fakePrism(staging),
     circuitBreaker: new CircuitBreaker(),
   }
   const env: Env = {
@@ -133,7 +147,7 @@ async function newEnv(): Promise<Env> {
     p,
     rootDir,
     deps,
-    kstore,
+    staging,
     close: () => {
       p.close()
       rmSync(rootDir, { recursive: true, force: true })
@@ -161,7 +175,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     bundle.dispose() // 二次调用不抛
   })
 
-  it('宿主 ctx.tools 存在时注册全部 22 个 weave_* 工具，核心命令可执行', async () => {
+  it('宿主 ctx.tools 存在时注册全部 19 个 weave_* 工具，核心命令可执行', async () => {
     const env = await newEnv()
     const ctx = env.ctx as Context & { weave?: { mcp?: unknown } }
     const registered: Array<{ def: unknown; unregister: () => void }> = []
@@ -188,10 +202,6 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_team_list',
       'weave_team_switch',
       'weave_executor_list',
-      'weave_knowledge_search',
-      'weave_knowledge_review',
-      'weave_knowledge_approve',
-      'weave_knowledge_reject',
       'weave_task_retry',
       'weave_task_skip',
       'weave_task_cancel',
@@ -204,13 +214,8 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_graph_explain',
       'weave_graph_affected',
       'weave_document_convert',
-      'weave_obsidian_generate',
-      'weave_obsidian_open',
-      'weave_obsidian_reindex',
-      'weave_obsidian_status',
-      'weave_obsidian_conflicts',
     ])
-    expect(registered).toHaveLength(28)
+    expect(registered).toHaveLength(19)
 
     // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
     const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
@@ -307,11 +312,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
   })
 
-  it('buildWeaveToolDefinitions 28 个定义：名称齐全且每个具 execute/description/parameters', async () => {
+  it('buildWeaveToolDefinitions 19 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const defs = buildWeaveToolDefinitions(bundle.mcp)
-    expect(defs).toHaveLength(28)
+    expect(defs).toHaveLength(19)
     for (const d of defs) {
       expect(d.name).toMatch(/^weave_/)
       expect(d.description.length).toBeGreaterThan(0)
@@ -320,46 +325,25 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     }
     const names = defs.map((d) => d.name)
     for (const n of [
-      'weave_knowledge_search', 'weave_knowledge_review', 'weave_knowledge_approve', 'weave_knowledge_reject',
       'weave_task_retry', 'weave_task_skip', 'weave_task_cancel', 'weave_task_reopen',
       'weave_wait_dag_change',
       'weave_ban_list', 'weave_graph_build', 'weave_graph_query', 'weave_graph_path',
       'weave_graph_explain', 'weave_graph_affected', 'weave_document_convert',
-      'weave_obsidian_generate', 'weave_obsidian_open', 'weave_obsidian_reindex',
-      'weave_obsidian_status', 'weave_obsidian_conflicts',
     ]) {
+      expect(names).not.toContain('weave_knowledge_search')  // knowledge_* 工具面已全删（agent 用 prism_kb_*）
+      expect(names).not.toContain('weave_obsidian_generate')  // obsidian 随知识域下线
+
       expect(names).toContain(n)
     }
   })
 
-  it('新增工具冒烟：knowledge_review/approve、ban_list、task_cancel/retry 可执行', async () => {
+  it('新增工具冒烟：ban_list、task_cancel/retry 可执行（knowledge_* 工具已删）', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const def = (n: string): { execute: (args: Record<string, unknown>, exec?: unknown) => Promise<unknown> } =>
       buildWeaveToolDefinitions(bundle.mcp).find((d) => d.name === n)!
 
-    // 1) knowledge_review：空队列
-    const rv = (await def('weave_knowledge_review').execute({})) as { candidates: unknown[] }
-    expect(rv.candidates).toEqual([])
-
-    // 2) knowledge_approve：创建 candidate → approve → active
-    const cand = await env.kstore.createCandidate({
-      layer: 'shared',
-      scope: {},
-      filename: 't39.md',
-      frontmatter: { title: 't39知识', type: 'pitfall', visibility: 'global', tags: ['t39'] },
-      body: '正文 t39',
-    })
-    const candId = cand.id
-    const approved = (await def('weave_knowledge_approve').execute({ knowledge_id: candId })) as { status: string }
-    expect(approved.status).toBe('active')
-
-    // 2.5) knowledge_search：按需检索到刚转正的 active 知识
-    const searched = (await def('weave_knowledge_search').execute({ query: 't39' })) as { total_hits: number; results: Array<{ id: string }> }
-    expect(searched.total_hits).toBeGreaterThan(0)
-    expect(searched.results.some((r) => r.id === candId)).toBe(true)
-
-    // 3) ban_list：无熔断 → 空清单
+    // 1) ban_list：无熔断 → 空清单
     const bans = (await def('weave_ban_list').execute({})) as { bans: unknown[] }
     expect(bans.bans).toEqual([])
 

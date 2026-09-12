@@ -78,23 +78,6 @@ export function defaultScenario(): Record<string, RpcEnvelope> {
       },
     },
     'task/action': { ok: true, value: { task_id: 'T-A', status: 'CANCELLED' } },
-    'knowledge/list': {
-      ok: true,
-      value: { candidates: [{ id: 'kn-1', title: '候选知识', status: 'candidate', layer: 'project' }] },
-    },
-    'knowledge/graph': {
-      ok: true,
-      value: {
-        nodes: [
-          { id: 'kn-1', title: '候选知识', status: 'candidate', layer: 'project', tags: [], kind: 'knowledge', path: 'k/kn-1.md' },
-          { id: 'kn-2', title: '相关笔记', status: 'active', layer: 'shared', tags: [], kind: 'knowledge' },
-        ],
-        edges: [{ source: 'kn-1', target: 'kn-2' }],
-        counts: { knowledge: 2, missing: 0, edges: 1, unresolved: 0, skipped: 0 },
-      },
-    },
-    'knowledge/approve': { ok: true, value: {} },
-    'knowledge/reject': { ok: true, value: {} },
     'session/bindings': { ok: true, value: { bindings: [] } },
     'session/revisions': { ok: true, value: { revisions: [] } },
     'session/status': {

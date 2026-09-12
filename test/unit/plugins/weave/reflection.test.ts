@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractKnowledgeBlocks } from '../../../../src/plugins/weave/knowledge/reflection'
+import { extractKnowledgeBlocks } from '../../../../src/plugins/weave/prism/reflection'
 
 describe('extractKnowledgeBlocks（doc/05 §3.1 反思解析协议）', () => {
   it('解析 prompt 模板形态的单块（### 前缀 + JSON）', () => {
@@ -73,23 +73,22 @@ describe('extractKnowledgeBlocks（doc/05 §3.1 反思解析协议）', () => {
     expect(extractKnowledgeBlocks(wrap('{"title":"  ","content":"c"}')).invalid).toBe(1)
   })
 
-  it('字段规整：未知 type → other；非法 tags → []；非法 layer → undefined', () => {
+  it('字段规整：未知 type → doc（暂存类型映射）；非法 tags → []', () => {
     const text = [
       '### WEAVE_KNOWLEDGE_START',
       '{"type": "unknown-kind", "title": "t", "content": "c", "tags": "not-array", "layer": "galaxy"}',
       '### WEAVE_KNOWLEDGE_END',
     ].join('\n')
     const { blocks } = extractKnowledgeBlocks(text)
-    expect(blocks[0]!.type).toBe('other')
+    expect(blocks[0]!.type).toBe('doc')
     expect(blocks[0]!.tags).toEqual([])
-    expect(blocks[0]!.layer).toBeUndefined()
   })
 
   it('CRLF 与无 # 前缀标记均兼容', () => {
     const text = ['WEAVE_KNOWLEDGE_START', '{"type":"guide","title":"g","content":"c","tags":[]}', 'WEAVE_KNOWLEDGE_END'].join('\r\n')
     const { blocks, invalid } = extractKnowledgeBlocks(text)
     expect(invalid).toBe(0)
-    expect(blocks[0]!.type).toBe('guide')
+    expect(blocks[0]!.type).toBe('skill') // guide → skill（暂存类型映射）
   })
 
   it('tags 中非字符串项被过滤、字符串项 trim', () => {

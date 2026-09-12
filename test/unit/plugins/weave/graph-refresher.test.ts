@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { GraphService } from '../../../../src/plugins/weave/graph/graph-service.js'
-import { GraphRefresher } from '../../../../src/plugins/weave/core/graph-refresh.js'
+import { GraphRefresher, type GraphBuildFn } from '../../../../src/plugins/weave/core/graph-refresh.js'
 
-function fakeGraphService(options: { hasGraph: boolean; build?: () => Promise<void> } ): GraphService {
-  return {
-    hasGraph: () => options.hasGraph,
-    build: options.build ?? (async () => {}),
-  } as unknown as GraphService
+function fakeBuild(build?: () => Promise<void>): GraphBuildFn {
+  if (build) return async () => { await build(); return { project: 'weave', status: 'done' } }
+  return async () => ({ project: 'weave', status: 'done' })
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -29,7 +26,7 @@ describe('GraphRefresher', () => {
 
   it('debounces burst requests into a single build', async () => {
     const build = vi.fn(async () => {})
-    const refresher = new GraphRefresher({ graphService: fakeGraphService({ hasGraph: true, build }), debounceMs: 100 })
+    const refresher = new GraphRefresher({ build: fakeBuild(build), debounceMs: 100 })
     refresher.request('task-settled', 's1')
     refresher.request('task-settled', 's1')
     refresher.request('team-start', 's2')
@@ -42,21 +39,21 @@ describe('GraphRefresher', () => {
   it('reports created vs updated based on hasGraph and notifies the requesting session', async () => {
     const notify = vi.fn()
     const refresher = new GraphRefresher({
-      graphService: fakeGraphService({ hasGraph: false }),
+      build: fakeBuild(),
       notify,
       debounceMs: 50,
     })
     refresher.request('team-start', 'captain-1')
     await vi.advanceTimersByTimeAsync(50)
     expect(notify).toHaveBeenCalledTimes(1)
-    expect(notify).toHaveBeenCalledWith('captain-1', expect.stringContaining('新建'))
+    expect(notify).toHaveBeenCalledWith('captain-1', expect.stringContaining('已构建'))
     refresher.dispose()
   })
 
   it('queues a trailing build for requests arriving during an in-flight build', async () => {
     const gate = deferred()
     const build = vi.fn(() => gate.promise)
-    const refresher = new GraphRefresher({ graphService: fakeGraphService({ hasGraph: true, build }), debounceMs: 10 })
+    const refresher = new GraphRefresher({ build: fakeBuild(build), debounceMs: 10 })
     refresher.request('team-start', 's1')
     await vi.advanceTimersByTimeAsync(10)
     expect(build).toHaveBeenCalledTimes(1)
@@ -83,7 +80,7 @@ describe('GraphRefresher', () => {
       throw new Error('boom')
     })
     const refresher = new GraphRefresher({
-      graphService: fakeGraphService({ hasGraph: true, build }),
+      build: fakeBuild(build),
       notify,
       log: { warn },
       debounceMs: 10,
@@ -96,7 +93,7 @@ describe('GraphRefresher', () => {
 
   it('dispose cancels pending debounced builds', async () => {
     const build = vi.fn(async () => {})
-    const refresher = new GraphRefresher({ graphService: fakeGraphService({ hasGraph: true, build }), debounceMs: 10 })
+    const refresher = new GraphRefresher({ build: fakeBuild(build), debounceMs: 10 })
     refresher.request('team-start', 's1')
     refresher.dispose()
     await vi.advanceTimersByTimeAsync(20)

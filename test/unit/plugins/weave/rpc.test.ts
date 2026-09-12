@@ -10,8 +10,6 @@ import { AuditLog } from '../../../../src/plugins/weave/audit/audit-log'
 import { WeaveMcp } from '../../../../src/plugins/weave/host/cli-mcp'
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository'
 import { FeedbackRouter } from '../../../../src/plugins/weave/scheduling/feedback-router'
-import { KnowledgeStore } from '../../../../src/plugins/weave/knowledge/knowledge-model'
-import { KnowledgeReviewService } from '../../../../src/plugins/weave/knowledge/knowledge-review'
 import { SessionTracker } from '../../../../src/plugins/weave/scheduling/session-tracker'
 import { WeaveQueryService } from '../../../../src/plugins/weave/web/query-service'
 
@@ -538,7 +536,7 @@ describe('Weave Connection RPC：settings/describe 与协议约定', () => {
   })
 })
 
-describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () => {
+describe('Weave Connection RPC：任务/审计/会话域（t4）', () => {
   interface QuadEnv {
     call: ReturnType<typeof makeEnv>['call']
     persistence: WeavePersistence
@@ -559,8 +557,6 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
     const auditLog = new AuditLog({ dir: join(rootDir, 'audit') })
     const tracker = new SessionTracker(persistence.feedback)
     const router = new FeedbackRouter({ tasks: persistence.tasks, feedback: persistence.feedback, sessionTracker: tracker })
-    const kstore = new KnowledgeStore({ rootDir: join(rootDir, 'knowledge'), metaDb: persistence.knowledgeMeta })
-    const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: auditLog })
     const registryStub = { list: () => [EXECUTOR], get: (id: string) => (id === 'zcode' ? EXECUTOR : undefined) }
     const mcp = new WeaveMcp({
       persistence,
@@ -568,8 +564,6 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
       executorRegistry: registryStub as never,
       feedbackRouter: router,
       dagRepository: new DagRepository(persistence),
-      knowledgeReview: kreview,
-      knowledgeStore: kstore,
     })
     const queryService = new WeaveQueryService({ persistence, mcp, auditLog, sessionTracker: tracker, teamManager })
     const call = createWeaveRpcHandler({
@@ -648,14 +642,6 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
     expect(retried.value.status).toBe('WAITING')
   })
 
-  it('knowledge/list 空队列；approve/reject 未知 id knowledge_not_found', async () => {
-    const env = makeQuadEnv()
-    const empty = (await env.call('knowledge/list', {})) as { ok: true; value: { candidates: unknown[] } }
-    expect(empty.value.candidates).toEqual([])
-    expect(await errCodeOf(env.call, 'knowledge/approve', { id: 'ghost' })).toBe('knowledge_not_found')
-    expect(await errCodeOf(env.call, 'knowledge/reject', { id: 'ghost' })).toBe('knowledge_not_found')
-  })
-
   it('audit/list：真实事件过信封；坏类型与坏时间 invalid_argument', async () => {
     const env = makeQuadEnv()
     await env.auditLog.record({
@@ -697,7 +683,6 @@ describe('Weave Connection RPC：任务/知识/审计/会话四域（t4）', () 
   it('未注入 queryService：四域端点 configuration_error 而非伪造数据', async () => {
     const env = makeQuadEnv(false)
     expect(await errCodeOf(env.call, 'task/list', {})).toBe('configuration_error')
-    expect(await errCodeOf(env.call, 'knowledge/list', {})).toBe('configuration_error')
     expect(await errCodeOf(env.call, 'audit/list', {})).toBe('configuration_error')
     expect(await errCodeOf(env.call, 'session/set-binding', { sessionId: 's', teamId: 't' })).toBe('configuration_error')
   })
