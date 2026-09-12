@@ -3,13 +3,12 @@ import type { CliMcpDeps } from '../host/cli-mcp.js'
 import type { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import { DelegationService } from '../scheduling/delegation-service.js'
 import { SessionTracker } from '../scheduling/session-tracker.js'
-import { KnowledgeEngine } from '../knowledge/knowledge-engine.js'
 import { createExecutorEventNotifier, type StreamOptions } from '../scheduling/session-stream.js'
 import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 import { WeaveScheduler, subjectLabel } from '../scheduling/scheduler.js'
 import type { WeaveCapabilities } from './capabilities.js'
 import type { AuditLog } from '../audit/audit-log.js'
-import type { ReflectionService } from '../knowledge/reflection-service.js'
+import type { PrismReflectionService } from '../prism/reflection.js'
 import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
 import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
@@ -40,7 +39,7 @@ export interface TeamRuntime {
   planner: TeamPlanner
   statusNotifier: TaskStatusNotifier
   auditLog: AuditLog
-  reflection: ReflectionService
+  reflection: PrismReflectionService
   agentsRegistry: { get(id: string): unknown } | undefined
   notifyWeaveSession(sessionId: string, text: string, session?: NoticeSessionLike): void
   resolveNoticeSession(sessionId: string): NoticeSessionLike | undefined
@@ -100,7 +99,9 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
       executorRegistry: deps.executorRegistry,
       executorProviders,
       sessionTracker: new SessionTracker(deps.persistence.feedback),
-      knowledgeEngine: new KnowledgeEngine(deps.knowledgeStore!),
+      // 派发注入（HTTP 一次调用）：gateway.searchForInjection 结构化满足 KnowledgeEngineLike；
+      // 注入失败由 delegation 内部降级为无知识，不阻断派发。
+      knowledgeEngine: deps.prism!,
       idleTimeoutMs,
       delegationMaxWallClockMs: 0,
       onExecutorEvent: createExecutorEventNotifier({
@@ -112,9 +113,9 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     },
   )
 
-  // 代码图谱自动刷新（团队启动先建/更新；任务完成后主会话侧更新，去抖合并）。
+  // 代码图谱自动刷新（prism 承接，weave 只发薄触发；去抖合并）。
   const graphRefresher = new GraphRefresher({
-    graphService: deps.graphService,
+    ...(deps.prism ? { build: () => deps.prism!.graphBuild() } : {}),
     notify: (sessionId, text) => notifyWeaveSession(sessionId, text, resolveNoticeSession(sessionId)),
     log: console,
   })
@@ -126,9 +127,9 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     notify: (sessionId, text, session) => notifyWeaveSession(sessionId, text, session ?? resolveNoticeSession(sessionId)),
     statusNotifier,
     audit: auditLog,
-    // 知识审核闭环：DAG 收敛时把候选数量交还队长（weave_knowledge_review/approve）。
-    countKnowledgeCandidates: deps.knowledgeStore
-      ? async () => (await deps.knowledgeStore!.listMeta({ status: 'candidate' })).length
+    // 知识审核闭环：DAG 收敛时把暂存区待审数量交还队长（/weave knowledge review|approve|reject）。
+    countKnowledgeCandidates: deps.prism
+      ? () => deps.prism!.countStaged()
       : undefined,
     onTaskSettledText: async ({ task, role, text, status }) => {
       const result = await reflection.depositFromOutput({
@@ -143,6 +144,10 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
       if (status === 'COMPLETED') graphRefresher.request('task-settled', task.session_id)
       return result.deposited.length
     },
+    // 交付目录代码图谱薄触发（prism 承接；失败静默降级）
+    graphBuild: deps.prism
+      ? (projectRoot: string) => deps.prism!.graphBuild({ projectRoot })
+      : undefined,
   })
 
   const projectTeamStore = new ProjectTeamStore()

@@ -5,10 +5,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { AuditLog, DEFAULT_AUDIT_DIR } from '../audit/audit-log.js'
 import { WeaveCli, WeaveMcp, type CliMcpDeps } from './cli-mcp.js'
 import type { GetStatusInput } from './cli-mcp.js'
-import { GraphService } from '../graph/graph-service.js'
-import { DocumentConverter } from '../convert/document-converter.js'
-import { ObsidianService } from '../obsidian/obsidian-service.js'
-import { ObsidianCli } from '../obsidian/cli.js'
+import { PrismClient } from '../prism/prism-client.js'
+import { PrismSupervisor } from '../prism/prism-supervisor.js'
+import { PrismGateway } from '../prism/gateway.js'
 import type { PlanTasksOutput, ToolExecLike } from '../scheduling/planner.js'
 import { CircuitBreaker } from '../safety/circuit-breaker.js'
 import { DagRepository } from '../dag/repository.js'
@@ -16,9 +15,6 @@ import { ExecutorRegistry } from '../executors/executor-registry.js'
 import { FeedbackRouter } from '../scheduling/feedback-router.js'
 import { createWeaveNoticeMessage, hasPendingToolCall, notifySession, type NoticeSessionLike, type WeaveNoticeMessage } from '../scheduling/session-delegation.js'
 import { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
-import { KnowledgeReviewService } from '../knowledge/knowledge-review.js'
-import { KnowledgeStore } from '../knowledge/knowledge-model.js'
-import { ImportPipeline } from '../knowledge/import-pipeline.js'
 import { openPersistence } from '../persistence/persistence.js'
 import { SessionTracker } from '../scheduling/session-tracker.js'
 import { TeamManager } from '../team/team-manager.js'
@@ -272,44 +268,9 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: () => mcp.executorList(),
     },
-    // ---------- t36 补充命令（t39 补齐） ----------
-    {
-      name: `${prefix}knowledge_search`,
-      description: '按需检索知识库（仅 active）：执行器/DSH 子代理可自行查询项目/角色/版本相关知识',
-      parameters: {
-        query: { type: 'string', required: true },
-        project_id: { type: 'string' },
-        version: { type: 'string' },
-        role_id: { type: 'string' },
-        instance_id: { type: 'string' },
-        layer: { type: 'string' },
-        visibility: { type: 'string' },
-        limit: { type: 'number' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.knowledgeSearch(args as unknown as { query?: string; project_id?: string; version?: string; role_id?: string; instance_id?: string; layer?: string; visibility?: string; limit?: number }),
-    },
-    {
-      name: `${prefix}knowledge_review`,
-      description: '知识审核队列：默认 candidate；可过滤状态/层级并限制条数（TDD 1.2.8）',
-      parameters: { status: { type: 'string' }, layer: { type: 'string' }, limit: { type: 'number' } },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.knowledgeReview(args as unknown as { status?: string; layer?: string; limit?: number }),
-    },
-    {
-      name: `${prefix}knowledge_approve`,
-      description: '知识审核通过：candidate → active（显式人工确认，AC-KNOW-003）',
-      parameters: { knowledge_id: { type: 'string', required: true } },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.knowledgeApprove((args as unknown as { knowledge_id: string }).knowledge_id),
-    },
-    {
-      name: `${prefix}knowledge_reject`,
-      description: '知识审核拒绝：candidate → deprecated',
-      parameters: { knowledge_id: { type: 'string', required: true }, reason: { type: 'string' } },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.knowledgeReject((args as unknown as { knowledge_id: string }).knowledge_id),
-    },
+    // ---------- 知识面（prism 承接）：weave knowledge_* MCP 工具全删 ----------
+    // agent 检索走 prism 原生 prism_kb_* 工具（经 ACP mcp_servers 注册）；
+    // 主会话审核走 /weave CLI（knowledge review|approve|reject，操作 weave 暂存区）。
     {
       name: `${prefix}task_retry`,
       description: '重试任务：FAILED/LOOP_TERMINATED/INTERRUPTED/CANCELLED → WAITING',
@@ -359,28 +320,26 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: () => mcp.banList(),
     },
-    // ---------- doc/09 §2.4：weave_graph_*（T2，DSH 子代理可调用） ----------
+    // ---------- doc/09 §2.4：weave_graph_*（prism 代码图谱代理） ----------
     {
       name: `${prefix}graph_build`,
-      description: '构建/更新项目代码图谱与执行流（Graphify extract + flows build）',
+      description: '构建/更新项目代码图谱（Prism 承接，异步构建至终态）',
       parameters: {},
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: () => mcp.graphBuild(),
     },
     {
       name: `${prefix}graph_query`,
-      description: '代码图谱语义查询：输入自然语言/符号问题，返回 Graphify 查询结果',
+      description: '代码图谱语义查询：输入自然语言/符号问题（Prism 图谱）',
       parameters: {
         question: { type: 'string', required: true, description: '查询问题（自然语言或符号描述）' },
-        budget: { type: 'number', description: '搜索预算（节点数量上限，缺省由 Graphify 决定）' },
-        dfs: { type: 'boolean', description: '是否使用 DFS 遍历（缺省 BFS）' },
       },
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.graphQuery(args as unknown as { question: string; budget?: number; dfs?: boolean }),
+      execute: (args) => mcp.graphQuery(args as unknown as { question: string }),
     },
     {
       name: `${prefix}graph_path`,
-      description: '查询两个代码节点之间的最短路径',
+      description: '查询两个代码节点之间的最短路径（Prism 图谱）',
       parameters: {
         source: { type: 'string', required: true, description: '起始节点 id/名称' },
         target: { type: 'string', required: true, description: '目标节点 id/名称' },
@@ -390,14 +349,14 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
     },
     {
       name: `${prefix}graph_explain`,
-      description: '解释单个代码图谱节点（邻居/上下游详情）',
+      description: '解释单个代码图谱节点（Prism 图谱）',
       parameters: { node: { type: 'string', required: true, description: '节点 id/名称' } },
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: (args) => mcp.graphExplain(args as unknown as { node: string }),
     },
     {
       name: `${prefix}graph_affected`,
-      description: '根据改动文件列表计算影响面（执行流）',
+      description: '根据改动文件列表计算影响面（Prism 图谱 affected）',
       parameters: {
         files: {
           type: 'array',
@@ -409,70 +368,20 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: (args) => mcp.graphAffected(args as unknown as { files: string[] }),
     },
-    // ---------- doc/08 §7 / doc/09 §2.4：weave_document_convert（T6，AnyDoc 独立转换） ----------
+    // ---------- 文档转换（prism kb convert 代理） ----------
     {
       name: `${prefix}document_convert`,
       description:
-        '独立文档转换（AnyDoc）：把 doc/docx/odt/rtf/epub/pdf/ppt/pptx/xls/xlsx/csv 转为 GFM Markdown，' +
-        '返回 jobId/标题/警告与 Markdown 内容；不依赖知识导入流程。服务端路径模式传 file，' +
-        'base64 上传模式传 filename+data。',
+        '独立文档转换（Prism 承接）：把 doc/docx/odt/rtf/epub/pdf/ppt/pptx/xls/xlsx/csv 转为 GFM Markdown，' +
+        '返回标题/状态与 Markdown 内容。服务端路径模式传 file，base64 上传模式传 filename+data。',
       parameters: {
         file: { type: 'string', description: '服务端本地文件路径（CLI/服务端模式）' },
         filename: { type: 'string', description: '原始文件名（base64 上传模式必填）' },
         data: { type: 'string', description: 'base64 文件内容（控制台浏览器上传模式）' },
-        format: { type: 'string', description: '可选格式提示（AnyDoc 默认按扩展名/内容识别）' },
+        format: { type: 'string', description: '可选格式提示' },
       },
       output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
       execute: (args) => mcp.documentConvert(args as unknown as { file?: string; filename?: string; data?: string; format?: string }),
-    },
-    // ---------- doc/09 §2.4：weave_obsidian_*（T3，DSH 子代理可调用） ----------
-    {
-      name: `${prefix}obsidian_generate`,
-      description:
-        '生成/刷新 Obsidian Vault：把 Weave active/candidate 知识同步为 Markdown，' +
-        '保留用户修改并记录冲突；force=true 遇到用户修改将抛 conflict_detected。',
-      parameters: {
-        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
-        force: { type: 'boolean', description: '是否强制刷新；遇用户修改将报 conflict_detected' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.obsidianGenerate(args as unknown as { vaultPath?: string; force?: boolean }),
-    },
-    {
-      name: `${prefix}obsidian_open`,
-      description: '返回 Obsidian 打开协议 URI（obsidian://open?path=...）',
-      parameters: {
-        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.obsidianOpen(args as unknown as { vaultPath?: string }),
-    },
-    {
-      name: `${prefix}obsidian_reindex`,
-      description: '手动回索引 Obsidian Vault：扫描 Markdown 并重建用户侧指纹',
-      parameters: {
-        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.obsidianReindex(args as unknown as { vaultPath?: string }),
-    },
-    {
-      name: `${prefix}obsidian_status`,
-      description: 'Obsidian Vault 状态摘要：存在性、最近生成时间、冲突计数',
-      parameters: {
-        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.obsidianStatus(args as unknown as { vaultPath?: string }),
-    },
-    {
-      name: `${prefix}obsidian_conflicts`,
-      description: '列出 Obsidian Vault 当前冲突记录',
-      parameters: {
-        vaultPath: { type: 'string', description: 'Obsidian Vault 路径，缺省 ~/.dsh/obsidian' },
-      },
-      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
-      execute: (args) => mcp.obsidianConflicts(args as unknown as { vaultPath?: string }),
     },
   ]
   return defs
@@ -531,8 +440,7 @@ export function registerWeaveHost(
   options: WeaveHostOptionsCommand = {},
 ): WeaveHostBundle {
   const mcp = new WeaveMcp(deps)
-  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
-  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
+  const cli = new WeaveCli(mcp, options.providerCommand)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -695,8 +603,7 @@ export function registerWeaveCommand(
     return { registered: false, name: SLASH_COMMAND_NAME, unregister: () => undefined }
   }
   const mcp = new WeaveMcp(deps)
-  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
-  const cli = new WeaveCli(mcp, options.providerCommand, obsidianCli)
+  const cli = new WeaveCli(mcp, options.providerCommand)
   const service = (ctx as Context & { weave?: { mcp?: WeaveMcp; cli?: WeaveCli } }).weave
   if (service) {
     service.mcp = mcp
@@ -707,9 +614,8 @@ export function registerWeaveCommand(
     description:
       'Weave 协作框架命令：团队/任务/知识/执行器/熔断/图谱/文档转换管理。子命令：team list|switch、' +
       'task status|revise|accept|retry|skip|cancel|reopen、dag <dag_id>、' +
-      'executor list、knowledge review|approve|reject、ban list、' +
-      'graph build|query|path|explain|affected、document convert|status|preview|history、' +
-      'obsidian generate|open|reindex|status|conflicts',
+      'executor list、knowledge search|review|approve|reject、ban list、' +
+      'graph build|query|path|explain|affected、document convert（知识/图谱/转换由 Prism 控制面承接）',
     input: {
       hint: 'weave <子命令> [参数...]　例：weave team list / weave task status --dag <dag_id>',
     },
@@ -735,15 +641,22 @@ export function registerWeaveCommand(
 /**
  * 默认 CliMcpDeps 组装（真实部署直接接入）：openPersistence(~/.dsh/state)、
  * ExecutorRegistry.load(ctx.subagents)、TeamManager(~/.dsh/teams)、FeedbackRouter、
- * DagRepository、KnowledgeStore(~/.dsh/knowledge)+Review、AuditLog(~/.dsh/audit)、CircuitBreaker。
+ * DagRepository、PrismGateway（知识/图谱/转换，prism serve 本机托管）、
+ * AuditLog(~/.dsh/audit)、CircuitBreaker。
  * 注意：会创建/打开磁盘文件（非 :memory:）；测试请用显式 deps（见 __tests__/cli-mcp.test.ts newEnv）。
  */
 export interface DefaultCliDepsOptions {
   stateDir?: string
   teamsDir?: string
   auditDir?: string
-  knowledgeDir?: string
-  obsidianDir?: string
+  /** PrismGateway 注入覆盖（测试/自定义部署）；缺省按本机默认组装。 */
+  prism?: PrismGateway
+  /** prism serve 基址（缺省 http://127.0.0.1:7777）。 */
+  prismBaseUrl?: string
+  /** prism 数据目录（PRISM_HOME，缺省 ~/.dsh/prism）。 */
+  prismHome?: string
+  /** 是否允许托管拉起 prism serve（缺省 true）。 */
+  prismAutoStart?: boolean
 }
 
 export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOptions = {}): CliMcpDeps {
@@ -776,16 +689,22 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     audit,
   })
   const teamsDir = options.teamsDir ?? join(homedir(), '.dsh', 'teams')
-  const knowledgeRoot = options.knowledgeDir ?? join(homedir(), '.dsh', 'knowledge')
-  const kstore = new KnowledgeStore({ rootDir: knowledgeRoot, metaDb: persistence.knowledgeMeta })
-  const kreview = new KnowledgeReviewService({ knowledge: kstore, audit: new AuditLog({ dir: auditDir }) })
-  const importsDir = join(homedir(), '.dsh', 'imports')
-  const importPipeline = new ImportPipeline({
-    importsDb: persistence.imports,
-    importsDir,
-    knowledgeStore: kstore,
+  // Prism 控制面：知识库/图谱/文档转换的唯一后端（子项目承接）。
+  const prismClient = new PrismClient(options.prismBaseUrl !== undefined ? { baseUrl: options.prismBaseUrl } : {})
+  const prismSupervisor = new PrismSupervisor({
+    client: prismClient,
+    ...(options.prismHome !== undefined ? { prismHome: options.prismHome } : {}),
+    autoStart: options.prismAutoStart ?? true,
   })
-  const obsidianRoot = options.obsidianDir ?? join(homedir(), '.dsh', 'obsidian')
+  const prism = options.prism ?? new PrismGateway({
+    client: prismClient,
+    supervisor: prismSupervisor,
+    audit,
+    // 默认根链与旧 GraphService 一致：显式 env > 插件仓根（src/dist 布局均四级向上）。
+    ...(process.env.WEAVE_GRAPH_PROJECT_ROOT
+      ? { defaultProjectRoot: process.env.WEAVE_GRAPH_PROJECT_ROOT }
+      : { defaultProjectRoot: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..') }),
+  })
   return {
     persistence,
     teamManager: new TeamManager(registry, {
@@ -798,18 +717,8 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
     executorRegistry: registry,
     feedbackRouter: router,
     dagRepository: new DagRepository(persistence, { statusNotifier, audit }),
-    knowledgeReview: kreview,
-    knowledgeStore: kstore,
-    importPipeline,
-    // 默认根链与 query-service 一致：显式 env > 插件仓根（src/dist 布局均四级向上）；
-    // 绝不落到宿主 cwd（profile 目录无 .graphify，无参调用必报「尚未构建」）。
-    graphService: new GraphService(
-      process.env.WEAVE_GRAPH_PROJECT_ROOT
-        ? { projectRoot: process.env.WEAVE_GRAPH_PROJECT_ROOT }
-        : { projectRoot: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..') }
-    ),
-    documentConverter: new DocumentConverter({ outputDir: importsDir }),
-    obsidianService: new ObsidianService({ defaultVaultPath: obsidianRoot, knowledgeStore: kstore }),
+    prism,
+    prismSupervisor,
     circuitBreaker: new CircuitBreaker(),
     statusNotifier,
     audit,
@@ -887,6 +796,5 @@ export function createDefaultExecutorProviderRegistry(
 export function buildDefaultWeaveCli(ctx: Context): { mcp: WeaveMcp; cli: WeaveCli; deps: CliMcpDeps } {
   const deps = createDefaultCliDeps(ctx)
   const mcp = new WeaveMcp(deps)
-  const obsidianCli = deps.obsidianService ? new ObsidianCli(deps.obsidianService) : undefined
-  return { mcp, cli: new WeaveCli(mcp, undefined, obsidianCli), deps }
+  return { mcp, cli: new WeaveCli(mcp), deps }
 }

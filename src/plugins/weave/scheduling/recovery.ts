@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import type { WeaveDatabase } from '../persistence/weave-database.js'
 import { AuditLog } from '../audit/audit-log.js'
 import type { TaskStatusNotifier } from './task-status-notifier.js'
@@ -15,14 +13,10 @@ import type { TaskLivenessProbe, TaskLivenessVerdict } from './task-liveness.js'
  *    子代理活着 → 保持 RUNNING（followup 边界在下次派发时按事件边界自动重挂）；
  *    会话有持久产物（executor_children / ACP 会话索引命中）→ 保持 RUNNING 可续；
  *    两处皆无 → FAILED(crash_recovery)。探针异常按保守旧行为 FAILED 并审计原因。
- * 2. 导入：`import_jobs` 全部非终态（uploaded/converting/converted/previewing/reviewing）→ `failed`，
- *    写入可读 error_message（失败不写 knowledge/_agent 的语义由 ImportPipeline 保证，恢复不新增知识）；
- * 3. 知识元数据：`knowledge_meta.status ∈ {candidate, active}` 但对应文件丢失 → `deprecated`
- *    （文件不可检索，与生命周期 candidate/active → deprecated 一致）。
+ * （导入与知识元数据修复已随能力移交 Prism 控制面而移除；prism 自管其数据一致性。）
  *
  * 所有 DB 修复动作在单写者队列内以事务（BEGIN IMMEDIATE / COMMIT / ROLLBACK）执行；
- * 每项修复写审计事件（recovery.task_repaired / recovery.task_reconciled /
- * knowledge.status_changed / recovery.import_repaired），审计失败不阻断修复（记录在报告中）。
+ * 每项修复写审计事件（recovery.task_repaired / recovery.task_reconciled），审计失败不阻断修复（记录在报告中）。
  */
 
 export interface RecoveryReport {
@@ -38,12 +32,6 @@ export interface RecoveryReport {
 export interface RecoveryOptions {
   /** tasks.db（P0-DB-004） */
   tasksDb: WeaveDatabase
-  /** imports.db（P0-DB-004） */
-  importsDb: WeaveDatabase
-  /** knowledge_meta.db（P0-DB-004） */
-  knowledgeMetaDb: WeaveDatabase
-  /** knowledge 根目录（~/.dsh/knowledge），用于文件存在性对账 */
-  knowledgeRoot: string
   /** 审计日志；默认 new AuditLog()（~/.dsh/audit 目录模型） */
   audit?: AuditLog
   /** 任务状态变更通知单出口（doc/05 §6.4 P1-D 接线点 6）：崩溃修复发电，actor=recovery。 */
@@ -55,8 +43,6 @@ export interface RecoveryOptions {
 
 /** 需要修复的任务中间态：RUNNING / REVISION_RUNNING（SDD 6.6 扫描范围）。 */
 export const RUNNING_TASK_STATUSES = ['RUNNING', 'REVISION_RUNNING'] as const
-/** 需要修复的导入非终态（TDD 3.1.4 状态机；终态 = cancelled/failed/confirmed/active）。 */
-export const NON_TERMINAL_IMPORT_STATUSES = ['uploaded', 'converting', 'converted', 'previewing', 'reviewing'] as const
 
 export class RecoveryService {
   readonly #options: RecoveryOptions
@@ -69,12 +55,10 @@ export class RecoveryService {
     this.#now = options.now ?? (() => new Date())
   }
 
-  /** 全量恢复：任务 → 导入 → 知识元数据。 */
+  /** 全量恢复：任务（导入/知识修复已移交 Prism）。 */
   async recoverAll(): Promise<RecoveryReport> {
     const reports = [
       await this.repairTasks(),
-      await this.repairImports(),
-      await this.repairKnowledgeMeta(),
     ]
     return {
       scanned: reports.reduce((sum, r) => sum + r.scanned, 0),
@@ -181,87 +165,6 @@ export class RecoveryService {
     } catch (error) {
       return { verdict: 'dead', detail: `liveness probe failed (conservative FAILED): ${String(error)}` }
     }
-  }
-
-  /** 修复 import_jobs 非终态（SDD 6.6）。幂等。 */
-  async repairImports(): Promise<RecoveryReport> {
-    const report = this.#emptyReport()
-    const placeholders = NON_TERMINAL_IMPORT_STATUSES.map(() => '?').join(', ')
-    const rows = await this.#options.importsDb.run((raw) => {
-      return raw
-        .prepare(`SELECT id, status FROM import_jobs WHERE status IN (${placeholders})`)
-        .all(...NON_TERMINAL_IMPORT_STATUSES)
-    })
-    report.scanned = rows.length
-
-    for (const row of rows) {
-      const jobId = String(row.id)
-      const from = String(row.status)
-      const now = this.#now().toISOString()
-      await this.#transact(this.#options.importsDb, () => {
-        const result = this.#options.importsDb.raw
-          .prepare(
-            `UPDATE import_jobs
-             SET status = 'failed', error_message = COALESCE(error_message, '崩溃恢复：导入未完成，请重新上传'), updated_at = ?
-             WHERE id = ? AND status = ?`,
-          )
-          .run(now, jobId, from)
-        if (result.changes === 0) {
-          throw new Error(`恢复竞态：导入任务状态已变化: ${jobId}`)
-        }
-      })
-      report.repaired++
-      report.actions.push(`import ${jobId}: ${from} → failed`)
-      await this.#auditSafe(report, {
-        type: 'recovery.import_repaired',
-        job_id: jobId,
-        from,
-        to: 'failed',
-        reason: '崩溃恢复：进程重启时导入任务未完成',
-      })
-    }
-    return report
-  }
-
-  /** 知识元数据对账：candidate/active 但文件丢失 → deprecated（一致性）。幂等。 */
-  async repairKnowledgeMeta(): Promise<RecoveryReport> {
-    const report = this.#emptyReport()
-    const rows = await this.#options.knowledgeMetaDb.run((raw) => {
-      return raw
-        .prepare(
-          `SELECT id, path, status FROM knowledge_meta WHERE status IN ('candidate', 'active') ORDER BY id`,
-        )
-        .all()
-    })
-    report.scanned = rows.length
-
-    for (const row of rows) {
-      const id = String(row.id)
-      const from = String(row.status)
-      const filePath = join(this.#options.knowledgeRoot, String(row.path))
-      if (existsSync(filePath)) {
-        report.skipped++
-        continue
-      }
-      const now = this.#now().toISOString()
-      await this.#transact(this.#options.knowledgeMetaDb, () => {
-        const result = this.#options.knowledgeMetaDb.raw
-          .prepare(`UPDATE knowledge_meta SET status = 'deprecated', updated = ? WHERE id = ? AND status = ?`)
-          .run(now, id, from)
-        if (result.changes === 0) {
-          throw new Error(`恢复竞态：知识元数据状态已变化: ${id}`)
-        }
-      })
-      report.repaired++
-      report.actions.push(`knowledge ${id}: ${from} → deprecated (file missing: ${String(row.path)})`)
-      await this.#auditSafe(report, {
-        type: 'knowledge.status_changed',
-        knowledge_id: id,
-        from,
-        to: 'deprecated',
-      })
-    }
-    return report
   }
 
   // ===== 内部 =====

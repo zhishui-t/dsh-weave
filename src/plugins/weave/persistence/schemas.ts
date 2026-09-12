@@ -98,29 +98,6 @@ export const EDGES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS edges (
     PRIMARY KEY (dag_id, from_task_id, to_task_id)
 )`
 
-/** TDD 2.5.2 导入任务表 DDL */
-export const IMPORT_JOBS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS import_jobs (
-    id TEXT PRIMARY KEY,
-    original_filename TEXT NOT NULL,
-    file_type TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'uploaded',
-    anydoc_job_id TEXT,
-    markdown_path TEXT,
-    converted_title TEXT,
-    converted_body TEXT,
-    target_project_id TEXT,
-    target_version TEXT,
-    target_role_id TEXT,
-    target_instance_id TEXT,
-    visibility TEXT NOT NULL,
-    candidate_id TEXT,
-    error_message TEXT,
-    created_by TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)`
-
 /** TDD 2.6.1 保温期路由表 DDL */
 export const FEEDBACK_ROUTES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS feedback_routes (
     task_id TEXT PRIMARY KEY,
@@ -132,20 +109,6 @@ export const FEEDBACK_ROUTES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS feedback_ro
     reopen_count INTEGER DEFAULT 0,
     user_feedback TEXT DEFAULT '[]',
     previous_result TEXT
-)`
-
-/** TDD 2.6.2 知识元数据表 DDL */
-export const KNOWLEDGE_META_TABLE_DDL = `CREATE TABLE IF NOT EXISTS knowledge_meta (
-    id TEXT PRIMARY KEY,
-    path TEXT NOT NULL,
-    layer TEXT NOT NULL,
-    status TEXT NOT NULL,
-    confidence REAL DEFAULT 0.0,
-    freshness_score REAL DEFAULT 1.0,
-    last_confirmed TEXT,
-    model_version TEXT,
-    created TEXT NOT NULL,
-    updated TEXT NOT NULL
 )`
 
 /** TDD 2.6.3 任务序号表 DDL */
@@ -208,9 +171,7 @@ export const CORE_TABLE_DDL: Record<string, string> = {
   tasks: TASKS_TABLE_DDL,
   dags: DAGS_TABLE_DDL,
   edges: EDGES_TABLE_DDL,
-  import_jobs: IMPORT_JOBS_TABLE_DDL,
   feedback_routes: FEEDBACK_ROUTES_TABLE_DDL,
-  knowledge_meta: KNOWLEDGE_META_TABLE_DDL,
   task_sequences: TASK_SEQUENCES_TABLE_DDL,
   bans: BANS_TABLE_DDL,
   failure_counters: FAILURE_COUNTERS_TABLE_DDL,
@@ -219,11 +180,11 @@ export const CORE_TABLE_DDL: Record<string, string> = {
 }
 
 /**
- * 按 TDD 2.7 目录模型把核心表拆分到 5 个库文件：
- * tasks.db / core.db / feedback.db / knowledge_meta.db / imports.db
+ * 按 TDD 2.7 目录模型把核心表拆分到 3 个库文件：
+ * tasks.db / core.db / feedback.db（knowledge_meta/imports 随知识能力移交 Prism 已移除）
  */
 export const DEFAULT_SCHEMAS: Record<
-  'tasks' | 'core' | 'feedback' | 'knowledgeMeta' | 'imports',
+  'tasks' | 'core' | 'feedback',
   DatabaseSchema
 > = {
   tasks: {
@@ -248,6 +209,4 @@ export const DEFAULT_SCHEMAS: Record<
     ],
   },
   feedback: { version: DEFAULT_SCHEMA_VERSION, statements: [FEEDBACK_ROUTES_TABLE_DDL] },
-  knowledgeMeta: { version: DEFAULT_SCHEMA_VERSION, statements: [KNOWLEDGE_META_TABLE_DDL] },
-  imports: { version: DEFAULT_SCHEMA_VERSION, statements: [IMPORT_JOBS_TABLE_DDL] },
 }

@@ -74,8 +74,8 @@ export interface PrismGatewayOptions {
 
 export interface PrismGraphBuildResult {
   project: string
+  status: string
   job: PrismGraphJob
-  /** graph.json 是否存在由 prism /api/graph/summary 校验，这里透传 job 终态。 */
   ok: boolean
 }
 
@@ -302,7 +302,7 @@ export class PrismGateway {
         log: job.log?.slice(-5),
       })
     }
-    return { project, job, ok: true }
+    return { project, status: job.status, job, ok: true }
   }
 
   async graphQuery(input: { question: string; projectRoot?: string }): Promise<{ project: string; output: string }> {
@@ -320,7 +320,7 @@ export class PrismGateway {
     return await this.client.graphExplain({ project, node: input.node })
   }
 
-  async graphAffected(input: { files: string[]; projectRoot?: string }): Promise<Record<string, unknown>> {
+  async graphAffected(input: { files: string[]; projectRoot?: string }): Promise<{ project: string; affected: string[] }> {
     const { project } = this.#projectName(input.projectRoot)
     // prism /api/graph/affected 以单节点为入参：多文件逐个查询后合并受影响集合。
     const results = await Promise.allSettled(

@@ -6,45 +6,16 @@ import { TEAM_BINDINGS_TABLE_DDL } from '../persistence/schemas.js'
 import { SessionTracker } from '../scheduling/session-tracker.js'
 import { TASK_STATUSES, type TaskRecord, type TaskStatus } from '../state/types.js'
 import { WeaveError } from '../state/weave-error.js'
-import { KnowledgeStore, type KnowledgeLayer, type KnowledgeStatus } from '../knowledge/knowledge-model.js'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { ImportPipeline, type ImportMeta, type KnowledgeCandidate } from '../knowledge/import-pipeline.js'
 import type { TeamManager } from '../team/team-manager.js'
 import { classifyProvider } from '../executors/executor-registry.js'
 import type { WeaveScheduler } from '../scheduling/scheduler.js'
-import { GraphService, type AffectedFlowsResult, type GraphFlow, type GraphSummary } from '../graph/graph-service.js'
-import { listDirectories, listGraphProjects, type DirectoryListing, type GraphProjectSummary } from '../graph/graph-service.js'
-export { listDirectories, listGraphProjects, type DirectoryListing, type GraphProjectSummary } from '../graph/graph-service.js'
-import { KnowledgeGraphService, type KnowledgeGraphBuildResult } from '../graph/knowledge-graph.js'
-import type { DocumentConverter, DocumentConvertInput } from '../convert/document-converter.js'
-import type {
-  ObsidianConflict,
-  ObsidianGenerateResult,
-  ObsidianOpenResult,
-  ObsidianReindexResult,
-  ObsidianService,
-  ObsidianStatusResult,
-} from '../obsidian/obsidian-service.js'
-import { buildKnowledgeGraph, type KnowledgeGraphResult } from './knowledge-graph.js'
-import { fileURLToPath } from 'node:url'
-
-/**
- * code/* 端点的默认项目根：weave 插件自身所在仓库的根（src/dist 布局下
- * 均为向上四级）。此前缺省 process.cwd()——宿主从 profile 目录启动时
- * 图谱页会指向不存在的 .graphify 而报「尚未构建」。
- */
-const WEAVE_DEFAULT_PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..')
-
 
 /**
  * Web 真实数据查询/操作服务（t2）——供 RPC 层（rpc.ts 由 weave-dev-api 接线）调用的
- * 任务、知识库、审计、会话四域能力。全部读写真实持久化层：
+ * 任务、审计、会话三域能力（知识/图谱/转换域已移交 Prism 控制面）。全部读写真实持久化层：
  * - 任务列表/DAG 详情：tasks.db（tasks/dags/edges 表）；任务按会话过滤（session_id）；
  * - 任务动作：复用 WeaveMcp（revise / accept / retry / skip / cancel / reopen）；
  *   任务下发不在本层——唯一入口是会话内的 weave_plan_tasks（队长模式，planner.ts）；
- * - 知识：复用 WeaveMcp.knowledgeReview / approve / reject（candidate 队列 + 元数据状态查询）；
  * - 审计：AuditLog.query（JSONL 追加日志，无 fake 数据路径）；
  * - 会话绑定：core.db team_bindings 直读；set/clear 复用 TeamManager 现有方法；
  * - 会话状态：WeaveScheduler.memberRuntime（成员实时占用）+ 最近 DAG 派生最近结果；
@@ -132,9 +103,9 @@ function subjectOf(description: string): string {
 }
 
 export interface QueryServiceDeps {
-  /** 五库持久化句柄（tasks/core/feedback/knowledgeMeta/imports）。 */
+  /** 持久化句柄（tasks/core/feedback）。 */
   persistence: WeavePersistence
-  /** MCP 层：task/action、knowledge/* 复用；缺省时相应端点 configuration_error。 */
+  /** MCP 层：task/action 复用；缺省时相应端点 configuration_error。 */
   mcp?: WeaveMcp
   /** 审计日志：audit/list 用。 */
   auditLog?: AuditLog
@@ -144,22 +115,8 @@ export interface QueryServiceDeps {
   teamManager?: TeamManager
   /** 队长调度器：session/status 的成员实时占用数据源。 */
   scheduler?: WeaveScheduler
-  /** 知识仓库：knowledge/graph 只读真实知识文件与 [[双链]]。 */
-  knowledgeStore?: KnowledgeStore
-  /** 知识图谱 Graphify 后端：knowledge/build|query|path|explain 用。未注入时相应端点 configuration_error。 */
-  knowledgeGraphService?: KnowledgeGraphService
-  /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
-  importPipeline?: ImportPipeline
-  /** Graphify 代码图谱服务：code/* RPC 用；未注入时相应端点 configuration_error。 */
-  graphService?: GraphService
-  /** AnyDoc 独立文档转换服务：document/* RPC 用；未注入时相应端点 configuration_error。 */
-  documentConverter?: DocumentConverter
-  /** Obsidian 真实 Vault 集成服务：obsidian/* RPC 用；未注入时相应端点 configuration_error。 */
-  obsidianService?: ObsidianService
 }
 
-const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
-const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
 const TASK_ACTIONS = ['revise', 'accept', 'retry', 'skip', 'cancel', 'reopen'] as const
 
 
@@ -170,12 +127,6 @@ export class WeaveQueryService {
   private readonly sessionTracker?: SessionTracker
   private readonly teamManager?: TeamManager
   private readonly scheduler?: WeaveScheduler
-  private readonly knowledgeStore?: KnowledgeStore
-  private readonly knowledgeGraphService?: KnowledgeGraphService
-  private readonly importPipeline?: ImportPipeline
-  private readonly graphService?: GraphService
-  private readonly documentConverter?: DocumentConverter
-  private readonly obsidianService?: ObsidianService
   private readonly dagRepository: DagRepository
 
   constructor(deps: QueryServiceDeps) {
@@ -185,12 +136,6 @@ export class WeaveQueryService {
     this.sessionTracker = deps.sessionTracker
     this.teamManager = deps.teamManager
     this.scheduler = deps.scheduler
-    this.knowledgeStore = deps.knowledgeStore
-    this.knowledgeGraphService = deps.knowledgeGraphService
-    this.importPipeline = deps.importPipeline
-    this.graphService = deps.graphService
-    this.documentConverter = deps.documentConverter
-    this.obsidianService = deps.obsidianService
     this.dagRepository = new DagRepository(deps.persistence)
   }
 
@@ -340,383 +285,6 @@ export class WeaveQueryService {
       case 'reopen':
         return this.mcp.taskReopen(taskId)
     }
-  }
-
-  /* --------------------------------- 知识域 --------------------------------- */
-
-  /** knowledge/list：status（默认 candidate）/layer/limit，转发 WeaveMcp.knowledgeReview。 */
-  async knowledgeList(input: unknown): Promise<unknown> {
-    if (!this.mcp) {
-      throw new WeaveError('configuration_error', 'mcp 未注入（knowledge/list 需要 WeaveMcp）')
-    }
-    const p = asPayload(input)
-    const status = enumOrThrow(optionalString(p, 'status') ?? 'candidate', KNOWLEDGE_STATUSES, '知识状态')
-    const layerValue = optionalString(p, 'layer')
-    const layer = layerValue !== undefined ? enumOrThrow(layerValue, KNOWLEDGE_LAYERS, '知识层级') : undefined
-    const limit = optionalPositiveInt(p, 'limit') ?? 50
-    return this.mcp.knowledgeReview({ status, ...(layer ? { layer } : {}), limit })
-  }
-
-  /** knowledge/approve：candidate → active（WeaveMcp → KnowledgeReviewService）。 */
-  async knowledgeApprove(input: unknown): Promise<unknown> {
-    if (!this.mcp) {
-      throw new WeaveError('configuration_error', 'mcp 未注入（knowledge/approve 需要 WeaveMcp）')
-    }
-    const p = asPayload(input)
-    return this.mcp.knowledgeApprove(requireString(p, 'id', 'knowledgeId', 'knowledge_id'))
-  }
-
-  /** knowledge/reject：candidate → deprecated。 */
-  async knowledgeReject(input: unknown): Promise<unknown> {
-    if (!this.mcp) {
-      throw new WeaveError('configuration_error', 'mcp 未注入（knowledge/reject 需要 WeaveMcp）')
-    }
-    const p = asPayload(input)
-    const id = requireString(p, 'id', 'knowledgeId', 'knowledge_id')
-    const reason = optionalString(p, 'reason')
-    return this.mcp.knowledgeReject(id, reason)
-  }
-
-  private requireKnowledgeGraphService(): KnowledgeGraphService {
-    if (!this.knowledgeGraphService) {
-      throw new WeaveError('configuration_error', 'knowledgeGraphService 未注入（knowledge/build|query|path|explain 需要 KnowledgeGraphService）')
-    }
-    return this.knowledgeGraphService
-  }
-
-  /** knowledge/build：用 Graphify semantic extraction 构建/刷新知识图谱。 */
-  async knowledgeBuild(input: unknown = {}): Promise<KnowledgeGraphBuildResult> {
-    asPayload(input)
-    return this.requireKnowledgeGraphService().build()
-  }
-
-  /**
-   * knowledge/graph：优先使用 Graphify graph.json（保留 status/layer/project 过滤）；
-   * 未构建时回退轻量 [[双链]] 预览，满足 K1 空/未构建可提示。
-   */
-  async knowledgeGraph(input: unknown = {}): Promise<KnowledgeGraphResult> {
-    if (!this.knowledgeStore) {
-      throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge/graph 需要 KnowledgeStore）')
-    }
-    const p = asPayload(input)
-    const statusValue = optionalString(p, 'status')
-    const layerValue = optionalString(p, 'layer')
-    const status = statusValue !== undefined ? enumOrThrow(statusValue, KNOWLEDGE_STATUSES, '知识状态') as KnowledgeStatus : undefined
-    const layer = layerValue !== undefined ? enumOrThrow(layerValue, KNOWLEDGE_LAYERS, '知识层级') as KnowledgeLayer : undefined
-    const limitRaw = optionalPositiveInt(p, 'limit')
-    const project = optionalString(p, 'project')
-    const graphInput = {
-      ...(status ? { status } : {}),
-      ...(layer ? { layer } : {}),
-      ...(limitRaw ? { limit: limitRaw } : {}),
-      ...(project ? { project } : {}),
-    }
-    if (this.knowledgeGraphService) {
-      return this.knowledgeGraphService.graph(graphInput)
-    }
-    return await buildKnowledgeGraph(this.knowledgeStore, graphInput)
-  }
-
-  /** knowledge/query：知识图谱语义查询（无命中返回空文本，不崩溃）。 */
-  async knowledgeQuery(input: unknown): Promise<{ text: string }> {
-    const p = asPayload(input)
-    const question = requireString(p, 'question')
-    const budget = optionalPositiveInt(p, 'budget')
-    const dfs = p['dfs'] === true
-    const text = await this.requireKnowledgeGraphService().query(question, {
-      ...(budget ? { budget } : {}),
-      ...(dfs ? { dfs: true } : {}),
-    })
-    return { text }
-  }
-
-  /** knowledge/path：两个知识节点间最短路径。 */
-  async knowledgePath(input: unknown): Promise<{ source: string; target: string; path: string; text: string }> {
-    const p = asPayload(input)
-    const source = requireString(p, 'source')
-    const target = requireString(p, 'target')
-    const text = (await this.requireKnowledgeGraphService().path(source, target)).trim()
-    return { source, target, path: text, text }
-  }
-
-  /** knowledge/explain：单知识节点解释。 */
-  async knowledgeExplain(input: unknown): Promise<{ node: string; explain: string; text: string }> {
-    const p = asPayload(input)
-    const node = requireString(p, 'node')
-    const text = (await this.requireKnowledgeGraphService().explain(node)).trim()
-    return { node, explain: text, text }
-  }
-
-  /** 上传体积上限：对齐 DocumentConverter.MAX_INPUT_BYTES（50MB），在写盘前拒绝。 */
-  static readonly MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-
-  /** knowledge/import/upload：浏览器 base64 上传到服务端临时目录。 */
-  async importUpload(input: unknown): Promise<unknown> {
-    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入（knowledge/import 需要 ImportPipeline）')
-    const p = asPayload(input)
-    const filename = requireString(p, 'filename')
-    const dataB64 = requireString(p, 'data')
-    const meta = p['meta'] as ImportMeta | undefined
-    if (!meta) throw new WeaveError('invalid_argument', 'meta 不能为空')
-    // base64 每字符 ≈ 0.75 字节；按字符数先拒绝超大上传，避免无上限同步/异步写盘拖垮宿主。
-    const approxBytes = Math.floor((dataB64.length * 3) / 4)
-    if (approxBytes > WeaveQueryService.MAX_UPLOAD_BYTES) {
-      throw new WeaveError('invalid_argument', `上传体积超限: 约 ${Math.round(approxBytes / 1024 / 1024)}MB（上限 ${Math.round(WeaveQueryService.MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
-    }
-    const dir = join(homedir(), '.dsh', 'imports')
-    await mkdir(dir, { recursive: true })
-    const filePath = join(dir, `${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
-    await writeFile(filePath, Buffer.from(dataB64, 'base64'))
-    return this.importPipeline.upload({ original_filename: filename, local_path: filePath }, meta)
-  }
-
-  /** knowledge/import/convert：AnyDoc 转换。 */
-  async importConvert(input: unknown): Promise<unknown> {
-    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
-    return this.importPipeline.convert(requireString(asPayload(input), 'jobId', 'job_id'))
-  }
-
-  /** knowledge/import/preview：读转换后的 Markdown。 */
-  async importPreview(input: unknown): Promise<unknown> {
-    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
-    return this.importPipeline.preview(requireString(asPayload(input), 'jobId', 'job_id'))
-  }
-
-  /** knowledge/import/confirm：生成 candidate。 */
-  async importConfirm(input: unknown): Promise<unknown> {
-    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
-    const p = asPayload(input)
-    const jobId = requireString(p, 'jobId', 'job_id')
-    const candidate = p['candidate'] as KnowledgeCandidate | undefined
-    if (!candidate) throw new WeaveError('invalid_argument', 'candidate 不能为空')
-    return this.importPipeline.confirm(jobId, candidate)
-  }
-
-  /** knowledge/import/cancel：取消导入任务。 */
-  async importCancel(input: unknown): Promise<unknown> {
-    if (!this.importPipeline) throw new WeaveError('configuration_error', 'importPipeline 未注入')
-    await this.importPipeline.cancel(requireString(asPayload(input), 'jobId', 'job_id'))
-    return { cancelled: true }
-  }
-
-  /* --------------------------------- 代码图谱域 --------------------------------- */
-
-  private requireGraphService(): GraphService {
-    if (!this.graphService) {
-      throw new WeaveError('configuration_error', 'graphService 未注入（code/* 端点不可用）')
-    }
-    return this.graphService
-  }
-
-  private async ensureGraphBuilt(service: GraphService): Promise<void> {
-    if (!(await service.hasGraph())) {
-      throw new WeaveError('configuration_error', '代码图谱尚未构建，请先执行 pnpm code:scan', { graphPath: service.graphPath })
-    }
-  }
-
-  private async ensureFlowsBuilt(service: GraphService): Promise<void> {
-    await this.ensureGraphBuilt(service)
-    if (!(await service.hasFlows())) {
-      throw new WeaveError('configuration_error', '执行流尚未构建，请先执行 graphify flows build', { flowsPath: service.flowsPath })
-    }
-  }
-
-  /** code/projects：返回候选 Web 代码图项目列表。 */
-  async codeProjects(input: unknown = {}): Promise<{ projects: GraphProjectSummary[] }> {
-    asPayload(input)
-    return { projects: await listGraphProjects() }
-  }
-
-  /** code/dirs：目录选择数据。 */
-  async codeDirs(input: unknown = {}): Promise<DirectoryListing> {
-    const p = asPayload(input)
-    const path = optionalString(p, 'path')
-    return await listDirectories(path)
-  }
-
-  /** code/status：当前项目/指定项目图谱状态。 */
-  async codeStatus(input: unknown = {}): Promise<{
-    root: string
-    sourceDir: string
-    graphPath: string
-    flowsPath: string
-    hasGraph: boolean
-    hasFlows: boolean
-  }> {
-    const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.env.WEAVE_GRAPH_PROJECT_ROOT ?? WEAVE_DEFAULT_PROJECT_ROOT
-    const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
-    const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
-    return {
-      root: service.projectRoot,
-      sourceDir: service.sourceDir,
-      graphPath: service.graphPath,
-      flowsPath: service.flowsPath,
-      hasGraph: await service.hasGraph(),
-      hasFlows: await service.hasFlows(),
-    }
-  }
-
-  /** code/build：构建/刷新代码图谱与执行流。 */
-  async codeBuild(input: unknown = {}): Promise<{ graphPath: string; flowsPath: string }> {
-    const p = asPayload(input)
-    const projectRoot = optionalString(p, 'projectRoot', 'project_root') ?? process.env.WEAVE_GRAPH_PROJECT_ROOT ?? WEAVE_DEFAULT_PROJECT_ROOT
-    const sourceDir = optionalString(p, 'sourceDir', 'source_dir')
-    const service = new GraphService({ projectRoot, ...(sourceDir ? { sourceDir } : {}) })
-    return service.build()
-  }
-
-  /** code/graph：图谱摘要（节点/边/社区/路径）。 */
-  async codeGraph(input: unknown = {}): Promise<GraphSummary> {
-    asPayload(input)
-    const service = this.requireGraphService()
-    await this.ensureGraphBuilt(service)
-    return service.graphSummary()
-  }
-
-  /** code/path：两个节点间最短路径文本。 */
-  async codePath(input: unknown): Promise<{ source: string; target: string; path: string; text: string }> {
-    const p = asPayload(input)
-    const source = requireString(p, 'source')
-    const target = requireString(p, 'target')
-    const service = this.requireGraphService()
-    await this.ensureGraphBuilt(service)
-    const text = (await service.path(source, target)).trim()
-    return { source, target, path: text, text }
-  }
-
-  /** code/explain：单节点解释文本。 */
-  async codeExplain(input: unknown): Promise<{ node: string; explain: string; text: string }> {
-    const p = asPayload(input)
-    const node = requireString(p, 'node')
-    const service = this.requireGraphService()
-    await this.ensureGraphBuilt(service)
-    const text = (await service.explain(node)).trim()
-    return { node, explain: text, text }
-  }
-
-  /** code/affected：改动文件影响面。 */
-  async codeAffected(input: unknown): Promise<AffectedFlowsResult> {
-    const p = asPayload(input)
-    const rawFiles = p['files']
-    if (!Array.isArray(rawFiles)) {
-      throw new WeaveError('invalid_argument', 'files 必须为字符串数组', { field: 'files' })
-    }
-    const files = rawFiles.map((file, index) => {
-      if (typeof file !== 'string' || file.trim() === '') {
-        throw new WeaveError('invalid_argument', `files[${index}] 必须为非空字符串`, { field: 'files', index })
-      }
-      return file.trim()
-    })
-    const service = this.requireGraphService()
-    await this.ensureGraphBuilt(service)
-    if (files.length > 0) await this.ensureFlowsBuilt(service)
-    return service.affectedFlows(files)
-  }
-
-  /** code/flows：执行流摘要列表。 */
-  async codeFlows(input: unknown = {}): Promise<{ flows: GraphFlow[] }> {
-    const p = asPayload(input)
-    const limit = optionalPositiveInt(p, 'limit') ?? 50
-    const service = this.requireGraphService()
-    await this.ensureFlowsBuilt(service)
-    return { flows: await service.listFlows(limit) }
-  }
-
-  /** code/flows/get：单个执行流详情。 */
-  async codeFlowGet(input: unknown): Promise<GraphFlow> {
-    const p = asPayload(input)
-    const id = requireString(p, 'id', 'flowId', 'flow_id')
-    const service = this.requireGraphService()
-    await this.ensureFlowsBuilt(service)
-    return service.getFlow(id)
-  }
-
-  /* --------------------------------- 文档转换域 --------------------------------- */
-
-  private requireDocumentConverter(): DocumentConverter {
-    if (!this.documentConverter) {
-      throw new WeaveError('configuration_error', 'documentConverter 未注入（document/* 端点不可用）')
-    }
-    return this.documentConverter
-  }
-
-  /** document/convert：提交独立转换任务（返回 jobId/status，转换在后台进行）。 */
-  async documentConvert(input: unknown): Promise<unknown> {
-    const p = asPayload(input)
-    const converter = this.requireDocumentConverter()
-    return converter.convert(p as DocumentConvertInput)
-  }
-
-  /** document/status：查询独立转换任务状态。 */
-  async documentStatus(input: unknown): Promise<unknown> {
-    const p = asPayload(input)
-    const jobId = requireString(p, 'jobId', 'job_id')
-    return this.requireDocumentConverter().status(jobId)
-  }
-
-  /** document/preview：读取已完成转换的 Markdown。 */
-  async documentPreview(input: unknown): Promise<unknown> {
-    const p = asPayload(input)
-    const jobId = requireString(p, 'jobId', 'job_id')
-    return this.requireDocumentConverter().preview(jobId)
-  }
-
-  /** document/history：最近独立转换记录（doc/10 建议端点）。 */
-  async documentHistory(input: unknown = {}): Promise<{ jobs: Awaited<ReturnType<DocumentConverter['history']>> }> {
-    const p = asPayload(input)
-    const limit = optionalPositiveInt(p, 'limit') ?? 20
-    return { jobs: await this.requireDocumentConverter().history(limit) }
-  }
-
-  /* --------------------------------- Obsidian 域 --------------------------------- */
-
-  private requireObsidianService(): ObsidianService {
-    if (!this.obsidianService) {
-      throw new WeaveError('configuration_error', 'obsidianService 未注入（obsidian/* 端点不可用）')
-    }
-    return this.obsidianService
-  }
-
-  /** obsidian/generate：生成/刷新 Vault（增量 + 冲突保护）。 */
-  async obsidianGenerate(input: unknown): Promise<ObsidianGenerateResult> {
-    const p = asPayload(input)
-    return this.requireObsidianService().generate({
-      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
-      ...(p['force'] === true ? { force: true } : {}),
-    })
-  }
-
-  /** obsidian/open：返回 Obsidian 打开协议 URI。 */
-  async obsidianOpen(input: unknown): Promise<ObsidianOpenResult> {
-    const p = asPayload(input)
-    return this.requireObsidianService().open({
-      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
-    })
-  }
-
-  /** obsidian/reindex：手动扫描 Vault Markdown 并重建指纹。 */
-  async obsidianReindex(input: unknown): Promise<ObsidianReindexResult> {
-    const p = asPayload(input)
-    return this.requireObsidianService().reindex({
-      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
-    })
-  }
-
-  /** obsidian/status：Vault 状态摘要。 */
-  async obsidianStatus(input: unknown): Promise<ObsidianStatusResult> {
-    const p = asPayload(input)
-    return this.requireObsidianService().status({
-      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
-    })
-  }
-
-  /** obsidian/conflicts：冲突清单（辅助端点）。 */
-  async obsidianConflicts(input: unknown): Promise<{ vaultPath: string; conflicts: ObsidianConflict[] }> {
-    const p = asPayload(input)
-    return this.requireObsidianService().conflicts({
-      ...(optionalString(p, 'vaultPath', 'vault_path', 'vault') ? { vaultPath: optionalString(p, 'vaultPath', 'vault_path', 'vault')! } : {}),
-    })
   }
 
   /* --------------------------------- 审计域 --------------------------------- */
@@ -921,70 +489,6 @@ export class WeaveQueryService {
         return this.taskGet(payload)
       case 'task/action':
         return this.taskAction(payload)
-      case 'knowledge/list':
-        return this.knowledgeList(payload)
-      case 'knowledge/approve':
-        return this.knowledgeApprove(payload)
-      case 'knowledge/reject':
-        return this.knowledgeReject(payload)
-      case 'knowledge/build':
-        return this.knowledgeBuild(payload ?? {})
-      case 'knowledge/graph':
-        return this.knowledgeGraph(payload ?? {})
-      case 'knowledge/query':
-        return this.knowledgeQuery(payload ?? {})
-      case 'knowledge/path':
-        return this.knowledgePath(payload ?? {})
-      case 'knowledge/explain':
-        return this.knowledgeExplain(payload ?? {})
-      case 'knowledge/import/upload':
-        return this.importUpload(payload ?? {})
-      case 'knowledge/import/convert':
-        return this.importConvert(payload ?? {})
-      case 'knowledge/import/preview':
-        return this.importPreview(payload ?? {})
-      case 'knowledge/import/confirm':
-        return this.importConfirm(payload ?? {})
-      case 'knowledge/import/cancel':
-        return this.importCancel(payload ?? {})
-      case 'code/projects':
-        return this.codeProjects(payload ?? {})
-      case 'code/dirs':
-        return this.codeDirs(payload ?? {})
-      case 'code/status':
-        return this.codeStatus(payload ?? {})
-      case 'code/build':
-        return this.codeBuild(payload ?? {})
-      case 'code/graph':
-        return this.codeGraph(payload ?? {})
-      case 'code/path':
-        return this.codePath(payload ?? {})
-      case 'code/explain':
-        return this.codeExplain(payload ?? {})
-      case 'code/affected':
-        return this.codeAffected(payload ?? {})
-      case 'code/flows':
-        return this.codeFlows(payload ?? {})
-      case 'code/flows/get':
-        return this.codeFlowGet(payload ?? {})
-      case 'document/convert':
-        return this.documentConvert(payload ?? {})
-      case 'document/status':
-        return this.documentStatus(payload ?? {})
-      case 'document/preview':
-        return this.documentPreview(payload ?? {})
-      case 'document/history':
-        return this.documentHistory(payload ?? {})
-      case 'obsidian/generate':
-        return this.obsidianGenerate(payload ?? {})
-      case 'obsidian/open':
-        return this.obsidianOpen(payload ?? {})
-      case 'obsidian/reindex':
-        return this.obsidianReindex(payload ?? {})
-      case 'obsidian/status':
-        return this.obsidianStatus(payload ?? {})
-      case 'obsidian/conflicts':
-        return this.obsidianConflicts(payload ?? {})
       case 'audit/list':
         return this.auditList(payload)
       case 'session/bindings':
@@ -998,27 +502,20 @@ export class WeaveQueryService {
       case 'session/status':
         return this.sessionStatus(payload)
       default:
-        throw new WeaveError('invalid_argument', `未知 RPC endpoint: ${endpoint}`)
+        throw new WeaveError('invalid_argument', `未知 RPC endpoint: ${endpoint}（知识/图谱/转换端点已移交 Prism 控制面 http://127.0.0.1:7777）`)
     }
   }
 }
 
 /**
  * 生产接线工厂（t4）：从宿主已组装的 CliMcpDeps 派生 WeaveQueryService。
- * mcp / 审计日志（目录与 KnowledgeReview 一致）/ 修订跟踪在此按需构造，
- * 由 index.ts 注入 registerWeaveRpc 的 deps.queryService；extras.scheduler 为
- * 队长调度器（session/status 成员实时状态数据源）。
- * graphService / obsidianService 以 extras 优先，缺省回落 deps；
- * documentConverter 直接取 deps（CliMcpDeps 已负责组装）。
+ * 知识/图谱/转换/Obsidian 端点已随能力移交 Prism 控制面而移除；
+ * 面板只消费 task/audit/session 域（治理与调度视图）。
  */
 export function createWeaveQueryServiceFromCliDeps(
   deps: CliMcpDeps,
-  extras: { scheduler?: WeaveScheduler; graphService?: GraphService; obsidianService?: ObsidianService } = {},
+  extras: { scheduler?: WeaveScheduler } = {},
 ): WeaveQueryService {
-  // CliMcpDeps 本身已携带 graphService / obsidianService / documentConverter，
-  // 这里以 extras 优先（部署方可显式覆盖/注入不同实例），缺省回落 deps，保证工厂自组装完整。
-  const graphService = extras.graphService ?? deps.graphService
-  const obsidianService = extras.obsidianService ?? deps.obsidianService
   return new WeaveQueryService({
     persistence: deps.persistence,
     mcp: new WeaveMcp(deps),
@@ -1026,11 +523,5 @@ export function createWeaveQueryServiceFromCliDeps(
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
     ...(extras.scheduler ? { scheduler: extras.scheduler } : {}),
-    ...(graphService ? { graphService } : {}),
-    ...(obsidianService ? { obsidianService } : {}),
-    knowledgeStore: deps.knowledgeStore,
-    knowledgeGraphService: deps.knowledgeStore ? new KnowledgeGraphService({ store: deps.knowledgeStore }) : undefined,
-    importPipeline: deps.importPipeline,
-    documentConverter: deps.documentConverter,
   })
 }

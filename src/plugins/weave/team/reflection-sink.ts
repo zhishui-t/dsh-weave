@@ -1,4 +1,4 @@
-import type { ReflectionService } from '../knowledge/reflection-service.js'
+import type { PrismReflectionService } from '../prism/reflection.js'
 
 export interface TaskSettledInput {
   taskId: string
@@ -15,13 +15,13 @@ export interface ReflectionSinkResult {
 }
 
 /**
- * 反思/记忆沉淀出口：必须进入 Weave 知识库，而不是团队运行目录。
- * 这里只做薄适配，实际能力由 ReflectionService 提供。
+ * 反思/记忆沉淀出口：进入知识暂存区（先审后发，approve 后落 Prism 知识库），
+ * 而不是团队运行目录。这里只做薄适配，实际能力由 PrismReflectionService 提供。
  */
 export class ReflectionSink {
-  readonly #reflection: ReflectionService
+  readonly #reflection: PrismReflectionService
 
-  constructor(reflection: ReflectionService) {
+  constructor(reflection: PrismReflectionService) {
     this.#reflection = reflection
   }
 

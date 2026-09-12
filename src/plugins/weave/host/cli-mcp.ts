@@ -1,9 +1,9 @@
 import type { DagRepository } from '../dag/repository.js'
 import type { ExecutorRegistry } from '../executors/executor-registry.js'
 import type { FeedbackRouter } from '../scheduling/feedback-router.js'
-import type { KnowledgeReviewService } from '../knowledge/knowledge-review.js'
-import type { KnowledgeStore, KnowledgeMeta, KnowledgeFile, KnowledgeLayer, KnowledgeStatus, Visibility } from '../knowledge/knowledge-model.js'
-import type { ImportPipeline } from '../knowledge/import-pipeline.js'
+import type { PrismGateway } from '../prism/gateway.js'
+import type { StagedKnowledge } from '../prism/knowledge-staging.js'
+import type { PrismSearchResult } from '../prism/prism-client.js'
 import type { WeavePersistence } from '../persistence/index.js'
 import { TaskStateMachine } from '../state/task-state-machine.js'
 import type { CircuitBreaker, BreakerRecord } from '../safety/circuit-breaker.js'
@@ -12,16 +12,6 @@ import { WeaveError } from '../state/weave-error.js'
 import type { TeamManager } from '../team/team-manager.js'
 import type { TaskStatusNotifier } from '../scheduling/task-status-notifier.js'
 import type { AuditLog } from '../audit/audit-log.js'
-import { GraphService, type AffectedFlowsResult, type GraphQueryOptions } from '../graph/graph-service.js'
-import type {
-  DocumentConverter,
-  DocumentConvertInput,
-  DocumentHistoryItem,
-  DocumentPreviewResult,
-  DocumentStatusResult,
-} from '../convert/document-converter.js'
-import type { ObsidianService } from '../obsidian/obsidian-service.js'
-import type { ObsidianCli } from '../obsidian/cli.js'
 
 /**
  * P0-CLI-014 —— CLI / MCP 基础（TDD 1.2.x + AC-CLI）。
@@ -47,12 +37,15 @@ export interface CliMcpDeps {
   executorRegistry: ExecutorRegistry
   feedbackRouter: FeedbackRouter
   dagRepository: DagRepository
-  /** 知识审核服务（P0-KREVIEW-012，t14）。 */
-  knowledgeReview?: KnowledgeReviewService
-  /** KnowledgeStore：knowledge_review 非 candidate 状态查询用。 */
-  knowledgeStore?: KnowledgeStore
-  /** AnyDoc 导入管线：knowledge/import/* RPC 用。 */
-  importPipeline?: ImportPipeline
+  /**
+   * PrismGateway（知识库/图谱/转换统一门面，prism 子项目承接）：
+   * knowledge_review/approve/reject（先审后发暂存区）、knowledge_search（prism 检索）、
+   * graph_*（prism 代码图谱）、document convert（prism CLI）。
+   * 未注入时对应入口返回 configuration_error。
+   */
+  prism?: PrismGateway
+  /** prism serve 托管器：插件加载时拉起、ACP mcp_servers 注册与卸载停进程用。 */
+  prismSupervisor?: import('../prism/prism-supervisor.js').PrismSupervisor
   /** 熔断器（P0-SAFETY-015，t8）：ban list 用。 */
   circuitBreaker?: CircuitBreaker
   /**
@@ -65,23 +58,6 @@ export interface CliMcpDeps {
    * 与通知同位置、逐条容错（审计失败不影响治理动作）。
    */
   audit?: AuditLog
-  /**
-   * Graphify 图谱服务（doc/09 §2.4）：weave_graph_* 工具与 /weave graph CLI 使用。
-   * 未注入时对应入口返回 configuration_error（纯 CLI 可显式注入本地项目根）。
-   */
-  graphService?: GraphService
-  /**
-   * AnyDoc 独立文档转换服务（doc/08 §7 / doc/09 §2.1，T6）：
-   * document convert/preview/status 与 weave_document_convert 使用。
-   * 未注入时对应入口返回 configuration_error（不依赖知识导入/团队）。
-   */
-  documentConverter?: DocumentConverter
-  /**
-   * Obsidian 真实 Vault 集成服务（doc/09 §2.1，T3）：
-   * obsidian generate/open/reindex/status 与 weave_obsidian_* 使用。
-   * 未注入时对应入口返回 configuration_error。
-   */
-  obsidianService?: ObsidianService
   /**
    * 运行时执行联动（index.ts 在调度器就绪后注入）：
    * cancelTask → 中止运行中的子代理；resumeTask → 重试后重新泵 DAG。
@@ -185,99 +161,79 @@ export class WeaveMcp {
 
   /* ------------------- 补充：知识审核 / 任务运维 / 禁令列表（t36） ------------------- */
 
-  /** weave_knowledge_review：审核队列（默认 candidate；支持 status/layer/limit，TDD 1.2.8）。 */
+  /** #requirePrism：prism 门面未注入时的统一 configuration_error。 */
+  #requirePrism(): PrismGateway {
+    const prism = this.#deps.prism
+    if (!prism) throw new WeaveError('configuration_error', 'prism 未注入（知识/图谱/转换能力需要 PrismGateway）')
+    return prism
+  }
+
+  /**
+   * weave_knowledge_review：知识审核队列（prism 先审后发暂存区）。
+   * status/layer 参数保留兼容但已无意义（暂存条目均为待审 candidate）。
+   */
   async knowledgeReview(
     filter: { status?: string; layer?: string; limit?: number } = {},
-  ): Promise<{ candidates: Array<KnowledgeMeta & { title?: string; tags?: string[] }> }> {
-    const status = (filter.status ?? 'candidate') as KnowledgeStatus
-    const KNOWN: KnowledgeStatus[] = ['candidate', 'active', 'deprecated', 'superseded']
-    if (!KNOWN.includes(status)) {
-      throw new WeaveError('invalid_argument', `不支持的知识状态: ${String(filter.status)}`, { status: filter.status })
-    }
+  ): Promise<{ candidates: Array<StagedKnowledge & { status: 'candidate'; layer: string }> }> {
     const limit = filter.limit ?? 50
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new WeaveError('invalid_argument', 'limit 必须为正整数', { limit: filter.limit })
     }
-    const layer = filter.layer as KnowledgeLayer | undefined
-    if (status === 'candidate') {
-      const review = this.#deps.knowledgeReview
-      if (!review) throw new WeaveError('configuration_error', 'knowledgeReview 未注入（需要 KnowledgeReviewService）')
-      const items = await review.listQueue(layer ? { layer } : {})
-      return {
-        candidates: items.slice(0, limit).map((item) => ({ ...item.meta, title: item.title, tags: item.tags })),
-      }
+    const items = await this.#requirePrism().reviewQueue(limit)
+    return {
+      candidates: items.map((item) => ({ ...item, status: 'candidate' as const, layer: 'project' })),
     }
-    const store = this.#deps.knowledgeStore
-    if (!store) throw new WeaveError('configuration_error', 'knowledgeStore 未注入（非 candidate 状态查询需要）')
-    const metas = await store.listMeta({ status, ...(layer ? { layer } : {}) })
-    return { candidates: metas.slice(0, limit) }
   }
 
-  /** weave_knowledge_search：执行器/DSH 子代理按需检索 active 知识（R7 执行器按需检索）。 */
+  /** weave_knowledge_search：执行器/DSH 子代理按需检索知识（代理 prism 检索）。 */
   async knowledgeSearch(
     input: { query?: string; project_id?: string; version?: string; role_id?: string; instance_id?: string; layer?: string; visibility?: string; limit?: number } = {},
   ): Promise<{ query: string; total_hits: number; results: Array<{ id: string; title: string; path: string; layer: string; status: string; visibility: string; freshness_score: number; content: string }> }> {
-    const store = this.#deps.knowledgeStore
-    if (!store) throw new WeaveError('configuration_error', 'knowledgeStore 未注入（knowledge_search 需要 KnowledgeStore）')
-    const query = String(input.query ?? '').trim().toLowerCase()
+    const query = String(input.query ?? '').trim()
     if (query === '') throw new WeaveError('invalid_argument', 'query 不能为空', { field: 'query' })
     const limit = Math.max(1, Math.min(20, Number(input.limit ?? 5) || 5))
-    const layer = input.layer && input.layer !== '' ? input.layer as KnowledgeLayer : undefined
-    const visibility = input.visibility && input.visibility !== '' ? input.visibility as Visibility : undefined
-    const metas = await store.listMeta({ status: 'active', ...(layer ? { layer } : {}) })
-    const scored: Array<{ meta: KnowledgeMeta; score: number; file: KnowledgeFile }> = []
+    const hits: PrismSearchResult[] = await this.#requirePrism().search({
+      query,
+      ...(input.project_id !== undefined ? { project_id: String(input.project_id) } : {}),
+      ...(input.role_id !== undefined ? { role_id: String(input.role_id) } : {}),
+      ...(input.layer !== undefined && input.layer !== '' ? { layer: String(input.layer) } : {}),
+      limit,
+    })
+    // 轻量客户端过滤（version/instance 溯源在 source 地址里）
+    const filtered = hits.filter((hit) => {
+      if (input.version !== undefined && !hit.source.includes(String(input.version))) return false
+      if (input.instance_id !== undefined && !hit.source.includes(String(input.instance_id))) return false
+      return true
+    })
     let totalChars = 0
-    for (const meta of metas) {
-      const file = await store.getKnowledgeFile(meta.id)
-      if (!file) continue
-      if (visibility !== undefined && file.frontmatter.visibility !== visibility) continue
-      const path = meta.path.toLowerCase()
-      if (input.project_id !== undefined && !path.includes(String(input.project_id).toLowerCase())) continue
-      if (input.version !== undefined && !path.includes(String(input.version).toLowerCase())) continue
-      if (input.role_id !== undefined && !path.includes(String(input.role_id).toLowerCase())) continue
-      if (input.instance_id !== undefined && !path.includes(String(input.instance_id).toLowerCase())) continue
-      const title = file.frontmatter.title.toLowerCase()
-      const body = file.body.toLowerCase()
-      let score = 0
-      if (title.includes(query)) score += 5
-      if (body.includes(query)) score += 1
-      if (path.includes(query)) score += 2
-      if (score === 0) continue
-      scored.push({ meta, score, file })
-    }
-    scored.sort((a, b) => b.score - a.score || b.meta.freshness_score - a.meta.freshness_score)
-    const results: Array<{ id: string; title: string; path: string; layer: string; status: string; visibility: string; freshness_score: number; content: string }> = []
-    for (const item of scored.slice(0, limit)) {
-      const content = item.file.body
+    const results = filtered.slice(0, limit).map((hit) => {
+      const content = hit.excerpt
       const clamped = totalChars + content.length > 2500 ? content.slice(0, Math.max(0, 2500 - totalChars)) : content
       totalChars += clamped.length
-      results.push({
-        id: item.meta.id,
-        title: item.file.frontmatter.title,
-        path: item.meta.path,
-        layer: item.meta.layer,
-        status: item.meta.status,
-        visibility: item.file.frontmatter.visibility,
-        freshness_score: item.meta.freshness_score,
+      return {
+        id: hit.id,
+        title: hit.title,
+        path: hit.source,
+        layer: hit.layer,
+        status: 'active',
+        visibility: hit.layer,
+        freshness_score: hit.freshness ?? 1,
         content: clamped,
-      })
-      if (totalChars >= 2500) break
-    }
-    return { query: String(input.query ?? ''), total_hits: scored.length, results }
+      }
+    })
+    return { query, total_hits: filtered.length, results }
   }
 
-  /** weave_knowledge_approve：candidate → active（显式审核，AC-KNOW-003）。 */
-  async knowledgeApprove(knowledgeId: string): Promise<KnowledgeMeta> {
-    const review = this.#deps.knowledgeReview
-    if (!review) throw new WeaveError('configuration_error', 'knowledgeReview 未注入')
-    return review.approve(knowledgeId)
+  /** weave_knowledge_approve：暂存条目审核通过 → prism deposit（即生效，版次制）。 */
+  async knowledgeApprove(knowledgeId: string): Promise<{ id: string; status: 'active'; version: number; path: string }> {
+    const result = await this.#requirePrism().approveStaged(knowledgeId)
+    return { id: result.deposit.id, status: 'active', version: result.deposit.version, path: result.deposit.path }
   }
 
-  /** weave_knowledge_reject：candidate → deprecated。 */
-  async knowledgeReject(knowledgeId: string, _reason?: string): Promise<KnowledgeMeta> {
-    const review = this.#deps.knowledgeReview
-    if (!review) throw new WeaveError('configuration_error', 'knowledgeReview 未注入')
-    return review.reject(knowledgeId)
+  /** weave_knowledge_reject：暂存条目拒绝 → 删除（不落 prism）。 */
+  async knowledgeReject(knowledgeId: string, _reason?: string): Promise<{ id: string; status: 'rejected' }> {
+    const staged = await this.#requirePrism().rejectStaged(knowledgeId)
+    return { id: staged.id, status: 'rejected' }
   }
 
   /** weave_task_retry：FAILED/LOOP_TERMINATED/INTERRUPTED/CANCELLED → WAITING（#18/#24/#26/#29）。 */
@@ -415,18 +371,14 @@ export class WeaveMcp {
     return { bans: breaker.snapshot().filter((b) => b.state !== 'ACTIVE') }
   }
 
-  /* ------------------- 图谱工具（doc/09 §2.4，T2） ------------------- */
+  /* ------------------- 图谱工具（prism 代码图谱代理） ------------------- */
 
-  /** weave_graph_build：构建/更新代码图谱与执行流（Graphify extract + flows build）。 */
-  async graphBuild(input: { projectRoot?: string; sourceDir?: string } = {}): Promise<{ graphPath: string; flowsPath: string }> {
-    if (input.projectRoot || input.sourceDir) {
-      const graph = new GraphService({
-        projectRoot: input.projectRoot || process.cwd(),
-        ...(input.sourceDir ? { sourceDir: input.sourceDir } : {}),
-      })
-      return graph.build()
-    }
-    return this.#requireGraph().build()
+  /** weave_graph_build：构建/更新代码图谱（prism 异步 build job，等待终态）。 */
+  async graphBuild(input: { projectRoot?: string } = {}): Promise<{ project: string; status: string }> {
+    const result = await this.#requirePrism().graphBuild(
+      input.projectRoot !== undefined ? { projectRoot: input.projectRoot } : {},
+    )
+    return { project: result.project, status: result.job.status }
   }
 
   /** weave_graph_query：代码图谱语义查询。 */
@@ -435,10 +387,9 @@ export class WeaveMcp {
     if (question === '') {
       throw new WeaveError('invalid_argument', 'question 不能为空', { field: 'question' })
     }
-    const options: GraphQueryOptions = {}
-    if (input.budget !== undefined) options.budget = input.budget
-    if (input.dfs !== undefined) options.dfs = input.dfs
-    return { question, result: await this.#requireGraph().query(question, options) }
+    // budget/dfs 为旧 Graphify CLI 参数，prism 图谱查询不支持，忽略并透传问题文本
+    const result = await this.#requirePrism().graphQuery({ question })
+    return { question, result: result.output }
   }
 
   /** weave_graph_path：两个节点之间的最短路径。 */
@@ -448,7 +399,8 @@ export class WeaveMcp {
     if (source === '' || target === '') {
       throw new WeaveError('invalid_argument', 'source 与 target 不能为空', { source, target })
     }
-    return { source, target, path: await this.#requireGraph().path(source, target) }
+    const result = await this.#requirePrism().graphPath({ source, target })
+    return { source, target, path: JSON.stringify(result, null, 2) }
   }
 
   /** weave_graph_explain：单节点详情/解释。 */
@@ -457,11 +409,12 @@ export class WeaveMcp {
     if (node === '') {
       throw new WeaveError('invalid_argument', 'node 不能为空', { field: 'node' })
     }
-    return { node, explain: await this.#requireGraph().explain(node) }
+    const result = await this.#requirePrism().graphExplain({ node })
+    return { node, explain: JSON.stringify(result, null, 2) }
   }
 
-  /** weave_graph_affected：改动文件 → 影响面（执行流）。 */
-  async graphAffected(input: { files: string[] }): Promise<AffectedFlowsResult> {
+  /** weave_graph_affected：改动文件 → 影响面（prism affected 逐文件查询合并）。 */
+  async graphAffected(input: { files: string[] }): Promise<{ project: string; affected: string[] }> {
     const rawFiles = input.files
     if (!Array.isArray(rawFiles)) {
       throw new WeaveError('invalid_argument', 'files 必须为字符串数组', { field: 'files' })
@@ -474,16 +427,16 @@ export class WeaveMcp {
       }
       files.push(file.trim())
     }
-    return this.#requireGraph().affectedFlows(files)
+    return await this.#requirePrism().graphAffected({ files })
   }
 
-  /* ------------------- 文档转换（doc/08 §7 / doc/09 §2.1，T6） ------------------- */
+  /* ------------------- 文档转换（prism kb convert 代理） ------------------- */
 
   /**
-   * weave_document_convert：独立文档转换（CLI/MCP 使用最终结果）。
+   * weave_document_convert：独立文档转换（prism CLI，一次性同步完成）。
    * base64 上传模式传 filename+data；服务端路径模式传 file。
    */
-  async documentConvert(input: DocumentConvertInput): Promise<{
+  async documentConvert(input: { file?: string; filename?: string; data?: string; format?: string }): Promise<{
     jobId: string
     status: string
     filename: string
@@ -492,80 +445,15 @@ export class WeaveMcp {
     warnings: string[]
     error?: string
   }> {
-    const job = await this.#requireDocumentConverter().convertAndWait(input)
+    const result = await this.#requirePrism().convertDocument(input)
     return {
-      jobId: job.id,
-      status: job.status,
-      filename: job.filename,
-      ...(job.title !== undefined ? { title: job.title } : {}),
-      ...(job.markdown !== undefined ? { markdown: job.markdown } : {}),
-      warnings: job.warnings,
-      ...(job.error !== undefined ? { error: job.error } : {}),
+      jobId: result.job_id,
+      status: result.status,
+      filename: result.title,
+      title: result.title,
+      markdown: result.markdown,
+      warnings: result.warnings,
     }
-  }
-
-  /** weave_document_status：查询独立转换任务状态。 */
-  async documentStatus(jobId: string): Promise<DocumentStatusResult> {
-    return this.#requireDocumentConverter().status(jobId)
-  }
-
-  /** weave_document_preview：读取已完成转换的 Markdown。 */
-  async documentPreview(jobId: string): Promise<DocumentPreviewResult> {
-    return this.#requireDocumentConverter().preview(jobId)
-  }
-
-  /** weave_document_history：最近独立转换记录（可选入口）。 */
-  async documentHistory(limit = 20): Promise<DocumentHistoryItem[]> {
-    return this.#requireDocumentConverter().history(limit)
-  }
-
-  /* ------------------- Obsidian（doc/09 §2.1，T3） ------------------- */
-
-  /** weave_obsidian_generate：生成/刷新 Obsidian Vault（增量 + 冲突保护）。 */
-  async obsidianGenerate(input: { vaultPath?: string; force?: boolean } = {}): Promise<unknown> {
-    return this.#requireObsidian().generate(input)
-  }
-
-  /** weave_obsidian_open：返回 Obsidian 打开协议 URI。 */
-  async obsidianOpen(input: { vaultPath?: string } = {}): Promise<unknown> {
-    return this.#requireObsidian().open(input)
-  }
-
-  /** weave_obsidian_reindex：手动扫描 Vault Markdown 并重建指纹。 */
-  async obsidianReindex(input: { vaultPath?: string } = {}): Promise<unknown> {
-    return this.#requireObsidian().reindex(input)
-  }
-
-  /** weave_obsidian_status：Vault 状态摘要。 */
-  async obsidianStatus(input: { vaultPath?: string } = {}): Promise<unknown> {
-    return this.#requireObsidian().status(input)
-  }
-
-  /** weave_obsidian_conflicts：冲突清单（辅助工具）。 */
-  async obsidianConflicts(input: { vaultPath?: string } = {}): Promise<unknown> {
-    return this.#requireObsidian().conflicts(input)
-  }
-
-  #requireObsidian(): ObsidianService {
-    const service = this.#deps.obsidianService
-    if (!service) {
-      throw new WeaveError('configuration_error', 'obsidianService 未注入（weave_obsidian_* 需要 ObsidianService）')
-    }
-    return service
-  }
-
-  #requireDocumentConverter(): DocumentConverter {
-    const converter = this.#deps.documentConverter
-    if (!converter) {
-      throw new WeaveError('configuration_error', 'documentConverter 未注入（document/* 需要 DocumentConverter）')
-    }
-    return converter
-  }
-
-  #requireGraph(): GraphService {
-    const graph = this.#deps.graphService
-    if (!graph) throw new WeaveError('configuration_error', 'graphService 未注入（weave_graph_* 需要 GraphService）')
-    return graph
   }
 
   /**
@@ -650,20 +538,17 @@ const CLI_HELP = `用法: /weave <域> <命令> [参数] [--json]
   provider list
   provider remove <name>
   graph build
-  graph query <问题> [--budget N] [--dfs]
+  graph query <问题>
   graph path <source> <target>
   graph explain <node>
   graph affected <file> [file...]
   document convert <file>
-  document status <job_id>
-  document preview <job_id>
-  document history [--limit N]
-  obsidian generate [--vault <path>] [--force]
-  obsidian open [--vault <path>]
-  obsidian reindex [--vault <path>]
-  obsidian status [--vault <path>]
-  obsidian conflicts [--vault <path>]
+  knowledge search <query> [--project <id>] [--role <id>] [--limit N]
+  knowledge review
+  knowledge approve <staging_id>
+  knowledge reject <staging_id>
 
+知识库/图谱/文档转换由 Prism 控制面承接（http://127.0.0.1:7777 控制台可浏览知识）。
 任务下发已收敛为对话式：在会话中描述目标，队长模型调用 weave_plan_tasks 拆解派发。`
 
 export type WeaveProviderCliCommand = (args: string[]) => Promise<{
@@ -674,12 +559,10 @@ export type WeaveProviderCliCommand = (args: string[]) => Promise<{
 export class WeaveCli {
   readonly #mcp: WeaveMcp
   readonly #providerCommand?: WeaveProviderCliCommand
-  readonly #obsidianCli?: ObsidianCli
 
-  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand, obsidianCli?: ObsidianCli) {
+  constructor(mcp: WeaveMcp, providerCommand?: WeaveProviderCliCommand) {
     this.#mcp = mcp
     this.#providerCommand = providerCommand
-    this.#obsidianCli = obsidianCli
   }
 
   /**
@@ -806,7 +689,7 @@ export class WeaveCli {
         }
         if (command === 'review') {
           const data = await this.#mcp.knowledgeReview()
-          const lines = data.candidates.map((c) => `- ${c.id} [${c.layer}] ${c.title ?? ''}（${c.status}）`)
+          const lines = data.candidates.map((c) => `- ${c.id} [${c.type}] ${c.title}（task ${c.task_id}，${c.deposited_at}）`)
           return { json: lines.length ? lines.join('\n') : '（无待审核知识）', data }
         }
         if (command === 'approve') {
@@ -823,28 +706,25 @@ export class WeaveCli {
       }
       case 'code': {
         if (command === 'build') {
-          const [projectRoot, sourceDir] = rest
-          const data = await this.#mcp.graphBuild({ projectRoot, sourceDir })
-          return { json: `代码图谱已构建: ${data.graphPath}
-执行流: ${data.flowsPath}`, data }
+          const [projectRoot] = rest
+          const data = await this.#mcp.graphBuild(
+            projectRoot !== undefined && projectRoot !== '' ? { projectRoot } : {},
+          )
+          return { json: `代码图谱已构建: ${data.project}（${data.status}）`, data }
         }
         break
       }
       case 'graph': {
         if (command === 'build') {
           const data = await this.#mcp.graphBuild()
-          return { json: `图谱已构建: ${data.graphPath}\n执行流: ${data.flowsPath}`, data }
+          return { json: `图谱已构建: ${data.project}（${data.status}）`, data }
         }
         if (command === 'query') {
-          const { positionals, flags } = parseArgs(rest)
+          const { positionals } = parseArgs(rest)
           if (positionals.length === 0) {
-            throw new WeaveError('invalid_argument', '用法: /weave graph query <问题> [--budget N] [--dfs]')
+            throw new WeaveError('invalid_argument', '用法: /weave graph query <问题>')
           }
-          const data = await this.#mcp.graphQuery({
-            question: positionals.join(' '),
-            ...(flags.has('budget') ? { budget: Number(flags.get('budget')) } : {}),
-            ...(flags.has('dfs') ? { dfs: true } : {}),
-          })
+          const data = await this.#mcp.graphQuery({ question: positionals.join(' ') })
           return { json: data.result || '（无查询结果）', data }
         }
         if (command === 'path') {
@@ -871,10 +751,9 @@ export class WeaveCli {
             throw new WeaveError('invalid_argument', '用法: /weave graph affected <file1> [file2 ...]')
           }
           const data = await this.#mcp.graphAffected({ files })
-          const result = data
           const lines = [
-            `改动文件 ${result.changedFiles.length} 个，命中节点 ${result.matchedNodeIds.length} 个，影响执行流 ${result.affectedFlows.length} 条`,
-            ...result.affectedFlows.map((f) => `- [${f.id}] ${f.name}（${f.files.length} 文件，深度 ${f.depth}）`),
+            `项目 ${data.project}：改动文件 ${files.length} 个，影响节点 ${data.affected.length} 个`,
+            ...data.affected.slice(0, 50).map((node) => `- ${node}`),
           ]
           return { json: lines.join('\n'), data }
         }
@@ -898,40 +777,7 @@ export class WeaveCli {
             data,
           }
         }
-        if (command === 'status') {
-          const [jobId] = rest
-          if (!jobId) throw new WeaveError('invalid_argument', '用法: /weave document status <job_id>')
-          const data = await this.#mcp.documentStatus(jobId)
-          const lines = [
-            `- ${data.jobId} [${data.status}] ${data.filename}`,
-            ...(data.title ? [`  标题: ${data.title}`] : []),
-            ...(data.progress !== undefined ? [`  进度: ${data.progress}`] : []),
-            ...(data.error ? [`  错误: ${data.error}`] : []),
-            ...(data.warnings.length ? [`  警告: ${data.warnings.join('; ')}`] : []),
-          ]
-          return { json: lines.join('\n'), data }
-        }
-        if (command === 'preview') {
-          const [jobId] = rest
-          if (!jobId) throw new WeaveError('invalid_argument', '用法: /weave document preview <job_id>')
-          const data = await this.#mcp.documentPreview(jobId)
-          return { json: data.markdown, data }
-        }
-        if (command === 'history') {
-          const { flags } = parseArgs(rest)
-          const limit = flags.has('limit') ? Number(flags.get('limit')) : undefined
-          const items = await this.#mcp.documentHistory(limit && Number.isFinite(limit) ? limit : 20)
-          const lines = items.map((item) => `- ${item.jobId} [${item.status}] ${item.filename} ${item.title ?? ''}`.trimEnd())
-          return { json: lines.length ? lines.join('\n') : '（暂无文档转换记录）', data: items }
-        }
         break
-      }
-      case 'obsidian': {
-        if (!this.#obsidianCli) {
-          throw new WeaveError('configuration_error', 'obsidianService 未注入（/weave obsidian 不可用）')
-        }
-        const result = await this.#obsidianCli.run(command === undefined ? rest : [command, ...rest])
-        return { json: result.text, data: result.data }
       }
       case 'ban': {
         if (command === 'list') {

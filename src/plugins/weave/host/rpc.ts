@@ -18,8 +18,6 @@ import type { TeamConfig } from '../team/team-manager.js'
 /** 浏览器 / 宿主共用的独立 RPC channel。 */
 export const WEAVE_RPC_CHANNEL = '/dsh-weave'
 
-export const DEFAULT_OBSIDIAN_DIR = join(homedir(), '.dsh', 'obsidian')
-export const DEFAULT_KNOWLEDGE_DIR = join(homedir(), '.dsh', 'knowledge')
 
 type RpcSuccess<T> = { ok: true; value: T }
 type RpcFailure = {
@@ -180,12 +178,10 @@ export interface WeaveRpcSettings {
   auditDir?: string
   /** providers.json 路径（settings/describe 的配置来源展示）；缺省 DEFAULT_PROVIDERS_FILE。 */
   providersFile?: string
-  /** Obsidian Vault 路径；缺省 ~/.dsh/obsidian。 */
-  obsidianDir?: string
   /** state 目录；缺省 DEFAULT_STATE_DIR。 */
   stateDir?: string
-  /** 知识仓库根目录；缺省 ~/.dsh/knowledge。 */
-  knowledgeDir?: string
+  /** Prism 控制台地址（settings/describe 展示入口；缺省内嵌 prism serve 的 /studio）。 */
+  prismConsole?: string
 }
 
 /* ------------------------------ 序列化：完整团队与角色信息 ------------------------------ */
@@ -538,8 +534,7 @@ export function createWeaveRpcHandler(
           state_dir: settings.stateDir ?? resolvedDeps.persistence?.stateDir ?? DEFAULT_STATE_DIR,
           teams_dir: resolvedDeps.teamManager.teamsDir,
           audit_dir: settings.auditDir ?? DEFAULT_AUDIT_DIR,
-          obsidian_dir: settings.obsidianDir ?? DEFAULT_OBSIDIAN_DIR,
-          knowledge_dir: settings.knowledgeDir ?? DEFAULT_KNOWLEDGE_DIR,
+          prism_console: settings.prismConsole ?? 'http://127.0.0.1:7777/studio',
           settings_file: settingsFile,
           overrides,
           zcode: {
@@ -592,8 +587,8 @@ export function createWeaveRpcHandler(
       }
 
       // 多域端点统一路由到 WeaveQueryService.dispatch（t4）；错误由外层 catch 映射为 RpcResult 信封。
-      // code/* 为 Graphify 代码图谱端点（T1），document/* 为 AnyDoc 独立转换（T6），obsidian/* 为 Obsidian Vault（T3），同样走 queryService 分发。
-      if (['task/', 'knowledge/', 'audit/', 'session/', 'code/', 'document/', 'obsidian/'].some((prefix) => endpoint.startsWith(prefix))) {
+      // 知识/图谱/转换端点已移交 Prism 控制面；这里只路由 task/audit/session 域。
+      if (['task/', 'audit/', 'session/'].some((prefix) => endpoint.startsWith(prefix))) {
         const resolved = resolvedDeps.queryService
         const queryService = typeof resolved === 'function' ? resolved() : resolved
         if (!queryService) {

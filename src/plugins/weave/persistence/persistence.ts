@@ -16,7 +16,7 @@ export const DEFAULT_STATE_DIR = join(homedir(), '.dsh', 'state')
 
 /**
  * WeavePersistence — 按 TDD 2.7 目录模型管理 5 个 SQLite 库：
- * tasks.db / core.db / feedback.db / knowledge_meta.db / imports.db，
+ * tasks.db / core.db / feedback.db，
  * 全部开启 WAL 并通过同一个 SingleWriterQueue 串行化写操作。
  */
 export class WeavePersistence {
@@ -28,8 +28,6 @@ export class WeavePersistence {
   readonly tasks: WeaveDatabase
   readonly core: WeaveDatabase
   readonly feedback: WeaveDatabase
-  readonly knowledgeMeta: WeaveDatabase
-  readonly imports: WeaveDatabase
 
   constructor(options: PersistenceOptions = {}) {
     this.inMemory = options.inMemory ?? false
@@ -57,20 +55,10 @@ export class WeavePersistence {
       path: pathFor('feedback.db'),
       schema: DEFAULT_SCHEMAS.feedback,
     })
-    this.knowledgeMeta = new WeaveDatabase({
-      ...dbOptions,
-      path: pathFor('knowledge_meta.db'),
-      schema: DEFAULT_SCHEMAS.knowledgeMeta,
-    })
-    this.imports = new WeaveDatabase({
-      ...dbOptions,
-      path: pathFor('imports.db'),
-      schema: DEFAULT_SCHEMAS.imports,
-    })
   }
 
   get dbs(): WeaveDatabase[] {
-    return [this.tasks, this.core, this.feedback, this.knowledgeMeta, this.imports]
+    return [this.tasks, this.core, this.feedback]
   }
 
   close(): void {

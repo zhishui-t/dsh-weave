@@ -1,11 +1,13 @@
-import type { GraphService } from '../graph/graph-service.js'
 
 /** 图谱刷新触发源：团队启动（先建/更新图谱）与任务完成（主会话侧更新）。 */
 export type GraphRefreshReason = 'team-start' | 'task-settled'
 
+/** 图谱构建薄触发（prism 承接）：weave 只发请求，构建逻辑全在 prism。 */
+export type GraphBuildFn = () => Promise<{ project: string; status: string }>
+
 export interface GraphRefresherOptions {
-  /** Graphify 代码图谱服务；未注入则所有请求静默忽略（向后兼容）。 */
-  graphService?: GraphService
+  /** 图谱构建触发（PrismGateway.graphBuild）；未注入则所有请求静默忽略（向后兼容）。 */
+  build?: GraphBuildFn
   /** 构建结果通知出口（生产绑 notifyWeaveSession，落点为主会话）。 */
   notify?: (sessionId: string, text: string) => void
   /** 去抖窗口：窗口内的多次请求合并为一次构建（默认 3000ms）。 */
@@ -16,9 +18,9 @@ export interface GraphRefresherOptions {
 /**
  * 代码图谱自动刷新器（core 组合层，无业务逻辑）。
  *
- * - 团队启动 / 任务完成时调用 request()：无图新建、有图更新（GraphService.build 一体覆盖）。
+ * - 团队启动 / 任务完成时调用 request()：经注入的 build 薄触发 prism 建图。
  * - 去抖合并突发请求（同 DAG 多任务相继 settle 只构建一次）；构建期间的请求挂起为尾随构建。
- * - 构建完成后经 notify 通知触发时的主会话；graphService 缺失时为 no-op。
+ * - 构建完成后经 notify 通知触发时的主会话；build 缺失时为 no-op。
  */
 export class GraphRefresher {
   readonly #options: GraphRefresherOptions
@@ -61,17 +63,16 @@ export class GraphRefresher {
   }
 
   async #build(): Promise<void> {
-    const { graphService, notify } = this.#options
-    if (!graphService) return
+    const { build, notify } = this.#options
+    if (!build) return
     if (this.#disposed) return
     const sessionId = this.#targetSessionId
     const reason = this.#lastReason
     this.#building = true
     try {
-      const mode = (await graphService.hasGraph()) ? '更新' : '新建'
-      await graphService.build()
+      const result = await build()
       if (this.#disposed) return
-      if (sessionId && notify) notify(sessionId, `[dsh-weave] 代码图谱已${mode}（触发: ${reason}）`)
+      if (sessionId && notify) notify(sessionId, `[dsh-weave] 代码图谱已构建：${result.project}（触发: ${reason}）`)
     } catch (error) {
       this.#options.log?.warn?.('[dsh-weave] graph refresh failed:', error)
     } finally {

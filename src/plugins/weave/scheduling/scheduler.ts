@@ -1,6 +1,5 @@
 import { stat } from 'node:fs/promises'
 import type { SubagentTaskOutput } from './delegation-service.js'
-import { GraphService } from '../graph/graph-service.js'
 import type { RoleConfig, TeamConfig } from '../team/team-manager.js'
 import type { WeavePersistence } from '../persistence/persistence.js'
 import { toDagStatus } from '../dag/repository.js'
@@ -78,6 +77,8 @@ export interface WeaveSchedulerOptions {
   audit?: AuditLog
   /** 知识候选计数：DAG 收敛时候选 >0 则提醒队长审核（未注入则不提醒）。 */
   countKnowledgeCandidates?: () => Promise<number>
+  /** 图谱构建薄触发（prism 承接）：DAG 收敛后对交付目录发起建图；失败静默降级。 */
+  graphBuild?: (projectRoot: string) => Promise<{ project: string; status: string }>
   log?: { warn?: (...args: unknown[]) => void }
 }
 
@@ -1096,7 +1097,7 @@ export class WeaveScheduler {
       if (pending > 0) {
         this.#notifySafe(
           run,
-          `[weave] 知识库有 ${pending} 条候选待审：用 weave_knowledge_review 查看，值得保留的逐条 weave_knowledge_approve，无价值的 weave_knowledge_reject。candidate 未转 active 不参与注入，请审完防止积压。`,
+          `[weave] 知识暂存区有 ${pending} 条反思沉淀待审：/weave knowledge review 查看，值得保留的逐条 /weave knowledge approve <id>（落 Prism 知识库），无价值的 /weave knowledge reject <id>。未审核不落库，请及时处理防积压。`,
         )
       }
     } catch (error) {
@@ -1121,11 +1122,12 @@ export class WeaveScheduler {
         rootExists = false
       }
       if (!rootExists) return
-      const graph = new GraphService({ projectRoot: root })
-      const built = await graph.build()
+      const graphBuild = this.#opts.graphBuild
+      if (!graphBuild) return
+      const built = await graphBuild(root)
       this.#notifySafe(
         run,
-        `[weave] 代码图谱已更新：${built.graphPath.split(String.fromCharCode(92)).join('/')}（可用 weave_graph_query / weave_graph_path 查询变更影响）`,
+        `[weave] 代码图谱已更新：${built.project}（${built.status}；可用 weave_graph_query / weave_graph_path 查询变更影响）`,
       )
     } catch (error) {
       this.#opts.log?.warn?.('[dsh-weave] auto graph build failed:', error)

@@ -162,13 +162,15 @@ export interface KnowledgeInjectionEntryLike {
   freshness_score: number
 }
 
-/** KnowledgeEngine 最小视面（P0-KINJECT-013 提供完整实现）。 */
+/** KnowledgeEngine 最小视面（P0-KINJECT-013 提供完整实现；prism 后为 PrismGateway 适配）。 */
 export interface KnowledgeEngineLike {
   searchForInjection(params: {
     taskId: string
     projectId: string
     version: string
     roleId: string
+    /** 检索关键词（prism 语义：任务描述；本地引擎忽略） */
+    keywords?: string
     limit: KnowledgeInjectionLimits
     slim?: boolean
   }): Promise<KnowledgeInjectionEntryLike[]>
@@ -657,6 +659,8 @@ export class DelegationService {
           projectId: task.project_id,
           version: task.version,
           roleId: role.id,
+          // prism 检索语义：以任务描述为关键词（OR 词元匹配）；旧本地引擎忽略该字段
+          keywords: task.description.slice(0, 400),
           limit: team.knowledge_injection,
           slim: true,
         })
@@ -927,7 +931,7 @@ export class DelegationService {
       lines.push('')
     }
     lines.push('## 可用命令（执行中可调用）')
-    lines.push('- 如需补充知识，可调用 `weave_knowledge_search`（DSH 子代理工具）或 ACP MCP `knowledge_search` 按需检索 active 知识。')
+    lines.push('- 如需补充知识，可调用 `weave_knowledge_search`（DSH 子代理工具，经 Prism 知识库检索）或 ACP MCP `prism_kb_search` 按需检索知识。')
     lines.push('')
     lines.push('## 知识沉淀要求')
     lines.push('结束时必须输出至少一个 WEAVE_KNOWLEDGE 块（type ∈ pitfall/pattern/skill/doc；无新经验则写一条 type=doc 的任务小结）。可复制示例：')

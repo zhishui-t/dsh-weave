@@ -13,7 +13,6 @@ import { createWeaveQueryServiceFromCliDeps } from './web/query-service.js'
 import { DEFAULT_AUDIT_DIR } from './audit/audit-log.js'
 import { DEFAULT_STATE_DIR } from './persistence/persistence.js'
 import { DEFAULT_WEAVE_SETTINGS_FILE, loadExecutionIdleTimeoutMs, loadExecutionStreamSettings, loadWeaveSettingsOverrides } from './host/settings-store.js'
-import { DEFAULT_KNOWLEDGE_DIR, DEFAULT_OBSIDIAN_DIR } from './host/rpc.js'
 import type { ExecutorProviderRegistry } from './executors/executor-provider.js'
 
 /** 插件版本常量；与 package.json version 保持同步（0.2.0）。 */
@@ -73,16 +72,25 @@ export function apply(ctx: Context): void {
     const effectiveProvidersFile = settingsOverrides.providers_file ?? DEFAULT_PROVIDERS_FILE
     const effectiveStateDir = settingsOverrides.state_dir ?? DEFAULT_STATE_DIR
     const effectiveAuditDir = settingsOverrides.audit_dir ?? DEFAULT_AUDIT_DIR
-    const effectiveObsidianDir = settingsOverrides.obsidian_dir ?? DEFAULT_OBSIDIAN_DIR
-    const effectiveKnowledgeDir = settingsOverrides.knowledge_dir ?? DEFAULT_KNOWLEDGE_DIR
     try {
       const deps = createDefaultCliDeps(runtime, {
         ...(settingsOverrides.state_dir ? { stateDir: settingsOverrides.state_dir } : {}),
         ...(settingsOverrides.teams_dir ? { teamsDir: settingsOverrides.teams_dir } : {}),
         ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
-        ...(settingsOverrides.knowledge_dir ? { knowledgeDir: settingsOverrides.knowledge_dir } : {}),
-        ...(settingsOverrides.obsidian_dir ? { obsidianDir: settingsOverrides.obsidian_dir } : {}),
+        ...(settingsOverrides.prism_base_url ? { prismBaseUrl: settingsOverrides.prism_base_url } : {}),
+        ...(settingsOverrides.prism_home ? { prismHome: settingsOverrides.prism_home } : {}),
       })
+
+      // Prism 控制面拉起（知识/图谱/转换的后端）：已有健康实例则复用；
+      // 拉起失败降级为知识能力暂不可用，绝不阻断调度主链路装配。
+      if (deps.prismSupervisor) {
+        void deps.prismSupervisor.ensureRunning().then((status) => {
+          if (!status.running && status.reason) {
+            console.warn('[dsh-weave] prism 控制面未就绪（知识/图谱能力降级）:', status.reason)
+          }
+        })
+        runtime.effect(() => () => deps.prismSupervisor?.stop(), 'dsh-weave prism supervisor')
+      }
       const executorLayer = createExecutorLayer({
         runtime,
         deps,
@@ -120,7 +128,7 @@ export function apply(ctx: Context): void {
       // 委托唯一出口仍是 DelegationService.executeTask（内部 ctx.subagents.start）。
       const capabilities = createCapabilities({
         auditDir: effectiveAuditDir,
-        knowledgeStore: deps.knowledgeStore!,
+        prism: deps.prism!,
       })
       const teamRuntime = createTeamRuntime({
         runtime,
@@ -196,7 +204,7 @@ export function apply(ctx: Context): void {
       try {
         registerWeaveRpc(runtime, {
           ...deps,
-          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler, graphService: deps.graphService, obsidianService: deps.obsidianService }),
+          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }),
           executorRuns: delegation,
           executorProviders: service.executorProviders,
           providerStore: new ProviderStore({ file: effectiveProvidersFile }),
@@ -220,7 +228,7 @@ export function apply(ctx: Context): void {
         }, async () => {
           if (!zcodeProvider) return undefined
           return await zcodeProvider.describeSession(process.cwd())
-        }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile, obsidianDir: effectiveObsidianDir, knowledgeDir: effectiveKnowledgeDir })
+        }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile })
       } catch (error) {
         console.warn('[dsh-weave] rpc registration failed:', error)
       }

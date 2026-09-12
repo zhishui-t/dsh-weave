@@ -11,9 +11,9 @@ export type WeaveSettingsKeys =
   | 'state_dir'
   | 'teams_dir'
   | 'audit_dir'
-  | 'obsidian_dir'
-  | 'knowledge_dir'
   | 'providers_file'
+  | 'prism_base_url'
+  | 'prism_home'
 
 export type WeaveSettingsOverrides = Partial<Record<WeaveSettingsKeys, string>>
 
@@ -21,12 +21,12 @@ const KNOWN: readonly WeaveSettingsKeys[] = [
   'state_dir',
   'teams_dir',
   'audit_dir',
-  'obsidian_dir',
-  'knowledge_dir',
   'providers_file',
+  'prism_base_url',
+  'prism_home',
 ]
 
-/** 加载持久化目录覆盖；文件缺失/损坏返回 {}（与新安装一致，绝不抛错导致主机无法启动）。 */
+/** 加载持久化目录/Prism 接入覆盖；文件缺失/损坏返回 {}（与新安装一致，绝不抛错导致主机无法启动）。 */
 export async function loadWeaveSettingsOverrides(file: string = DEFAULT_WEAVE_SETTINGS_FILE): Promise<WeaveSettingsOverrides> {
   try {
     const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
