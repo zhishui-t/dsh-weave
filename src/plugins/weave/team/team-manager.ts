@@ -86,6 +86,17 @@ export interface TeamConfig {
   task_decomposition: TaskDecomposition
   knowledge_injection: KnowledgeInjection
   feedback: FeedbackConfig
+  /** 定义来源：local=~/.dsh/teams YAML（默认）；prism=prism 控制面团队（P2，映射补齐 DSH 字段）。 */
+  source?: 'local' | 'prism'
+}
+
+/**
+ * 外部团队源最小契约（P2 prism 接入；PrismTeamSource 结构化满足）。
+ * 实现方自行容错：prism 不可用时 listTeams 返回 []，loadTeam 抛错由 TeamManager 兜底。
+ */
+export interface ExternalTeamSource {
+  listTeams(): Promise<TeamConfig[]>
+  loadTeam(teamId: string): Promise<TeamConfig>
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,6 +133,11 @@ export interface TeamManagerOptions {
    * 都会触发团队解析，缓存把每秒的目录扫描+逐文件读合并成一次。
    */
   cacheTtlMs?: number
+  /**
+   * 外部团队源（P2 prism）：本地 YAML 之外追加可调度团队（本地 team_id 优先）。
+   * 未注入或源故障时行为与纯本地一致。
+   */
+  externalTeams?: ExternalTeamSource
 }
 
 export const DEFAULT_TEAMS_DIR = join(homedir(), '.dsh', 'teams')
@@ -172,6 +188,7 @@ export class TeamManager {
   readonly teamsDir: string
   readonly persistence?: WeavePersistence
   readonly #acpProviders: { list(): Array<{ name: string }> | Promise<Array<{ name: string }>> }
+  readonly #externalTeams?: ExternalTeamSource
   #bindingsReady = false
   readonly #cacheTtlMs: number
   #cacheAt = 0
@@ -185,6 +202,7 @@ export class TeamManager {
     this.teamsDir = options.teamsDir ?? DEFAULT_TEAMS_DIR
     this.persistence = options.persistence
     this.#acpProviders = options.acpProviders ?? new ProviderStore()
+    this.#externalTeams = options.externalTeams
     this.#cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 0)
   }
 
@@ -397,6 +415,14 @@ export class TeamManager {
     try {
       raw = await readFile(file, 'utf8')
     } catch {
+      // 本地无此团队 → 尝试外部团队源（prism）；失败回落原 invalid_team 语义
+      if (this.#externalTeams) {
+        try {
+          return await this.#externalTeams.loadTeam(teamId)
+        } catch {
+          throw new WeaveError('invalid_team', `未找到团队配置: ${file}（prism 团队源亦未命中: ${teamId}）`, { teamId })
+        }
+      }
       throw new WeaveError('invalid_team', `未找到团队配置: ${file}`, { teamId })
     }
     const team = this.parseTeam(raw, file)
@@ -430,6 +456,17 @@ export class TeamManager {
         teams.push(await this.loadTeam(teamId))
       } catch {
         // 非法团队不进入调度（TDD §1.5.1：非法团队直接加载失败）
+      }
+    }
+    // 外部团队源（prism）：追加本地没有的团队；源故障已由实现方降级为空。
+    if (this.#externalTeams) {
+      const localIds = new Set(teams.map((team) => team.team_id))
+      try {
+        for (const external of await this.#externalTeams.listTeams()) {
+          if (!localIds.has(external.team_id)) teams.push(external)
+        }
+      } catch {
+        // 清单波动不得影响本地团队列表
       }
     }
     if (this.#cacheTtlMs > 0) {

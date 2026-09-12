@@ -8,6 +8,7 @@ import type { GetStatusInput } from './cli-mcp.js'
 import { PrismClient } from '../prism/prism-client.js'
 import { PrismSupervisor } from '../prism/prism-supervisor.js'
 import { PrismGateway } from '../prism/gateway.js'
+import { PrismTeamSource } from '../prism/team-source.js'
 import type { PlanTasksOutput, ToolExecLike } from '../scheduling/planner.js'
 import { CircuitBreaker } from '../safety/circuit-breaker.js'
 import { DagRepository } from '../dag/repository.js'
@@ -657,6 +658,8 @@ export interface DefaultCliDepsOptions {
   prismHome?: string
   /** 是否允许托管拉起 prism serve（缺省 true）。 */
   prismAutoStart?: boolean
+  /** prism 团队角色映射的缺省执行器（缺省 codex）。 */
+  prismDefaultExecutor?: string
 }
 
 export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOptions = {}): CliMcpDeps {
@@ -713,6 +716,11 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
       // pre-step（每条用户消息）与 Team Tab 1s 心跳都会解析团队；1s 缓存把
       // 目录扫描+逐 YAML 读取合并为一次，import/delete/setDefault 写后立即失效。
       cacheTtlMs: 1000,
+      // P2：prism 团队源——本地 YAML 之外的编制来源（prism 故障静默降级为空）。
+      externalTeams: new PrismTeamSource({
+        gateway: prism,
+        ...(options.prismDefaultExecutor !== undefined ? { defaultExecutor: options.prismDefaultExecutor } : {}),
+      }),
     }),
     executorRegistry: registry,
     feedbackRouter: router,

@@ -406,4 +406,21 @@ export class PrismGateway {
     }
     return { output: result.stdout.trim() }
   }
+
+  /* ============================ 团队/角色（P2：定义面由 prism 承接） ============================ */
+
+  /** GET /api/teams（prism 团队清单；角色/团队定义 P2 起由 prism 承接）。 */
+  async listTeams(): Promise<{ teams?: Array<unknown>; teams_dir?: string }> {
+    return await this.client.request('GET', '/api/teams')
+  }
+
+  /** GET /api/teams/:id/activate（TeamActivation：成员 + 角色定义 + 工作流）。 */
+  async teamActivate(teamId: string): Promise<unknown> {
+    return await this.client.request('GET', `/api/teams/${encodeURIComponent(teamId)}/activate`)
+  }
+
+  /** GET /api/roles（prism 角色清单）。 */
+  async listRoles(): Promise<{ roles?: Array<unknown>; roles_dir?: string }> {
+    return await this.client.request('GET', '/api/roles')
+  }
 }

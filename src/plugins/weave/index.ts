@@ -79,6 +79,7 @@ export function apply(ctx: Context): void {
         ...(settingsOverrides.audit_dir ? { auditDir: settingsOverrides.audit_dir } : {}),
         ...(settingsOverrides.prism_base_url ? { prismBaseUrl: settingsOverrides.prism_base_url } : {}),
         ...(settingsOverrides.prism_home ? { prismHome: settingsOverrides.prism_home } : {}),
+        ...(settingsOverrides.prism_default_executor ? { prismDefaultExecutor: settingsOverrides.prism_default_executor } : {}),
       })
 
       // Prism 控制面拉起（知识/图谱/转换的后端）：已有健康实例则复用；

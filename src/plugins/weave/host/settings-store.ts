@@ -14,6 +14,7 @@ export type WeaveSettingsKeys =
   | 'providers_file'
   | 'prism_base_url'
   | 'prism_home'
+  | 'prism_default_executor'
 
 export type WeaveSettingsOverrides = Partial<Record<WeaveSettingsKeys, string>>
 
@@ -24,6 +25,7 @@ const KNOWN: readonly WeaveSettingsKeys[] = [
   'providers_file',
   'prism_base_url',
   'prism_home',
+  'prism_default_executor',
 ]
 
 /** 加载持久化目录/Prism 接入覆盖；文件缺失/损坏返回 {}（与新安装一致，绝不抛错导致主机无法启动）。 */
