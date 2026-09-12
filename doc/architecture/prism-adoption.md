@@ -1,6 +1,6 @@
 # Prism 接入架构（知识能力移交）
 
-> 状态：已实施（P1）
+> 状态：已实施（P1/P2/P3）
 > 日期：2026-09-12
 > 关联：weave `master_prism_0912` 分支；prism 子项目（同级 `../prism`，master）
 
@@ -58,8 +58,24 @@ P2 角色迁移后，派发注入可平滑升级为 prism context-pack（角色�
 
 接受的功能收缩：Obsidian 指纹/冲突矩阵（weave 版独有）随模块下线，prism 侧为导出式同步；如需补齐在 prism 仓库演进。
 
-## 6. 后续阶段（未实施）
+## 6. P2/P3 实施记录（2026-09-13）
 
-- **P2 角色团队**：`~/.dsh/teams/*.yaml` 迁 prism roles/teams；team-runtime 从 prism 拉定义（`prism_team_activate` / `/api/roles|teams`）；注入升级 context-pack（角色知识绑定）。
-- **P3 任务台账**：任务完成/结算镜像 prism task center（`prism_task_*`）；live DAG 状态仍归 weave。
-- **数据迁移**（可选一次性脚本）：`~/.dsh/knowledge` markdown 卡片 frontmatter → prism deposit；当前部署无存量数据。
+### P2 角色团队（已实施）
+- prism 团队定义（宿主 teams_dir，prism 只解析/校验/激活）经 `/api/teams` 与 `/api/teams/:id/activate` 接入：
+  `prism/team-source.ts` 把 prism 团队映射为调度用 TeamConfig（members→roles、count→并发、激活定义→人格；
+  DSH 专属字段 executor/stages/dag_templates/feedback 按缺省补齐，`source:'prism'` 标记，缺省执行器经 settings
+  `prism_default_executor` 配置，默认 codex）。
+- TeamManager 增加 externalTeams 外部团队源：**本地 `~/.dsh/teams/*.yaml` 优先**，prism 团队追加进清单；
+  loadTeam 本地缺失回落 prism，双方无命中仍 invalid_team；prism 故障静默降级，不影响本地团队调度。
+- 注入升级 context-pack 待 prism 角色知识绑定与 weave 角色实际对齐后切换（映射面已就绪）。
+
+### P3 任务台账（已实施）
+- `prism/task-ledger.ts`：DAG 派发后向 `/api/tasks/register` 登记；状态变更经 TaskStatusNotifier.onChange
+  旁路逐条回报 `/api/tasks/report`（fire-and-forget，prism 故障只告警）。
+- **live 调度状态仍归 weave**——prism 台账是被动记录（回声抑制不拦台账，captain 动作也入账）。
+
+### 打包与迁移
+- `pnpm vendor:prism`：prism 发行 tarball → `dist/vendor/prism/`；PrismSupervisor 自动探测 vendor 布局
+  （dev 同级仓库作后备），无需再手设 WEAVE_PRISM_SCRIPT/WEAVE_PRISM_MCP_ENTRY。
+- `scripts/migrate-knowledge-to-prism.mjs`：旧 `~/.dsh/knowledge` 卡片 → prism deposit 一次性迁移
+  （--dry-run 预演、--include-candidate 连候选、frontmatter.id 幂等）。当前部署无存量数据时无需执行。

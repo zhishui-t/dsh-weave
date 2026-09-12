@@ -64,6 +64,7 @@ pnpm typecheck             # 快速类型检查
 pnpm lint                  # ESLint
 pnpm test                  # 全部 Vitest 单元/组件测试
 pnpm test:ui               # UI 组件测试
+pnpm vendor:prism          # 把 prism 发行布局打进 dist/vendor/prism（部署用）
 pnpm test:e2e:harness      # Playwright harness（stub RPC，不依赖真实 DSH）
 WEAVE_E2E_LIVE=1 pnpm test:e2e:live   # 真实 DSH Web E2E
 ```
