@@ -174,7 +174,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     bundle.dispose() // 二次调用不抛
   })
 
-  it('宿主 ctx.tools 存在时注册全部 22 个 weave_* 工具，核心命令可执行', async () => {
+  it('宿主 ctx.tools 存在时注册全部 26 个 weave_* 工具，核心命令可执行', async () => {
     const env = await newEnv()
     const ctx = env.ctx as Context & { weave?: { mcp?: unknown } }
     const registered: Array<{ def: unknown; unregister: () => void }> = []
@@ -195,6 +195,10 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     const names = bundle.registration.registered
     expect(names).toEqual([
       'weave_plan_tasks',
+      'weave_task_create',
+      'weave_spawn_teammate',
+      'weave_send_message',
+      'weave_list_agents',
       'weave_get_status',
       'weave_revise_task',
       'weave_accept_task',
@@ -217,7 +221,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_graph_affected',
       'weave_document_convert',
     ])
-    expect(registered).toHaveLength(22)
+    expect(registered).toHaveLength(26)
 
     // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
     const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
@@ -250,40 +254,32 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     await expect(bareDef.execute({}, undefined)).rejects.toMatchObject(/configuration_error/)
   })
 
-  it('队长执行纪律双通道提示：工具描述与返回汇总均含七条纪律；append_to 参数已暴露（doc/05 §7）', async () => {
+  it('队长执行纪律双通道提示：工具描述与返回汇总均含新版四条纪律；append_to 参数已暴露', async () => {
     const defs = buildWeaveToolDefinitions({} as never, {})
     const def = defs.find((d) => d.name === 'weave_plan_tasks')!
-    // 通道一：工具描述（精简版，关键词齐全）
-    for (const keyword of ['不得结束', '通报进度', '长阻塞', '交付物', 'retry/cancel', 'append_to', '15 秒级', '质量分层']) {
+    // 通道一：工具描述（瘦身版关键词）
+    for (const keyword of ['assignee', 'append_to', '自动沿用', 'dsh']) {
       expect(def.description).toContain(keyword)
     }
-    // 通道二：返回汇总 render 追加完整纪律块（单一来源 CAPTAIN_DISCIPLINE；JSON 主体保持完整）
+    // 通道二：返回汇总 render 追加纪律块（单一来源 CAPTAIN_DISCIPLINE，4 条）
     const rendered = def.output.render({}, { dag_id: 'd1', appended: false }) as Array<{ type: string; text: string }>
     const text = rendered[0]!.text
     expect(rendered[0]!.type).toBe('text')
     expect(text).toContain('"dag_id": "d1"')
     expect(text).toContain('## 队长执行纪律')
-    for (let i = 1; i <= 7; i += 1) {
+    for (let i = 1; i <= 4; i += 1) {
       expect(text).toContain(`${i}. `)
     }
-    expect(text).toContain('append_to 增量追加到当前任务组')
-    expect(text).toContain('非用户明确要求，禁止新建任务组')
-    expect(text).toContain('先读团队人员配置')
-    expect(text).toContain('禁止长期只用子集')
-    // 第 1 条措辞强化（必须值守，不得擅自结束回合）
-    expect(text).toContain('有在途任务时必须值守')
+    expect(text).not.toContain('5. ')
+    // 值守（wait_dag_change 替代轮询）/追加/推进/质量分层
+    expect(text).toContain('weave_wait_dag_change')
     expect(text).toContain('不得擅自结束会话回合')
-    // 第 2 条措辞强化（15 秒级高频轮询 + 一变即通报 + 用户消息优先，禁止延迟汇报）
-    expect(text).toContain('值守期间必须高频轮询（15 秒级）并及时响应')
-    expect(text).toContain('任务状态一变即向用户通报')
-    expect(text).toContain('用户消息优先处理')
-    expect(text).toContain('禁止延迟汇报')
-    // 第 7 条质量分层（常规任务 QA 不前置，重大任务块才提前介入）
-    expect(text).toContain('质量分层：常规任务由开发自测与测试（tester）覆盖，QA 只做终审收口')
-    expect(text).toContain('重大任务块（跨模块/架构级/高风险）可让 QA 提前介入评审')
-    expect(text).toContain('禁止每个任务都派 QA 审核')
-    // append_to 参数已进 schema（第⑤条可执行的前提）
-    expect((def.parameters as Record<string, unknown>).append_to).toBeDefined()
+    expect(text).toContain('append_to 或单任务 task_create')
+    expect(text).toContain('质量分层：常规任务由开发自测与测试覆盖')
+    // 旧版轮询纪律已删除
+    expect(text).not.toContain('15 秒级')
+    // 单任务直派工具已存在
+    expect(defs.some((d) => d.name === 'weave_task_create')).toBe(true)
   })
 
   it('weave_team_switch 缺省 session_id 经 options.resolveSessionId 从 exec 解析（显式 > exec > cli-session）', async () => {
@@ -314,11 +310,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
   })
 
-  it('buildWeaveToolDefinitions 22 个定义：名称齐全且每个具 execute/description/parameters', async () => {
+  it('buildWeaveToolDefinitions 26 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const defs = buildWeaveToolDefinitions(bundle.mcp)
-    expect(defs).toHaveLength(22)
+    expect(defs).toHaveLength(26)
     for (const d of defs) {
       expect(d.name).toMatch(/^weave_/)
       expect(d.description.length).toBeGreaterThan(0)

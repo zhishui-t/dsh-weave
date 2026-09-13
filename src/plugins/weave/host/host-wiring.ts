@@ -95,6 +95,12 @@ export interface WeaveHostOptions {
     update(args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown): Promise<unknown>
     listMine(exec: unknown): Promise<unknown>
   }
+  /** pull 模型队长侧成员原语（官方 spawn_teammate/send_message/list_agents 语义）。 */
+  teammates?: {
+    spawn(args: { role_id: string }, exec: unknown): Promise<unknown>
+    send(args: { role_id: string; text: string }, exec: unknown): Promise<unknown>
+    list(): Promise<unknown>
+  }
 }
 
 export interface WeaveMcpToolsRegistration {
@@ -164,15 +170,12 @@ export function toJsonPropertySpec(spec: Record<string, unknown>): Record<string
   }
 }
 
-/** 队长执行纪律（用户定案；插件下发时随工具描述与返回文本双通道提示队长模型）。 */
+/** 队长执行纪律（pull 模型瘦身版：派发/追加由调度器机制承担，只留模型自觉项）。 */
 export const CAPTAIN_DISCIPLINE: readonly string[] = [
-  '有在途任务时必须值守：不得擅自结束会话回合，短周期轮询并定时向用户通报任务进度（否则用户以为卡死）。',
-  '值守期间必须高频轮询（15 秒级）并及时响应：任务状态一变即向用户通报，用户消息优先处理，禁止长阻塞空等、禁止延迟汇报。',
-  '任务完成后主动读取交付物并推进下一步（下游任务或汇总答复），不等用户触发。',
-  '任务失败走治理动作（retry/cancel），不重开计划；任务派发后保持稳定，没有明确触发不变更任务组。',
-  '新需求一律用 append_to 增量追加到当前任务组，编号域内自动递增；非用户明确要求，禁止新建任务组。',
-  '启动团队或团队变更时，必须先读团队人员配置（roles 全集/能力/stages），拆解任务按角色能力匹配；人员使用要均衡，禁止长期只用子集；无匹配角色的任务向用户说明而非硬塞。',
-  '质量分层：常规任务由开发自测与测试（tester）覆盖，QA 只做终审收口；重大任务块（跨模块/架构级/高风险）可让 QA 提前介入评审；禁止每个任务都派 QA 审核。',
+  '有在途任务时必须值守：用 weave_wait_dag_change 阻塞等待状态变更（替代轮询），用户消息优先处理，不得擅自结束会话回合。',
+  '新需求增量追加到当前任务组（append_to 或单任务 task_create），非用户明确要求禁止新建任务组。',
+  '任务完成后主动读取交付物并推进下一步（下游任务或汇总答复），不等用户触发；失败走 retry/cancel 治理。',
+  '质量分层：常规任务由开发自测与测试覆盖，QA 只做终审收口；重大任务块才让 QA 提前介入。',
 ]
 
 const CAPTAIN_DISCIPLINE_TEXT = `## 队长执行纪律
@@ -185,18 +188,10 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
     {
       name: `${prefix}plan_tasks`,
       description:
-        '队长规划并派发团队任务（唯一的任务下发方式）：用户描述目标后直接调用本工具，把目标拆解为' +
-        '一组带依赖的任务并指派给团队成员角色；插件随后按依赖自动调度成员执行并把进度/汇总回灌到会话。' +
-        'assignee 必须是团队角色的 id；depends_on 引用本计划内其他任务的 id。' +
-        '重要：文档/方案/架构设计稿里的编号、章节号、序号都不是任务编号；只有通过本工具创建的任务 T1/T2/T3... ' +
-        '才是真正派发给团队成员的唯一任务编号。' +
-        '团队无需显式启用：已配置默认团队或仅有一个团队时自动生效；仅当存在多个未指定团队时报错，届时先 team_list 询问用户选择。' +
-        '队长执行纪律：有在途任务不得结束回合（15 秒级高频轮询，任务状态一变即向用户通报进度）；' +
-        '值守期用户消息优先处理，禁止长阻塞空等、禁止延迟汇报；' +
-        '任务完成主动读交付物推进下一步；失败走 retry/cancel 治理不重开计划，派发后无明确触发不变更任务组；' +
-        '新需求一律用 append_to 增量追加到当前任务组；非用户明确要求，禁止新建任务组。' +
-        '启动团队或团队变更时，先读团队人员配置（roles 全集/能力/stages），按角色能力匹配拆解任务，人员使用均衡、禁长期只用子集，无匹配角色向用户说明而非硬塞。' +
-        '质量分层：常规任务由开发自测与测试覆盖，QA 只做终审收口；重大任务块才让 QA 提前介入，禁止每任务都派 QA 审核。',
+        '创建团队任务（单个=直派给一个角色；多个=带依赖批量下发）：assignee 填角色 id 或名称；' +
+        'dsh 执行器的持久成员会认领任务并回报，其他执行器自动派发。任务编号以此处创建的 T1/T2… 为准' +
+        '（文档/方案里的章节号不是任务号）；append_to 不传时自动沿用当前任务组。' +
+        '团队无需显式启用：默认团队或唯一团队自动生效。',
       parameters: {
         goal: { type: 'string', description: '本次规划的整体目标（可选，用于摘要展示）' },
         project_id: { type: 'string', description: '项目标识（缺省 session）' },
@@ -232,6 +227,75 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
         options.planTasks
           ? options.planTasks(args as Record<string, unknown>, exec as ToolExecLike)
           : Promise.reject(new Error('configuration_error: 队长调度器未就绪（weave_plan_tasks 不可用）')),
+    },
+    {
+      name: `${prefix}task_create`,
+      description:
+        '创建单个团队任务（直派）：assignee 填角色 id/名称，插件自动建/并入任务组并唤醒成员。' +
+        '多任务带依赖批量下发用 weave_plan_tasks。',
+      parameters: {
+        description: { type: 'string', required: true, description: '完整任务说明' },
+        assignee: { type: 'string', required: true, description: '角色 id 或名称' },
+        subject: { type: 'string', description: '短标题（缺省取描述首行）' },
+        blocked_by: { type: 'array', items: { type: 'string' }, description: '上游任务 id（须已存在）' },
+        append_to: { type: 'string', description: '目标 DAG id（缺省自动沿用当前任务组）' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) => {
+        const input = args as { description?: string; assignee?: string; subject?: string; blocked_by?: string[]; append_to?: string }
+        if (!input.description || !input.assignee) {
+          return Promise.reject(new Error('invalid_argument: description 与 assignee 必填'))
+        }
+        return options.planTasks
+          ? options.planTasks(
+              {
+                tasks: [{
+                  ...(input.subject !== undefined ? { subject: input.subject } : {}),
+                  description: input.description,
+                  assignee: input.assignee,
+                  ...(input.blocked_by !== undefined ? { depends_on: input.blocked_by } : {}),
+                }],
+                ...(input.append_to !== undefined ? { append_to: input.append_to } : {}),
+              },
+              exec as ToolExecLike,
+            )
+          : Promise.reject(new Error('configuration_error: 队长调度器未就绪（weave_task_create 不可用）'))
+      },
+    },
+    {
+      name: `${prefix}spawn_teammate`,
+      description: '创建/取回持久团队成员（pull 模型）：成员是驻留会话，认领名下任务并回报；幂等。',
+      parameters: { role_id: { type: 'string', required: true, description: '角色 id' } },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) =>
+        options.teammates
+          ? options.teammates.spawn(args as { role_id: string }, exec)
+          : Promise.reject(new Error('configuration_error: 成员域未就绪（weave_spawn_teammate 不可用）')),
+    },
+    {
+      name: `${prefix}send_message`,
+      description:
+        '向持久成员发消息（官方 agent-team 语义）：执行中就近插入（steer）、空闲开新回合、' +
+        '离线冷恢复。用于补充上下文/追问/调整方向。',
+      parameters: {
+        role_id: { type: 'string', required: true },
+        text: { type: 'string', required: true },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) =>
+        options.teammates
+          ? options.teammates.send(args as { role_id: string; text: string }, exec)
+          : Promise.reject(new Error('configuration_error: 成员域未就绪（weave_send_message 不可用）')),
+    },
+    {
+      name: `${prefix}list_agents`,
+      description: '列出持久成员与状态（running/idle/inactive/failed）。',
+      parameters: {},
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: () =>
+        options.teammates
+          ? options.teammates.list()
+          : Promise.reject(new Error('configuration_error: 成员域未就绪（weave_list_agents 不可用）')),
     },
     {
       name: `${prefix}get_status`,

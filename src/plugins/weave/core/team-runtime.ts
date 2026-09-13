@@ -9,7 +9,7 @@ import { WeaveScheduler, subjectLabel } from '../scheduling/scheduler.js'
 import type { WeaveCapabilities } from './capabilities.js'
 import type { AuditLog } from '../audit/audit-log.js'
 import type { PrismReflectionService } from '../prism/reflection.js'
-import { TeamPlanner, createPlanTasksHandler } from '../scheduling/planner.js'
+import { TeamPlanner, createPlanTasksHandler, resolveHostSessionId } from '../scheduling/planner.js'
 import { ProjectTeamStore } from '../team/project-team-store.js'
 import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
@@ -54,6 +54,11 @@ export interface TeamRuntime {
     claim(args: { task_id: string; expected_revision?: number }, exec: unknown): Promise<unknown>
     update(args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown): Promise<unknown>
     listMine(exec: unknown): Promise<unknown>
+  }
+  teammates: {
+    spawn(args: { role_id: string }, exec: unknown): Promise<unknown>
+    send(args: { role_id: string; text: string }, exec: unknown): Promise<unknown>
+    list(): Promise<unknown>
   }
   memberRuntime: MemberRuntime
   disposeScheduler(): void
@@ -130,6 +135,17 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
   /** 成员侧任务板回调（身份经 exec.agent.id → roster 反查）。 */
   const agentIdOf = (exec: unknown): string | undefined =>
     (exec as { agent?: { id?: string } } | undefined)?.agent?.id
+  /** 队长 exec → 当前团队（绑定 > 默认 > 唯一；与 planner 同链）。 */
+  const resolveTeamForExec = async (exec: unknown) => {
+    const sessionId = resolveHostSessionId((exec as { agent?: unknown } | undefined)?.agent, {
+      getAgentById: (id: string) => agentsRegistry?.get(id as never),
+    })
+    const resolved = await deps.teamManager.resolveSessionTeam(sessionId || 'cli-session')
+    if (!resolved.team) {
+      throw new (await import('../state/weave-error.js')).WeaveError('invalid_team', '无法解析团队（先绑定或配置默认团队）')
+    }
+    return resolved.team
+  }
   const requireMember = async (exec: unknown): Promise<TeamMemberRecord> => {
     const member = await memberRuntime.findByAgentId(agentIdOf(exec))
     if (!member) {
@@ -324,6 +340,30 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     reflectionSink,
     onDuty,
     taskBoard,
+    teammates: {
+      spawn: async (args, exec) => {
+        const team = await resolveTeamForExec(exec)
+        const role = team.roles.find((r) => r.id === args.role_id || r.name === args.role_id)
+        if (!role) throw new (await import('../state/weave-error.js')).WeaveError('invalid_argument', `角色不存在: ${args.role_id}`)
+        return await memberRuntime.ensureMember({
+          teamId: team.team_id,
+          teamName: team.name,
+          roleId: role.id,
+          roleName: role.name,
+          personality: role.personality,
+          executor: role.executor,
+          parent: (exec as { agent?: unknown } | undefined)?.agent,
+        })
+      },
+      send: async (args, exec) => {
+        const team = await resolveTeamForExec(exec)
+        const role = team.roles.find((r) => r.id === args.role_id || r.name === args.role_id)
+        if (!role) throw new (await import('../state/weave-error.js')).WeaveError('invalid_argument', `角色不存在: ${args.role_id}`)
+        await memberRuntime.deliver({ teamId: team.team_id, roleId: role.id, text: args.text, parent: (exec as { agent?: unknown } | undefined)?.agent })
+        return { delivered: true, role_id: role.id }
+      },
+      list: () => memberRuntime.list(),
+    },
     memberRuntime,
     disposeScheduler: () => {
       graphRefresher.dispose()

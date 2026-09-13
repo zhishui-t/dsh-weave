@@ -241,6 +241,8 @@ export function apply(ctx: Context): void {
           planTasks,
           // pull 模型任务板：成员侧 weave_task_claim/update/list（身份经 exec.agent → roster）。
           taskBoard: teamRuntime.taskBoard,
+          // pull 模型队长原语：weave_spawn_teammate/send_message/list_agents。
+          teammates: teamRuntime.teammates,
           // weave_team_switch 缺省会话解析：与 planTasks 同一真值链（exec.agent 血统回溯），
           // 模型/用户无需知道会话 id；仅纯 CLI（无 exec.agent）回落 'cli-session'。
           resolveSessionId: (exec) => {
