@@ -8,7 +8,6 @@ import type { AddressInfo } from 'node:net'
 import { PrismClient } from '../../../../src/plugins/weave/prism/prism-client'
 import { KnowledgeStaging } from '../../../../src/plugins/weave/prism/knowledge-staging'
 import { PrismGateway } from '../../../../src/plugins/weave/prism/gateway'
-import { WeaveError } from '../../../../src/plugins/weave/state/weave-error'
 
 const LIMITS = { max_entries: 5, max_chars_per_entry: 200, max_total_chars: 1200, priority: 'freshness_first' as const }
 

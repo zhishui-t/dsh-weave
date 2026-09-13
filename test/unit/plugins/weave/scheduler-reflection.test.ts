@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stringify as stringifyYaml } from 'yaml'
 
 import { WeavePersistence } from '../../../../src/plugins/weave/persistence/persistence'
-import { openPersistence } from '../../../../src/plugins/weave/persistence/index'
 import { TeamManager, type ExecutorLookup, type TeamConfig } from '../../../../src/plugins/weave/team/team-manager.js'
 import { TeamPlanner } from '../../../../src/plugins/weave/scheduling/planner'
 import { WeaveScheduler, subjectLabel, type SchedulerDelegationLike, type WeaveSchedulerOptions } from '../../../../src/plugins/weave/scheduling/scheduler'

@@ -88,7 +88,7 @@ export interface PrismConvertResult {
 }
 
 /** reflection 反思沉淀入参（与旧 ReflectionService.depositFromOutput 的块字段对齐）。 */
-export interface PrismStagedDepositInput extends StagedKnowledgeInput {}
+export type PrismStagedDepositInput = StagedKnowledgeInput
 
 const LAYER_PRIORITY: Record<string, number> = { role: 3, project: 2, global: 1 }
 

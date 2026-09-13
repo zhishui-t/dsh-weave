@@ -8,7 +8,7 @@
  *
  * 数据来源全部是 /dsh-weave Connection RPC 的真实端点：
  * - 已上线（t1）：snapshot / team/* / settings/describe；
- * - t2 服务已备、t4 接线中：task/* / knowledge/* / audit/list / session/*。
+ * - task/* / audit/list / session/* 三域直连；knowledge/* 等知识端点已移交 Prism 控制面。
  *   对应页面在端点缺失时展示明确的“未接入”空态，不渲染假数据、不放假入口。
  */
 
@@ -117,8 +117,6 @@ const TASK_ACTIONS_BY_STATUS: Record<string, Array<{ action: string; label: stri
   COMPLETED: [],
 }
 
-const KNOWLEDGE_STATUSES = ['candidate', 'active', 'deprecated', 'superseded'] as const
-const KNOWLEDGE_LAYERS = ['project', 'role', 'instance', 'shared'] as const
 
 const EXECUTOR_LABELS: Record<string, string> = {
   spawn: 'DSH 子代理（新启）',
@@ -146,13 +144,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   SKIPPED: '已跳过',
   COOLDOWN: '冷却中',
 }
-const KNOWLEDGE_STATUS_LABELS: Record<string, string> = {
-  candidate: '候选',
-  active: '已生效',
-  deprecated: '已弃用',
-  superseded: '已替代',
-  missing: '缺失目标',
-}
+
 const AUDIT_EVENT_LABELS: Record<string, string> = {
   'task.status_changed': '任务状态变更',
   'task.feedback_received': '收到任务反馈',
@@ -260,7 +252,6 @@ interface TaskDagDetail {
 }
 
 interface SettingsInfo {
-  obsidian_dir?: string
   version?: string
   node_version?: string
   state_dir?: string
@@ -538,16 +529,6 @@ function createApp(React: any, createPortal?: (node: any, container: Element) =>
     return value.replace('T', ' ').slice(0, 19)
   }
 
-  /** 复制文本到剪贴板；环境不支持时回退 prompt（与 KnowledgePage 的复制路径一致）。 */
-  const copyText = async (value: string): Promise<boolean> => {
-    try {
-      await navigator.clipboard.writeText(value)
-      return true
-    } catch {
-      window.prompt('复制文本', value)
-      return false
-    }
-  }
 
   /** 展示用短任务 ID：dag-...-t1 → t1，便于成员卡/DAG 节点一眼区分。 */
   const shortTaskId = (value: unknown): string => {
@@ -3166,23 +3147,23 @@ interface SessionStatusData {
     { cmd: '/weave task retry|skip|cancel|reopen <task_id>', desc: '任务生命周期治理操作（取消/重试与真实运行联动）' },
     { cmd: '/weave executor list', desc: '列出当前实际注册的执行器' },
     { cmd: '/weave dag <dag_id>', desc: '查看任务依赖图' },
-    { cmd: 'pnpm code:scan', desc: '构建代码图谱（生成 .graphify/graph.json 与 flows.json；需要项目存在 src/ 目录）' },
     { cmd: '/weave provider add <JSON|YAML|文件路径|紧凑配置>', desc: '注册一个或多个外部 ACP 执行器' },
     { cmd: '/weave provider list', desc: '列出已持久化的动态 Provider' },
     { cmd: '/weave provider remove <name>', desc: '移除并注销动态 Provider' },
-    { cmd: '/weave knowledge search <关键词> [--project <pid>] [--version <ver>] [--role <rid>]', desc: '按需检索已审核通过的知识（执行器/子代理可调用）' },
-    { cmd: '/weave knowledge review', desc: '知识候选队列' },
-    { cmd: '/weave knowledge approve <id>', desc: '知识审核通过' },
-    { cmd: '/weave knowledge reject <id> <原因>', desc: '知识驳回' },
+    { cmd: '/weave knowledge search <关键词> [--project <pid>] [--role <rid>]', desc: '按需检索知识（代理 Prism 知识库；agent 亦可直接用 prism_kb_search MCP 工具）' },
+    { cmd: '/weave knowledge review', desc: '知识暂存区待审队列（先审后发，approve 落 Prism）' },
+    { cmd: '/weave knowledge approve <id>', desc: '知识审核通过 → 落 Prism 知识库' },
+    { cmd: '/weave knowledge reject <id> <原因>', desc: '知识驳回 → 删除暂存（不落 Prism）' },
     { cmd: '/weave ban list', desc: '查看熔断/冷却实体' },
   ]
   const SETTINGS_DIR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
     { key: 'state_dir', label: '状态目录', placeholder: '默认 ~/.dsh/state' },
     { key: 'teams_dir', label: '团队目录', placeholder: '默认 ~/.dsh/teams' },
     { key: 'audit_dir', label: '审计目录', placeholder: '默认 ~/.dsh/audit' },
-    { key: 'knowledge_dir', label: '知识库目录', placeholder: '默认 ~/.dsh/knowledge' },
-    { key: 'obsidian_dir', label: 'Obsidian Vault', placeholder: '默认 ~/.dsh/obsidian' },
     { key: 'providers_file', label: '执行器配置来源', placeholder: '默认 ~/.dsh/weave/providers.json' },
+    { key: 'prism_base_url', label: 'Prism 控制面地址', placeholder: '默认 http://127.0.0.1:7777' },
+    { key: 'prism_home', label: 'Prism 数据目录', placeholder: '默认 ~/.dsh/prism' },
+    { key: 'prism_default_executor', label: 'Prism 团队缺省执行器', placeholder: '默认 codex' },
   ]
   function SettingsPage() {
     const info = useResource<SettingsInfo>(() => rpc('settings/describe') as Promise<SettingsInfo>, [])
@@ -4423,8 +4404,6 @@ interface SessionStatusData {
         : null,
     )
   }
-
-
 
   function WeaveSidebarAction({ wide }: { wide?: boolean }) {
     const [open, setOpen] = useState(false)

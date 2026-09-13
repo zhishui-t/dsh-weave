@@ -8,7 +8,7 @@ import { prismRegisterPayload, TaskLedgerMirror } from '../../../../src/plugins/
 import { TaskStatusNotifier, type TaskStatusChange } from '../../../../src/plugins/weave/scheduling/task-status-notifier'
 import type { TaskRecord } from '../../../../src/plugins/weave/state/types'
 
-function makeTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+function makeTask(): TaskRecord {
   return {
     id: 'T1',
     dag_id: 'dag-p3',

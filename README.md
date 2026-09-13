@@ -1,10 +1,11 @@
-# Weave — DSH 多 Agent 团队协作与知识成长框架（Phase 0）
+# Weave — DSH 多 Agent 团队协作与调度运行时
 
 Weave 是部署在 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 之上的插件：为 DSH 增加
-多 Agent 团队协作（任务编排/状态机/执行器发现）、知识库（导入/审核/注入）与审计能力。
-Phase 0 目标为可验证地基：执行器发现、状态机、持久化、知识导入。
+多 Agent 团队协作（任务编排/状态机/执行器发现）、治理（熔断/审计/恢复）与 ACP 会话接入能力。
+**知识库、知识图谱、代码图谱、文档转换与角色团队定义面由子项目 Prism 承接**（控制面，
+内嵌随插件启动；边界与通道见 `doc/architecture/prism-adoption.md`）。
 
-设计文档见 `doc/architecture/`（当前团队运行时设计、分层重构方案、任务规划）。
+设计文档见 `doc/architecture/`（prism 接入、团队运行时设计、分层重构方案、任务规划）。
 
 ## 1. 工程形态（P0-BOOTSTRAP 定义）
 
@@ -46,12 +47,11 @@ pnpm install
 
 | 类型 | 主要依赖 | 说明 |
 | --- | --- | --- |
-| 运行时依赖 | `@deepseek-ai/cordis`、`yaml`、`zcode-acp-server`、`@firecrawl/anydoc`、`@sentropic/graphify`（代码图谱引擎） | `pnpm install` 自动安装 |
+| 运行时依赖 | `@deepseek-ai/cordis`、`yaml`、`zcode-acp-server` | `pnpm install` 自动安装；知识/图谱引擎在子项目 Prism（`pnpm vendor:prism` 打入 `dist/vendor/prism/`） |
 | 开发/测试依赖 | `typescript`、`vitest`、`eslint`、`@playwright/test`、`react`、`jsdom` 等 | 仅开发/测试用，不进入生产运行 |
 | DSH 相关 | `@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-commands` | 已作为 dev/peer 依赖声明，由 pnpm 安装 |
 | 外部宿主 | DeepSeek Harness（DSH）本体 | **需要单独安装/配置**；本仓库是 DSH 插件 |
 | 外部执行器 | ZCode CLI | 可通过 `WEAVE_ZCODE_BIN` 指定已安装的 ZCode；未指定时尝试自动探测 |
-| 代码图谱 | `@sentropic/graphify` | 已作为项目依赖安装，`node_modules/.bin/graphify` 可直接使用 |
 
 ## 3. 常用命令
 
@@ -201,9 +201,10 @@ DSH Web 的每个会话可通过 `conversation.view` 槽位的 **Weave 团队** 
 
 ### 控制台（七页）
 
-DSH Web 左侧底部点击 **Weave** 打开控制台：总览（含修订记录）、团队、知识库、
-执行器、审计、设置、使用手册。原「任务中心」「会话管理」两页已移除——任务
-治理收敛到会话面板，会话绑定收敛到面板团队头。**任务不由 Web 表单下发。**
+DSH Web 左侧底部点击 **Weave** 打开控制台：总览（含修订记录）、团队、知识库（Prism 占位卡，
+外链 Prism 控制台 `http://127.0.0.1:7777/studio`）、执行器、审计、设置、使用手册。
+原「任务中心」「会话管理」两页已移除——任务治理收敛到会话面板，会话绑定收敛到面板团队头。
+**任务不由 Web 表单下发。**
 
 控制台中的 **团队** 页面通过 `/dsh-weave` Connection RPC 读取已注册执行器和团队，
 并可创建/删除团队配置。角色可选择任意当前真实注册的执行器；ZCode 只是可选源，
@@ -260,9 +261,11 @@ extensions:
 
 配置持久化到 `~/.dsh/weave/providers.json`，热注册后执行器列表立即可见。
 
-设置页的目录（状态/团队/审计/知识/Obsidian/Provider 配置）可编辑并持久化到 `~/.dsh/weave/settings.json`，保存后下次加载生效。
+设置页的目录与 Prism 接入（状态/团队/审计/Provider 配置/`prism_base_url`/`prism_home`/`prism_default_executor`）可编辑并持久化到 `~/.dsh/weave/settings.json`，保存后下次加载生效。
 
-知识页提供 **Obsidian Vault 入口**（默认 `~/.dsh/obsidian`）：展示真实路径、复制路径，并通过 `obsidian://open` 协议尝试打开；主存储仍是 Markdown + frontmatter，P0 不做双向同步。知识列表下方有**轻量双链图谱**（`knowledge/graph`），基于真实知识文件和 `[[双链]]` 生成节点/缺失目标/关联边；完整 Graphify 查询属于后续版本。
+知识页为 **Prism 占位卡**：知识库/知识图谱/代码图谱/文档转换的管理界面在 Prism 控制台。
+主会话的知识审核走 `/weave knowledge review|approve|reject`（反思沉淀先入 weave 暂存区，
+approve 后落 Prism）；执行器子代理直接使用 Prism 的 `prism_kb_*` MCP 工具面。
 ACP 标准协议由统一内核处理；ZCode 的 model/thought/mode 是内置 extension 示例。
 未声明或探测失败的 extension 会以 requested/effective/supported/fallback 明确降级，
 不会伪装成功。

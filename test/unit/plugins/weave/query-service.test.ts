@@ -22,7 +22,6 @@ import { openPersistence, type WeavePersistence } from '../../../../src/plugins/
 import { SessionTracker } from '../../../../src/plugins/weave/scheduling/session-tracker.js'
 import { TeamManager } from '../../../../src/plugins/weave/team/team-manager.js'
 import { WeaveError } from '../../../../src/plugins/weave/state/weave-error.js'
-import { createWeaveRpcHandler } from '../../../../src/plugins/weave/host/rpc.js'
 import { createWeaveQueryServiceFromCliDeps, WeaveQueryService } from '../../../../src/plugins/weave/web/query-service.js'
 import { MockSubagentsContext } from './fixtures/mock-subagents.js'
 

@@ -1,5 +1,3 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { stringify as stringifyYaml } from 'yaml'

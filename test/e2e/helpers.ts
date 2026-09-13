@@ -1,13 +1,45 @@
 import type { Page, Response } from '@playwright/test'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 /** 真实 DSH Web 地址；可用 env 覆盖。 */
 export const BASE_URL = process.env.WEAVE_E2E_BASE_URL ?? 'http://127.0.0.1:3080'
-/** 本机已安装 Chromium；版本不匹配时可用 PW_CHROME 覆盖。 */
-export const EXECUTABLE =
-  process.env.PW_CHROME ??
-  'C:/Users/10042/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe'
+
+/**
+ * 本机 Chromium 探测顺序：PW_CHROME env > Playwright 默认缓存目录（任意 chrome-* 版本，
+ * macOS/Linux/Win）> 旧 Windows 约定路径（历史机器兼容）。
+ */
+function findChromium(): string | undefined {
+  const caches = [
+    join(homedir(), 'Library', 'Caches', 'ms-playwright'),
+    join(homedir(), '.cache', 'ms-playwright'),
+    ...(process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, 'ms-playwright')] : []),
+  ]
+  for (const cache of caches) {
+    if (!existsSync(cache)) continue
+    try {
+      for (const entry of readdirSync(cache).sort().reverse()) {
+        if (!entry.startsWith('chromium-')) continue
+        for (const rel of [
+          'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+          'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+          'chrome-linux/chrome',
+          'chrome-win64/chrome.exe',
+          'chrome-win/chrome.exe',
+        ]) {
+          const candidate = join(cache, entry, rel)
+          if (existsSync(candidate)) return candidate
+        }
+      }
+    } catch {
+      // 缓存目录不可读 → 尝试下一个
+    }
+  }
+  return undefined
+}
+
+export const EXECUTABLE = process.env.PW_CHROME ?? findChromium() ?? 'C:/Users/10042/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe'
 /** 截图与 trace 汇总目录（gitignore）。两层用例统一落在 weave-ui/e2e/ 下。 */
 export const ART = resolve(process.cwd(), '.artifacts/weave-ui/e2e')
 /** Dashboard 七个路由 key（任务中心/会话管理已移除，运行时信息在会话面板）。 */

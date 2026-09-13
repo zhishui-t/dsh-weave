@@ -1,4 +1,4 @@
-import type { ExternalTeamSource, TeamConfig } from '../team/team-manager.js'
+import type { TeamConfig } from '../team/team-manager.js'
 import type { PrismGateway } from './gateway.js'
 
 /**

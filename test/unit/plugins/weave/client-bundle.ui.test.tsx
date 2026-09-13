@@ -517,7 +517,6 @@ describe('t8 会话优先模型与治理化改造', () => {
         state_dir: '/state',
         teams_dir: '/teams',
         audit_dir: '/audit',
-        obsidian_dir: '/obsidian',
       },
     })
     exported.apply(fixture.ctx as never)

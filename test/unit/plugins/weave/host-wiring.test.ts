@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, type Plugin } from '@deepseek-ai/cordis'
 
-import { AuditLog } from '../../../../src/plugins/weave/audit/audit-log'
 import { CircuitBreaker } from '../../../../src/plugins/weave/safety/circuit-breaker'
 import { DagRepository } from '../../../../src/plugins/weave/dag/repository'
 import { ExecutorRegistry } from '../../../../src/plugins/weave/executors/executor-registry'
