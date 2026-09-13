@@ -3333,29 +3333,49 @@ interface SessionStatusData {
    * 本页只保留外链入口；审核闭环在主会话用 /weave knowledge review|approve|reject 完成。
    */
   function PrismKnowledgePage() {
-    const consoleUrl = 'http://127.0.0.1:7777/studio'
+    // 控制台地址来自 settings/describe（prism_console，部署可覆盖端口）；缺省内嵌默认地址。
+    const settings = useResource<SettingsInfo & { prism_console?: string }>(
+      () => rpc('settings/describe') as Promise<SettingsInfo & { prism_console?: string }>,
+      [],
+    )
+    const consoleUrl = String(settings.data?.prism_console ?? 'http://127.0.0.1:7777/studio')
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-knowledge-prism' },
       React.createElement('h1', null, '知识库（Prism）'),
       React.createElement(Note, {
-        text: '知识库、知识图谱、代码图谱与文档转换由 Prism 控制面承载；本面板不再直接管理知识数据。',
+        text: '知识库、知识图谱、代码图谱与文档转换由 Prism 控制面承载（内嵌控制台）；主会话审核走 /weave knowledge review | approve | reject。',
       }),
       React.createElement(
         'div',
-        { className: 'weave-grid' },
-        Card({
-          title: '打开 Prism 控制台',
-          meta: React.createElement('span', null, consoleUrl),
-          onClick: () => window.open(consoleUrl, '_blank'),
-          testId: 'prism-console-link',
-        }),
-        Card({
-          title: '主会话知识审核',
-          meta: React.createElement('span', null, '反思沉淀先入暂存区：/weave knowledge review 查看待审，approve 落 Prism，reject 丢弃。'),
-          testId: 'prism-review-hint',
-        }),
+        { className: 'weave-list-head' },
+        React.createElement(
+          'a',
+          {
+            className: 'weave-subh',
+            href: consoleUrl,
+            target: '_blank',
+            rel: 'noreferrer',
+            'data-testid': 'prism-console-link',
+          },
+          `在新窗口打开控制台（${consoleUrl}）`,
+        ),
       ),
+      settings.error
+        ? React.createElement(Note, { text: `Prism 控制台地址获取失败（${settings.error}），使用缺省地址；确认 prism serve 已启动。` })
+        : null,
+      React.createElement('iframe', {
+        src: consoleUrl,
+        title: 'Prism 控制台',
+        'data-testid': 'prism-console-frame',
+        style: {
+          width: '100%',
+          minHeight: 'max(calc(100vh - 300px), 420px)',
+          border: '1px solid var(--dsw-alias-border-l2, #333)',
+          borderRadius: '12px',
+          background: '#fff',
+        },
+      }),
     )
   }
 

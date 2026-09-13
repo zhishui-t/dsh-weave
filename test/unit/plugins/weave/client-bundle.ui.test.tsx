@@ -435,17 +435,22 @@ describe('dsh-weave 全功能真实页面（t3 覆盖）', () => {
     expect(screen.getByTestId('team-create-submit').textContent).toContain('包含 1 个角色')
   })
 
-  it('知识库页为 Prism 占位卡：控制台外链与主会话审核指引', async () => {
+  it('知识库页内嵌 Prism 控制台（iframe，地址来自 settings/describe.prism_console）', async () => {
     const exported = getCapturedBundle().factory(moduleRequireOf())
-    const fixture = makeClientContext({})
+    const fixture = makeClientContext({
+      'settings/describe': { prism_console: 'http://127.0.0.1:7788/studio' },
+    })
     exported.apply(fixture.ctx as never)
     render(createElement(fixture.component!, { wide: true }))
     fireEvent.click(screen.getByTestId('weave-open'))
     fireEvent.click(screen.getByTestId('nav-knowledge'))
     await screen.findByTestId('page-knowledge-prism')
-    expect(screen.getByTestId('prism-console-link').textContent).toContain('127.0.0.1:7777/studio')
-    expect(screen.getByTestId('prism-review-hint').textContent).toContain('/weave knowledge review')
-    // 占位页不发起任何知识 RPC
+    const frame = await screen.findByTestId('prism-console-frame')
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:7788/studio')
+    // 新窗口入口保留（地址随 settings 变化）
+    expect(screen.getByTestId('prism-console-link').textContent).toContain('127.0.0.1:7788/studio')
+    // 审核指引保留；页面不发起任何知识 RPC
+    expect(screen.getByText((t) => t.includes('/weave knowledge review'))).toBeTruthy()
     expect(fixture.calls.some((item) => item.endpoint.startsWith('knowledge/'))).toBe(false)
   })
 
