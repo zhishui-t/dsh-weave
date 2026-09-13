@@ -52,6 +52,7 @@ pnpm install
 | DSH 相关 | `@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-commands` | 已作为 dev/peer 依赖声明，由 pnpm 安装 |
 | 外部宿主 | DeepSeek Harness（DSH）本体 | **需要单独安装/配置**；本仓库是 DSH 插件 |
 | 外部执行器 | ZCode CLI | 可通过 `WEAVE_ZCODE_BIN` 指定已安装的 ZCode；未指定时尝试自动探测 |
+| 外部执行器 | WorkBuddy（CodeBuddy 引擎） | 原生 ACP：检测到 WorkBuddy.app 内置 CLI 即自动注册为 `workbuddy` 执行器；`WEAVE_WORKBUDDY_CLI`/`WORKBUDDY_PERMISSION_MODE` 可覆盖 |
 
 ## 3. 常用命令
 

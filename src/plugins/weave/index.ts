@@ -295,6 +295,11 @@ export {
   type AcpExecutorEvent,
   type AcpSessionProviderConfig,
 } from './acp/acp-session-provider.js'
+export {
+  DEFAULT_WORKBUDDY_ACP_SESSION_INDEX_FILE,
+  DEFAULT_WORKBUDDY_CLI,
+  workbuddyAcpProviderConfigFromEnvironment,
+} from './acp/workbuddy-provider.js'
 export type {
   HostToolDefinition,
   HostToolRuntime,

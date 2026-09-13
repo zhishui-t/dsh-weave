@@ -23,6 +23,9 @@ import { ExecutorProviderRegistry } from '../executors/executor-provider.js'
 import { DshSubagentExecutorProvider } from '../executors/dsh-subagent-executor-provider.js'
 import type { ExecutorChildPersistence } from '../executors/executor-child-store.js'
 import { AcpSessionProvider, DEFAULT_ACP_SESSION_INDEX_FILE, ZcodeAcpExecutorProvider, zcodeAcpProviderConfigFromEnvironment, type AcpSessionProviderConfig } from '../acp/acp-session-provider.js'
+import { DEFAULT_WORKBUDDY_ACP_SESSION_INDEX_FILE, workbuddyAcpProviderConfigFromEnvironment } from '../acp/workbuddy-provider.js'
+import { createStoredAcpExecutorProvider } from '../acp/acp-session-provider.js'
+import { dynamicCapabilitiesFor } from '../acp/dynamic-provider.js'
 
 /**
  * P0-PLUGIN-WIRE —— DSH 宿主接线模块（t37）。
@@ -788,6 +791,26 @@ export function createDefaultExecutorProviderRegistry(
     // 同时注册到 ctx.subagents，保证 ExecutorRegistry / 执行器列表可以发现 zcode。
     subagents?.registerProvider?.(acp)
     registry.register(new ZcodeAcpExecutorProvider(acp))
+  }
+
+  // WorkBuddy（CodeBuddy 引擎）：原生 ACP agent，CLI 存在即自动注册。
+  // 独立会话索引（sessionKey 无执行器维度，与 zcode 共用索引会互相串线索）；
+  // 能力面 = 动态基线（实时输出/会话复用），无 zcode 扩展可协商。
+  const workbuddyConfig = workbuddyAcpProviderConfigFromEnvironment(process.env)
+  if (workbuddyConfig && subprocess) {
+    const acp = new AcpSessionProvider(
+      {
+        ...workbuddyConfig,
+        // prism MCP 同样注入：workbuddy 成员会话内直接使用 prism_kb_* 知识工具面。
+        ...(options.extraMcpServers?.length
+          ? { mcpServers: [...(workbuddyConfig.mcpServers ?? []), ...options.extraMcpServers] }
+          : {}),
+        sessionIndexFile: DEFAULT_WORKBUDDY_ACP_SESSION_INDEX_FILE,
+      },
+      (spec) => subprocess.spawn(spec) as never,
+    )
+    subagents?.registerProvider?.(acp)
+    registry.register(createStoredAcpExecutorProvider(acp, dynamicCapabilitiesFor([])))
   }
 
   if (options.includeDsh !== false && subagents) {
