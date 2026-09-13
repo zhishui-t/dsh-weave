@@ -276,7 +276,7 @@ describe('WeavePersistence', () => {
         expect(db.journalMode()).toBe('wal')
       }
       expect(p.tasks.tables()).toEqual(['dags', 'edges', 'tasks'])  // HI-3：tasks.db 含 dags/edges（TDD §2.6.6/2.6.7）
-      expect(p.core.tables()).toEqual(['bans', 'executor_children', 'failure_counters', 'task_sequences', 'team_bindings'])  // HI-3/TDD 2.6.8 + core v3 executor_children
+      expect(p.core.tables()).toEqual(['bans', 'executor_children', 'failure_counters', 'task_sequences', 'team_bindings', 'team_members'])  // HI-3/TDD 2.6.8 + core v3 executor_children + v4 team_members
       expect(p.feedback.tables()).toEqual(['feedback_routes'])
     } finally {
       p.close()
