@@ -174,7 +174,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     bundle.dispose() // 二次调用不抛
   })
 
-  it('宿主 ctx.tools 存在时注册全部 19 个 weave_* 工具，核心命令可执行', async () => {
+  it('宿主 ctx.tools 存在时注册全部 22 个 weave_* 工具，核心命令可执行', async () => {
     const env = await newEnv()
     const ctx = env.ctx as Context & { weave?: { mcp?: unknown } }
     const registered: Array<{ def: unknown; unregister: () => void }> = []
@@ -201,6 +201,9 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_team_list',
       'weave_team_switch',
       'weave_executor_list',
+      'weave_task_claim',
+      'weave_task_update',
+      'weave_task_list',
       'weave_task_retry',
       'weave_task_skip',
       'weave_task_cancel',
@@ -214,7 +217,7 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
       'weave_graph_affected',
       'weave_document_convert',
     ])
-    expect(registered).toHaveLength(19)
+    expect(registered).toHaveLength(22)
 
     // weave_plan_tasks 不注入回调时应明确报错（下发路径必须显式接线）
     const planDef = registered.find((r) => (r.def as { name: string }).name === 'weave_plan_tasks')!.def as {
@@ -311,11 +314,11 @@ describe('P0-PLUGIN-WIRE｜插件入口接线', () => {
     expect(calls[3]).toEqual({ team_id: 'alpha-squad' })
   })
 
-  it('buildWeaveToolDefinitions 19 个定义：名称齐全且每个具 execute/description/parameters', async () => {
+  it('buildWeaveToolDefinitions 22 个定义：名称齐全且每个具 execute/description/parameters', async () => {
     const env = await newEnv()
     const bundle = registerWeaveHost(env.ctx, env.deps)
     const defs = buildWeaveToolDefinitions(bundle.mcp)
-    expect(defs).toHaveLength(19)
+    expect(defs).toHaveLength(22)
     for (const d of defs) {
       expect(d.name).toMatch(/^weave_/)
       expect(d.description.length).toBeGreaterThan(0)

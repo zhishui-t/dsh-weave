@@ -15,6 +15,7 @@ import { Mailbox } from '../team/mailbox.js'
 import { ReflectionSink } from '../team/reflection-sink.js'
 import { GraphRefresher } from './graph-refresh.js'
 import { TaskLedgerMirror } from '../prism/task-ledger.js'
+import { MemberRuntime, type TeamMemberRecord } from '../team/member-runtime.js'
 import { OnDutyController } from './on-duty.js'
 import {
   createWeaveNoticeMessage,
@@ -49,6 +50,12 @@ export interface TeamRuntime {
   mailbox: Mailbox
   reflectionSink: ReflectionSink
   onDuty: OnDutyController
+  taskBoard: {
+    claim(args: { task_id: string; expected_revision?: number }, exec: unknown): Promise<unknown>
+    update(args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown): Promise<unknown>
+    listMine(exec: unknown): Promise<unknown>
+  }
+  memberRuntime: MemberRuntime
   disposeScheduler(): void
 }
 
@@ -90,6 +97,84 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
 
   // P3 任务台账镜像（prism 承接）：状态变更逐条回报，prism 故障只告警。
   const ledgerMirror = deps.prism ? new TaskLedgerMirror({ gateway: deps.prism }) : undefined
+
+  // pull 模型成员域：DSH 子代理通道直挂宿主 subagents（fork continuable + sendMessage 唤醒）。
+  type MemberDshTransport = ConstructorParameters<typeof MemberRuntime>[0]['dsh']
+  const dshTransport = (runtime as unknown as { subagents?: MemberDshTransport }).subagents
+  const memberRuntime = new MemberRuntime({
+    persistence: deps.persistence,
+    ...(dshTransport ? { dsh: dshTransport } : {}),
+    log: console,
+  })
+
+  /** 成员唤醒消息：任务描述 + 上游产物摘要（成员无 DAG 上下文，见 wake 即可开工）。 */
+  const buildWakeText = async (task: { id: string; description: string; dependencies: string[]; dag_id?: string }): Promise<string> => {
+    const lines = [
+      `任务 ${task.id} 已就绪并指派给你。`,
+      `描述：${task.description}`,
+    ]
+    if (task.dependencies.length > 0) {
+      const dagId = task.dag_id ?? ''
+      const dag = dagId !== '' ? await deps.dagRepository.loadDag(dagId) : null
+      const byId = new Map((dag?.tasks ?? []).map((item) => [item.id, item]))
+      for (const depId of task.dependencies) {
+        const dep = byId.get(depId)
+        const result = typeof dep?.result === 'string' && dep.result.trim() !== '' ? dep.result.slice(0, 800) : '（无文本输出）'
+        lines.push(`上游 ${depId}（${dep?.description.split('\n')[0] ?? ''}）产物：${result}`)
+      }
+    }
+    lines.push('请用 weave_task_list 查看名下任务并 weave_task_claim 认领；完成用 weave_task_update 回报。')
+    return lines.join('\n')
+  }
+
+  /** 成员侧任务板回调（身份经 exec.agent.id → roster 反查）。 */
+  const agentIdOf = (exec: unknown): string | undefined =>
+    (exec as { agent?: { id?: string } } | undefined)?.agent?.id
+  const requireMember = async (exec: unknown): Promise<TeamMemberRecord> => {
+    const member = await memberRuntime.findByAgentId(agentIdOf(exec))
+    if (!member) {
+      throw new (await import('../state/weave-error.js')).WeaveError('member_not_found', '当前会话不是注册的持久成员（weave_task_* 仅对 pull 成员开放）')
+    }
+    return member
+  }
+  const taskBoard = {
+    claim: async (args: { task_id: string; expected_revision?: number }, exec: unknown) => {
+      const member = await requireMember(exec)
+      return await scheduler.claimTask({ taskId: args.task_id, memberKey: member.member_id, expectedRevision: args.expected_revision })
+    },
+    update: async (args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown) => {
+      const member = await requireMember(exec)
+      const attempt = args.attempt_token !== undefined && args.expected_revision !== undefined
+        ? { token: args.attempt_token, expectedRevision: args.expected_revision }
+        : undefined
+      if (args.action === 'complete') {
+        return await scheduler.completeTask({ taskId: args.task_id, memberKey: member.member_id, result: args.result ?? '', ...(attempt ? { attempt } : {}) })
+      }
+      if (args.action === 'release') {
+        return await scheduler.releaseTask({ taskId: args.task_id, memberKey: member.member_id, reason: args.reason, ...(attempt ? { attempt } : {}) })
+      }
+      return await scheduler.failTask({ taskId: args.task_id, memberKey: member.member_id, message: args.message ?? '（未附失败信息）', ...(attempt ? { attempt } : {}) })
+    },
+    listMine: async (exec: unknown) => {
+      const member = await requireMember(exec)
+      return await deps.persistence.tasks.run((db) => {
+        const rows = db
+          .prepare("SELECT id, description, status, revision, dependencies, result FROM tasks WHERE team_id = ? AND assigned_agent = ? AND status IN ('WAITING','BLOCKED','RUNNING','REVISION_RUNNING','INTERRUPTED') ORDER BY updated_at DESC LIMIT 50")
+          .all(member.team_id, member.role_id) as unknown as Array<{ id: string; description: string; status: string; revision: number; dependencies: string; result: string | null }>
+        return {
+          member: { member_id: member.member_id, role_id: member.role_id, state: member.state },
+          tasks: rows.map((row) => ({
+            id: row.id,
+            subject: row.description.split('\n')[0] ?? row.id,
+            status: row.status,
+            revision: row.revision,
+            claimable: row.status === 'WAITING',
+            description: row.description,
+          })),
+        }
+      })
+    },
+  }
 
   const statusNotifier = new TaskStatusNotifier({
     notify: (sessionId, text) => {
@@ -152,6 +237,22 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     // 交付目录代码图谱薄触发（prism 承接；失败静默降级）
     graphBuild: deps.prism
       ? (projectRoot: string) => deps.prism!.graphBuild({ projectRoot })
+      : undefined,
+    // pull 模型：就绪任务唤醒持久成员（'dsh' 执行器）；未注入通道时退回 push。
+    memberWake: dshTransport
+      ? async ({ task, role, team, run }) => {
+          const member = await memberRuntime.ensureMember({
+            teamId: team.team_id,
+            teamName: team.name,
+            roleId: role.id,
+            roleName: role.name,
+            personality: role.personality,
+            executor: role.executor,
+            parent: run.parentAgent,
+          })
+          const text = await buildWakeText(task)
+          await memberRuntime.deliver({ teamId: team.team_id, roleId: role.id, text, parent: run.parentAgent })
+        }
       : undefined,
   })
 
@@ -222,6 +323,8 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     mailbox,
     reflectionSink,
     onDuty,
+    taskBoard,
+    memberRuntime,
     disposeScheduler: () => {
       graphRefresher.dispose()
       // 宿主卸载走有界结算（官方 lifecycle 模式）：准入截止 + allSettled+超时 + 在途任务

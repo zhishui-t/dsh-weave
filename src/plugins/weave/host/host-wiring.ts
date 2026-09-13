@@ -86,6 +86,15 @@ export interface WeaveHostOptions {
    * 'cli-session'（纯 CLI 场景）。避免绑定落进假 id 导致面板按 sessionId 查空。
    */
   resolveSessionId?: (exec: unknown) => string | undefined
+  /**
+   * pull 模型任务板（成员侧工具）：claim/update/listMine 由调度器+成员域实现，
+   * 身份解析（exec.agent → 成员）在接线层完成。未注入时工具返回 configuration_error。
+   */
+  taskBoard?: {
+    claim(args: { task_id: string; expected_revision?: number }, exec: unknown): Promise<unknown>
+    update(args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown): Promise<unknown>
+    listMine(exec: unknown): Promise<unknown>
+  }
 }
 
 export interface WeaveMcpToolsRegistration {
@@ -275,6 +284,52 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
     // ---------- 知识面（prism 承接）：weave knowledge_* MCP 工具全删 ----------
     // agent 检索走 prism 原生 prism_kb_* 工具（经 ACP mcp_servers 注册）；
     // 主会话审核走 /weave CLI（knowledge review|approve|reject，操作 weave 暂存区）。
+    // ---------- pull 模型任务板（成员侧，官方 agent-team team_task_* 语义） ----------
+    {
+      name: `${prefix}task_claim`,
+      description:
+        '认领名下就绪任务（pull 模型）：任务须 assignee 为你且状态 WAITING、上游全部完成。' +
+        '认领成功任务进入 RUNNING 并返回 attempt 句柄（回报时回传 expected_revision）。',
+      parameters: {
+        task_id: { type: 'string', required: true },
+        expected_revision: { type: 'number', description: '任务板列表返回的 revision（CAS 防并发认领）' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) =>
+        options.taskBoard
+          ? options.taskBoard.claim(args as { task_id: string; expected_revision?: number }, exec)
+          : Promise.reject(new Error('configuration_error: 任务板未就绪（weave_task_claim 不可用）')),
+    },
+    {
+      name: `${prefix}task_update`,
+      description:
+        '回报名下任务（pull 模型）：action=complete（交付摘要填 result，供下游/队长引用）|' +
+        'release（暂时无法推进，附 reason，任务回 INTERRUPTED 等队长重开）|fail（执行失败，附 message）。',
+      parameters: {
+        task_id: { type: 'string', required: true },
+        action: { type: 'string', required: true, description: 'complete | release | fail' },
+        expected_revision: { type: 'number' },
+        attempt_token: { type: 'string', description: 'claim 返回的 attempt 句柄' },
+        result: { type: 'string', description: 'complete：交付摘要（结论+关键产物路径）' },
+        reason: { type: 'string', description: 'release：原因' },
+        message: { type: 'string', description: 'fail：失败信息' },
+      },
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) =>
+        options.taskBoard
+          ? options.taskBoard.update(args as never, exec)
+          : Promise.reject(new Error('configuration_error: 任务板未就绪（weave_task_update 不可用）')),
+    },
+    {
+      name: `${prefix}task_list`,
+      description: '查看名下任务板（pull 模型）：assignee 为你的任务与状态/revision/依赖就绪度。',
+      parameters: {},
+      output: { schema: OUTPUT_SCHEMA, render: (args, value) => jsonText(value) },
+      execute: (args, exec) =>
+        options.taskBoard
+          ? options.taskBoard.listMine(exec)
+          : Promise.reject(new Error('configuration_error: 任务板未就绪（weave_task_list 不可用）')),
+    },
     {
       name: `${prefix}task_retry`,
       description: '重试任务：FAILED/LOOP_TERMINATED/INTERRUPTED/CANCELLED → WAITING',

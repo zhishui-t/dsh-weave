@@ -360,6 +360,16 @@ export class MemberRuntime {
   }
 
   /**
+   * 按宿主 agent 会话 id 反查成员（成员侧工具身份解析）：
+   * DSH 成员的 childId 即其会话 id；roster 小表全扫即可。
+   */
+  async findByAgentId(agentId: string | undefined): Promise<TeamMemberRecord | undefined> {
+    if (!agentId || agentId.trim() === '') return undefined
+    const all = await this.list()
+    return all.find((member) => member.child_id === agentId)
+  }
+
+  /**
    * 读时状态刷新。优先级：在途交付（deliver 已受理）→ running（sendMessage 冷恢复
    * 场景 child 尚未物化也算在途）；child live 无在途 → idle；child 失联 → inactive
    * （可冷恢复，非失败）；failed 仅由 deliver 故障写入，读时不改判。
