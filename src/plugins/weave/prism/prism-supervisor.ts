@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import type { PrismClient } from './prism-client.js'
+import { PrismClient } from './prism-client.js'
 
 /**
  * Prism 进程托管：插件加载时确保内嵌 prism serve 在本机运行（"一个插件整体"）。
@@ -55,7 +55,8 @@ function repoRoot(): string {
 }
 
 export class PrismSupervisor {
-  readonly #client: PrismClient
+  /** 探活专用短超时 client：探活若继承 30s 业务超时，黑洞端点会吃满整个启动等待窗口。 */
+  readonly #probeClient: PrismClient
   readonly #port: number
   readonly #prismHome: string
   readonly #scriptPath?: string
@@ -63,9 +64,11 @@ export class PrismSupervisor {
   readonly #startTimeoutMs: number
   readonly #log: Pick<Console, 'log' | 'warn'>
   #child: ChildProcess | undefined
+  /** ensureRunning 串行化：并发调用（启动 fire-and-forget + 首次业务调用）只允许一次探活/拉起。 */
+  #ensureInFlight: Promise<PrismRuntimeStatus> | undefined
 
   constructor(options: PrismSupervisorOptions) {
-    this.#client = options.client
+    this.#probeClient = new PrismClient({ baseUrl: options.client.baseUrl, timeoutMs: 1_000 })
     this.#port = options.port ?? DEFAULT_PRISM_PORT
     this.#prismHome = options.prismHome ?? DEFAULT_PRISM_HOME
     this.#scriptPath = options.scriptPath ?? process.env.WEAVE_PRISM_SCRIPT ?? undefined
@@ -90,15 +93,23 @@ export class PrismSupervisor {
   /** 探活（一次性）。 */
   async probe(): Promise<boolean> {
     try {
-      await this.#client.health()
+      await this.#probeClient.health()
       return true
     } catch {
       return false
     }
   }
 
-  /** 确保运行：健康则复用；否则按需拉起并轮询健康。绝不抛错——失败时返回 reason 供降级。 */
-  async ensureRunning(): Promise<PrismRuntimeStatus> {
+  /** 确保运行：健康则复用；否则按需拉起并轮询健康。绝不抛错——失败时返回 reason 供降级。
+   *  串行化：并发调用共享同一次探活/拉起（避免双 spawn 后幸存者脱管成孤儿）。 */
+  ensureRunning(): Promise<PrismRuntimeStatus> {
+    this.#ensureInFlight ??= this.#ensureRunningInner().finally(() => {
+      this.#ensureInFlight = undefined
+    })
+    return this.#ensureInFlight
+  }
+
+  async #ensureRunningInner(): Promise<PrismRuntimeStatus> {
     if (await this.probe()) {
       return { running: true, spawned: false }
     }
@@ -113,14 +124,21 @@ export class PrismSupervisor {
         reason: '未找到 prism CLI 入口（设置 WEAVE_PRISM_SCRIPT 或部署 vendor 布局）',
       }
     }
+    let spawnError: Error | undefined
     try {
-      this.#child = spawn(process.execPath, [script, 'serve', '--port', String(this.#port), '--host', '127.0.0.1'], {
+      const child = spawn(process.execPath, [script, 'serve', '--port', String(this.#port), '--host', '127.0.0.1'], {
         env: { ...process.env, PRISM_HOME: this.#prismHome },
         stdio: 'ignore',
         detached: false,
       })
-      this.#child.on('error', (error) => {
+      this.#child = child
+      child.on('error', (error) => {
+        spawnError = error
         this.#log.warn('[dsh-weave] prism serve 子进程异常:', error)
+      })
+      // 退出即解除跟踪：下次 ensureRunning 会重新拉起（崩溃自愈的按需入口）。
+      child.on('exit', () => {
+        if (this.#child === child) this.#child = undefined
       })
     } catch (error) {
       return {
@@ -132,6 +150,9 @@ export class PrismSupervisor {
     }
     const deadline = Date.now() + this.#startTimeoutMs
     while (Date.now() < deadline) {
+      if (spawnError !== undefined) {
+        return { running: false, spawned: true, script, reason: `prism serve 拉起失败: ${spawnError.message}` }
+      }
       if (await this.probe()) {
         return { running: true, spawned: true, script, pid: this.#child?.pid }
       }

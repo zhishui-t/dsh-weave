@@ -96,7 +96,8 @@ export function extractKnowledgeBlocks(text: string): ReflectionParseResult {
     }
     if (end < 0) {
       invalid += 1
-      break
+      // 未闭合只作废当前块；继续扫描后续行，保留之后合法的块。
+      continue
     }
     const raw = lines.slice(i + 1, end).join('\n').trim()
     const block = parseBlock(raw)
@@ -119,6 +120,8 @@ export interface ReflectionDepositInput {
   outputText: string
   /** 任务主题（描述首行）：兑底候选的标题来源；缺省退回 taskId。 */
   taskSubject?: string
+  /** 任务终态：FAILED 时跳过兑底合成（错误堆栈不自动变知识），显式块仍照常解析。 */
+  status?: 'COMPLETED' | 'FAILED'
 }
 
 export interface ReflectionDepositError {
@@ -163,7 +166,9 @@ export class PrismReflectionService {
       sourceTag: SOURCE_TAG_REFLECTION,
     }))
     // 兑底：整场无有效块且输出非空 → 自动合成一条 pattern 候选。
-    if (pending.length === 0 && input.outputText.trim() !== '') {
+    // FAILED 任务跳过合成——错误堆栈/报文自动落知识只会制造审核队列垃圾；
+    // 成员显式写的 WEAVE_KNOWLEDGE 块仍照常入暂存。
+    if (pending.length === 0 && input.outputText.trim() !== '' && input.status !== 'FAILED') {
       pending.push({ block: this.#synthesizeAutoCandidate(input), sourceTag: SOURCE_TAG_REFLECTION_AUTO })
     }
 

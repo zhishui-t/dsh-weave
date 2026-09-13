@@ -287,13 +287,27 @@ export class PrismGateway {
     const timeoutMs = options.timeoutMs ?? 15 * 60_000
     const pollIntervalMs = options.pollIntervalMs ?? 2_000
     const deadline = Date.now() + timeoutMs
-    let job = await this.client.graphJob(handle.job_id)
-    while (!/(done|success|complete|failed|error|cancell?ed)/i.test(job.status)) {
+    // 轮询容错：单次瞬时故障（网络抖动/5xx/任务注册可见性延迟）不应丢弃整个
+    // 可能已跑了几分钟的 build——连续失败计数，窗口内继续轮询。
+    const MAX_POLL_FAILURES = 5
+    let consecutivePollFailures = 0
+    let job: PrismGraphJob | undefined
+    while (job === undefined || !/(done|success|complete|failed|error|cancell?ed)/i.test(job.status)) {
       if (Date.now() > deadline) {
         throw new WeaveError('prism_graph_timeout', `prism 图谱构建超时（${timeoutMs}ms）: ${project}`)
       }
       await new Promise((resolveSleep) => setTimeout(resolveSleep, pollIntervalMs))
-      job = await this.client.graphJob(handle.job_id)
+      try {
+        job = await this.client.graphJob(handle.job_id)
+        consecutivePollFailures = 0
+      } catch (error) {
+        consecutivePollFailures += 1
+        if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+          throw new WeaveError('prism_graph_failed', `prism 图谱构建轮询连续失败 ${consecutivePollFailures} 次: ${project}`, {
+            cause: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
     }
     const ok = /(done|success|complete)/i.test(job.status)
     if (!ok) {

@@ -562,7 +562,7 @@ describe('P1-H：session/update 协议形态（顶层 {sessionId, update}）与�
 })
 
 describe('AcpSessionProvider 建会话互斥（pull 模型并发唤醒）', () => {
-  it('同 sessionKey 并发 start：newSession 只调用一次', async () => {
+  it('同 sessionKey 并发 start：单连接、newSession 只调用一次（互斥消除 split-brain）', async () => {
     const { provider, connections } = makeFixtures()
     const request = {
       parent: { session: { header: { cwd: '/tmp/p' } } },
@@ -574,8 +574,16 @@ describe('AcpSessionProvider 建会话互斥（pull 模型并发唤醒）', () =
       provider.start(request as never),
       provider.start(request as never),
     ])
-    expect(r1.sessionId).toBe(r2.sessionId)
+    // 无互斥时两个并发 start 各自 #acquireConnection → 2 个连接、2 次 newSession
+    //（后到者撞端口冲突，幸存实例脱管）。互斥后必须单连接单建会话。
+    expect(connections).toHaveLength(1)
     const count = (connections[0]!.newSession as unknown as { mock: { calls: unknown[] } }).mock.calls.length
     expect(count).toBe(1)
+    // 首个 run 携带新建会话的 response；复用路径的 run 不重复建会话
+    expect(r1.sessionResponse?.sessionId).toBeTruthy()
+    const sids = [r1, r2]
+      .map((run) => run.sessionResponse?.sessionId)
+      .filter((sid): sid is string => typeof sid === 'string')
+    expect(new Set(sids).size).toBe(1)
   })
 })

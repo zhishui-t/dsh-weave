@@ -81,15 +81,23 @@ describe('WorkBuddy 执行器注册（createDefaultExecutorProviderRegistry）',
   it('CLI 存在 → workbuddy 注册进 registry 与 subagents；kind=acp', () => {
     const cli = fakeCli()
     const ctx = fakeCtx()
-    const registry = createDefaultExecutorProviderRegistry(ctx, {
-      zcode: undefined,
-      includeDsh: false,
-    })
-    expect(registry.get('workbuddy')).toBeDefined()
-    expect(registry.get('workbuddy')?.kind).toBe('acp')
-    expect(registry.get('workbuddy')?.supports('workbuddy')).toBe(true)
-    expect(registry.get('workbuddy')?.supports('zcode')).toBe(false)
-    expect(classifyProvider('workbuddy')).toBe('acp')
+    // 显式指向 fake CLI：本机不一定装有 WorkBuddy.app（默认探测路径是 macOS-only）
+    const saved = process.env.WEAVE_WORKBUDDY_CLI
+    process.env.WEAVE_WORKBUDDY_CLI = cli
+    try {
+      const registry = createDefaultExecutorProviderRegistry(ctx, {
+        zcode: undefined,
+        includeDsh: false,
+      })
+      expect(registry.get('workbuddy')).toBeDefined()
+      expect(registry.get('workbuddy')?.kind).toBe('acp')
+      expect(registry.get('workbuddy')?.supports('workbuddy')).toBe(true)
+      expect(registry.get('workbuddy')?.supports('zcode')).toBe(false)
+      expect(classifyProvider('workbuddy')).toBe('acp')
+    } finally {
+      if (saved === undefined) delete process.env.WEAVE_WORKBUDDY_CLI
+      else process.env.WEAVE_WORKBUDDY_CLI = saved
+    }
   })
 
   it('CLI 不存在 → 不注册（zcode 缺省、DSH fallback 关闭时 registry 为空）', () => {

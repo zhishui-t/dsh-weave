@@ -7,9 +7,8 @@ import { stringify as stringifyYaml } from 'yaml'
 import { WeaveScheduler, subjectLabel } from '../../../../src/plugins/weave/scheduling/scheduler'
 import { openPersistence, type WeavePersistence } from '../../../../src/plugins/weave/persistence/index'
 import { TeamManager, type TeamConfig } from '../../../../src/plugins/weave/team/team-manager.js'
-import { TeamPlanner, createPlanTasksHandler } from '../../../../src/plugins/weave/scheduling/planner'
+import { TeamPlanner } from '../../../../src/plugins/weave/scheduling/planner'
 import type { SchedulerDelegationLike, WeaveSchedulerOptions } from '../../../../src/plugins/weave/scheduling/scheduler'
-import { TaskStatusNotifier } from '../../../../src/plugins/weave/scheduling/task-status-notifier'
 
 const TEAM: TeamConfig = {
   team_id: 'alpha',
@@ -138,6 +137,70 @@ describe('WeaveScheduler pull 模型（成员自拉）', () => {
     scheduler.dispose()
   })
 
+  it('P0 回归：同角色双就绪任务，认领其一后另一任务的 role_busy 拒绝不楔死唤醒守卫', async () => {
+    const wake = vi.fn(async () => undefined)
+    const scheduler = makeScheduler({ memberWake: wake as never })
+    const planner = new TeamPlanner({ persistence, teamManager: manager })
+    // 两个同角色、无依赖的任务：同一泵轮次会先后唤醒（两守卫都置位）。
+    const output = await planner.plan({
+      session_id: 'sess-pull',
+      tasks: [
+        { id: 'a', description: '实现功能A', assignee: 'coder' },
+        { id: 'b', description: '实现功能B', assignee: 'coder' },
+      ],
+    } as never)
+    await scheduler.start({ dagId: output.dag_id, sessionId: 'sess-pull' })
+    const ids = output.tasks.map((task) => task.id) as [string, string]
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(2))
+    // 成员先认领 a → 成功（守卫清）；再试 b → role_busy 拒绝（旧实现守卫残留）
+    const first = await scheduler.claimTask({ taskId: ids[0], memberKey: 'alpha:coder' })
+    if (!first.ok) throw new Error('claim failed')
+    const busy = await scheduler.claimTask({ taskId: ids[1], memberKey: 'alpha:coder' })
+    expect(busy.ok).toBe(false)
+    if (!busy.ok) expect(busy.code).toBe('role_busy')
+    // a 完成 → 角色释放 → 重泵必须能再次唤醒 b（守卫已被清）
+    const completed = await scheduler.completeTask({ taskId: ids[0], memberKey: 'alpha:coder', result: 'ok', attempt: first.attempt })
+    expect(completed.ok).toBe(true)
+    await vi.waitFor(() => expect(wake.mock.calls.length).toBeGreaterThanOrEqual(3))
+    const wokenAgain = (wake as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as { task: { id: string } }
+    expect(wokenAgain.task.id).toBe(ids[1])
+    scheduler.dispose()
+  })
+
+  it('P1 回归：结算缺 attempt 句柄 → attempt_required（无守卫裸写被拒）', async () => {
+    const wake = vi.fn(async () => undefined)
+    const scheduler = makeScheduler({ memberWake: wake as never })
+    const { ids } = await planTwoTasks(scheduler)
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1))
+    const claimed = await scheduler.claimTask({ taskId: ids[0], memberKey: 'alpha:coder' })
+    if (!claimed.ok) throw new Error('claim failed')
+    const noGuard = await scheduler.completeTask({
+      taskId: ids[0],
+      memberKey: 'alpha:coder',
+      result: '越权迟到写',
+      // @ts-expect-error 协议回归：模拟调用方丢失句柄
+      attempt: undefined,
+    })
+    expect(noGuard.ok).toBe(false)
+    if (!noGuard.ok) expect(noGuard.code).toBe('attempt_required')
+    // 句柄仍有效：正常结算应成功
+    const ok = await scheduler.completeTask({ taskId: ids[0], memberKey: 'alpha:coder', result: 'ok', attempt: claimed.attempt })
+    expect(ok.ok).toBe(true)
+    scheduler.dispose()
+  })
+
+  it('P2 回归：跨团队同角色名认领 → not_assignee（团队级授权）', async () => {
+    const wake = vi.fn(async () => undefined)
+    const scheduler = makeScheduler({ memberWake: wake as never })
+    const { ids } = await planTwoTasks(scheduler)
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1))
+    // memberKey 角色名匹配但 memberTeamId 不一致 → 拒绝
+    const cross = await scheduler.claimTask({ taskId: ids[0], memberKey: 'alpha:coder', memberTeamId: 'other-team' })
+    expect(cross.ok).toBe(false)
+    if (!cross.ok) expect(cross.code).toBe('not_assignee')
+    scheduler.dispose()
+  })
+
   it('complete：RUNNING→COMPLETED 走结算链（反思钩子/下游晋升/收敛通知）', async () => {
     const wake = vi.fn(async () => undefined)
     const settled = vi.fn(async () => 1)
@@ -178,10 +241,10 @@ describe('WeaveScheduler pull 模型（成员自拉）', () => {
     await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1))
     const claimed = await scheduler.claimTask({ taskId: ids[0], memberKey: 'alpha:coder' })
     if (!claimed.ok) throw new Error('claim failed')
-    const released = await scheduler.releaseTask({ taskId: ids[0], memberKey: 'alpha:coder', reason: '缺上游资料' })
+    const released = await scheduler.releaseTask({ taskId: ids[0], memberKey: 'alpha:coder', reason: '缺上游资料', attempt: claimed.attempt })
     expect(released.ok).toBe(true)
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 30))
-    // 不自动重唤醒（守卫保留，避免卡住→重唤醒死循环）
+    // 不自动重唤醒（任务处于 INTERRUPTED 终态，pump 只唤醒 WAITING）
     expect(wake).toHaveBeenCalledTimes(1)
     // 队长重开（task_retry 语义：INTERRUPTED→WAITING）→ 重泵后再次唤醒
     await persistence.tasks.run((db) =>
@@ -199,7 +262,7 @@ describe('WeaveScheduler pull 模型（成员自拉）', () => {
     await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1))
     const claimed = await scheduler.claimTask({ taskId: ids[0], memberKey: 'alpha:coder' })
     if (!claimed.ok) throw new Error('claim failed')
-    const failed = await scheduler.failTask({ taskId: ids[0], memberKey: 'alpha:coder', message: '实现遇到不可恢复阻塞' })
+    const failed = await scheduler.failTask({ taskId: ids[0], memberKey: 'alpha:coder', message: '实现遇到不可恢复阻塞', attempt: claimed.attempt })
     expect(failed.ok).toBe(true)
     const dag = await scheduler.loadDag((await persistence.tasks.run((db) => db.prepare('SELECT dag_id FROM tasks WHERE id = ?').get(ids[0]) as { dag_id: string })).dag_id)
     const byId = new Map(dag.tasks.map((task) => [task.id, task]))

@@ -476,46 +476,54 @@ export class AcpSessionProvider {
     if (sessionKey === undefined) {
       throw new Error(`${this.name}: sessionKey is required for ACP session isolation`)
     }
-    const connection = await this.#acquireConnection(cwd)
-    // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
-    // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，
-    // 已带 zcodeSid 的记录直达同一后端会话），不同 sessionKey 天然各得独立会话。
-    const indexed = await readSessionIndexFile(this.#sessionIndexFile, sessionKey)
-    let sessionId =
-      weave.resumeSessionId ??
-      this.#sessions.get(sessionKey)?.sessionId ??
-      indexed?.acpSid
-    let sessionResponse: AcpSessionNewResponse | undefined
-    const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
+    // 会话解析/创建整段入 sessionKey 互斥（含 #acquireConnection）：并发同键
+    // start（pull 唤醒 + 队长消息）不串行会各建连接各 newSession，占位符
+    // split-brain——这正是本锁要消除的竞态。
+    const resolved = await this.#withSessionLock(sessionKey, async () => {
+      const connection = await this.#acquireConnection(cwd)
+      // 会话解析优先级（iso-1）：显式 resume > 进程内内存表 > 持久索引。
+      // 重启后内存表清空，持久索引让同 sessionKey 续接原占位符（桥接按别名物化，
+      // 已带 zcodeSid 的记录直达同一后端会话），不同 sessionKey 天然各得独立会话。
+      const indexed = await readSessionIndexFile(this.#sessionIndexFile, sessionKey)
+      let sessionId =
+        weave.resumeSessionId ??
+        this.#sessions.get(sessionKey)?.sessionId ??
+        indexed?.acpSid
+      let sessionResponse: AcpSessionNewResponse | undefined
+      const knownInConnection = sessionId !== undefined && connection.sessions.has(sessionId)
 
-    let createdNewSession = false
-    if (sessionId === undefined || !knownInConnection) {
-      if (sessionId !== undefined) {
-        // 旧线索：索引记录里会话创建时声明的 cwd（resume 线索）；无记录时用当前 cwd。
-        const resumeCwd = sessionId === indexed?.acpSid ? indexed?.cwd ?? cwd : cwd
-        const recovered = await this.#tryRecoverSession(connection, sessionId, resumeCwd)
-        if (recovered !== undefined) {
-          sessionResponse = recovered
-        } else {
-          // 恢复链（load+resume）全部失败：占位符确实失效（30d TTL 清理/后端会话
-          // 已删/记录损坏）——自愈回退到新建会话，并让下方索引写入覆盖掉失效映射
-          // （sid 变更，旧线索不随迁，见 writeSessionIndexFile）。
-          sessionId = undefined
-          this.#sessions.delete(sessionKey)
+      let createdNewSession = false
+      if (sessionId === undefined || !knownInConnection) {
+        if (sessionId !== undefined) {
+          // 旧线索：索引记录里会话创建时声明的 cwd（resume 线索）；无记录时用当前 cwd。
+          const resumeCwd = sessionId === indexed?.acpSid ? indexed?.cwd ?? cwd : cwd
+          const recovered = await this.#tryRecoverSession(connection, sessionId, resumeCwd)
+          if (recovered !== undefined) {
+            sessionResponse = recovered
+          } else {
+            // 恢复链（load+resume）全部失败：占位符确实失效（30d TTL 清理/后端会话
+            // 已删/记录损坏）——自愈回退到新建会话，并让下方索引写入覆盖掉失效映射
+            // （sid 变更，旧线索不随迁，见 writeSessionIndexFile）。
+            sessionId = undefined
+            this.#sessions.delete(sessionKey)
+          }
         }
+        if (sessionId === undefined) {
+          const created = await connection.conn.newSession({ cwd, mcpServers: this.#mcpServers })
+          sessionId = created.sessionId
+          sessionResponse = created
+          createdNewSession = true
+        }
+        this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
+        await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
+      } else {
+        // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键/线索缺失）。
+        await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
       }
-      if (sessionId === undefined) {
-        const created = await connection.conn.newSession({ cwd, mcpServers: this.#mcpServers })
-        sessionId = created.sessionId
-        sessionResponse = created
-        createdNewSession = true
-      }
-      this.#sessions.set(sessionKey, { sessionId, connectionKey: connection.key })
-      await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
-    } else {
-      // 连接仍认识该会话：仅补写持久索引（防旧版本运行期未落盘的键/线索缺失）。
-      await writeSessionIndexFile(this.#sessionIndexFile, sessionKey, sessionId, cwd)
-    }
+      return { connection, sessionId: sessionId as string, sessionResponse, createdNewSession }
+    })
+    const { connection, sessionResponse, createdNewSession } = resolved
+    const sessionId: string = resolved.sessionId
 
     const runId = `acp-${sessionId}`
     const controller = this.#startRunController(runId)

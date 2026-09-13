@@ -229,7 +229,15 @@ export function apply(ctx: Context): void {
         }, async () => {
           if (!zcodeProvider) return undefined
           return await zcodeProvider.describeSession(process.cwd())
-        }, { version: WEAVE_VERSION, stateDir: effectiveStateDir, auditDir: effectiveAuditDir, providersFile: effectiveProvidersFile })
+        }, {
+          version: WEAVE_VERSION,
+          stateDir: effectiveStateDir,
+          auditDir: effectiveAuditDir,
+          providersFile: effectiveProvidersFile,
+          // prism 控制台入口从 base URL 派生（base URL 是唯一事实源），避免
+          // 自定义端口时 iframe 仍指向默认 7777 的死地址。
+          prismConsole: `${(settingsOverrides.prism_base_url ?? 'http://127.0.0.1:7777').replace(/\/+$/, '')}/studio`,
+        })
       } catch (error) {
         console.warn('[dsh-weave] rpc registration failed:', error)
       }

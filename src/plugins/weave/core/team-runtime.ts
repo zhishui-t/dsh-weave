@@ -156,20 +156,31 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
   const taskBoard = {
     claim: async (args: { task_id: string; expected_revision?: number }, exec: unknown) => {
       const member = await requireMember(exec)
-      return await scheduler.claimTask({ taskId: args.task_id, memberKey: member.member_id, expectedRevision: args.expected_revision })
+      return await scheduler.claimTask({
+        taskId: args.task_id,
+        memberKey: member.member_id,
+        memberTeamId: member.team_id,
+        expectedRevision: args.expected_revision === undefined ? undefined : Number(args.expected_revision),
+      })
     },
     update: async (args: { task_id: string; action: 'complete' | 'release' | 'fail'; expected_revision?: number; attempt_token?: string; result?: string; reason?: string; message?: string }, exec: unknown) => {
       const member = await requireMember(exec)
-      const attempt = args.attempt_token !== undefined && args.expected_revision !== undefined
-        ? { token: args.attempt_token, expectedRevision: args.expected_revision }
-        : undefined
+      // attempt 句柄强制：claim 返回的 token+revision 必须原样回传，缺一按
+      // 协议错误拒绝（无守卫裸写会让迟到回报覆写新 generation）。
+      if (args.attempt_token === undefined || args.expected_revision === undefined) {
+        throw new (await import('../state/weave-error.js')).WeaveError(
+          'invalid_argument',
+          '回报必须携带 claim 返回的 attempt_token 与 expected_revision（防迟到写入覆写新 generation）',
+        )
+      }
+      const attempt = { token: args.attempt_token, expectedRevision: Number(args.expected_revision) }
       if (args.action === 'complete') {
-        return await scheduler.completeTask({ taskId: args.task_id, memberKey: member.member_id, result: args.result ?? '', ...(attempt ? { attempt } : {}) })
+        return await scheduler.completeTask({ taskId: args.task_id, memberKey: member.member_id, memberTeamId: member.team_id, result: args.result ?? '', attempt })
       }
       if (args.action === 'release') {
-        return await scheduler.releaseTask({ taskId: args.task_id, memberKey: member.member_id, reason: args.reason, ...(attempt ? { attempt } : {}) })
+        return await scheduler.releaseTask({ taskId: args.task_id, memberKey: member.member_id, memberTeamId: member.team_id, reason: args.reason, attempt })
       }
-      return await scheduler.failTask({ taskId: args.task_id, memberKey: member.member_id, message: args.message ?? '（未附失败信息）', ...(attempt ? { attempt } : {}) })
+      return await scheduler.failTask({ taskId: args.task_id, memberKey: member.member_id, memberTeamId: member.team_id, message: args.message ?? '（未附失败信息）', attempt })
     },
     listMine: async (exec: unknown) => {
       const member = await requireMember(exec)
@@ -246,6 +257,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
         version: task.version,
         outputText: text,
         taskSubject: subjectLabel(task),
+        status,
       })
       if (status === 'COMPLETED') graphRefresher.request('task-settled', task.session_id)
       return result.deposited.length
@@ -257,7 +269,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions): TeamRuntime {
     // pull 模型：就绪任务唤醒持久成员（'dsh' 执行器）；未注入通道时退回 push。
     memberWake: dshTransport
       ? async ({ task, role, team, run }) => {
-          const member = await memberRuntime.ensureMember({
+          await memberRuntime.ensureMember({
             teamId: team.team_id,
             teamName: team.name,
             roleId: role.id,

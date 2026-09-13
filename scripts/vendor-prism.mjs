@@ -31,7 +31,8 @@ function parseArgs(argv) {
 }
 
 function run(cmd, args, cwd) {
-  const result = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
+  // 不用 shell：cmd/args 都是数组且路径可能含空格（shell:true 时 Windows 裸重解析会炸）
+  const result = spawnSync(cmd, args, { cwd, stdio: 'inherit' })
   if (result.status !== 0) {
     process.stderr.write(`[vendor-prism] 命令失败（exit=${result.status}）: ${cmd} ${args.join(' ')}（cwd=${cwd}）\n`)
     process.exit(result.status ?? 1)

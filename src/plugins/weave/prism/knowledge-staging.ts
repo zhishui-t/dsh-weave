@@ -115,7 +115,10 @@ export class KnowledgeStaging {
   async get(id: string): Promise<StagedKnowledge | null> {
     if (!/^[A-Za-z0-9_-]+$/.test(id)) return null
     try {
-      return (JSON.parse(await readFile(join(this.#dir, `${id}.json`), 'utf8')) as StagedKnowledge) ?? null
+      const parsed = JSON.parse(await readFile(join(this.#dir, `${id}.json`), 'utf8')) as StagedKnowledge
+      // 与 list() 同一形状校验：损坏/手改文件不在 approve 时炸出晦涩的信封错误。
+      if (typeof parsed?.id !== 'string' || typeof parsed?.title !== 'string') return null
+      return parsed
     } catch {
       return null
     }

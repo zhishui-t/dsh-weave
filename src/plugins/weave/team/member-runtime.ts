@@ -153,9 +153,10 @@ export class MemberRuntime {
   readonly #acpWake?: MemberRuntimeOptions['acpWake']
   readonly #bootstrap: (input: MemberBootstrapInput) => string
   readonly #now: () => Date
-  readonly #log: Pick<Console, 'warn'>
   /** 在途交付追踪（内存）：deliver 后置 running，child.whenIdle 后回 idle。 */
   readonly #inFlight = new Set<string>()
+  /** ensureMember 按 memberId 串行：防止并发触发重复 fork 持久子代理。 */
+  readonly #ensureInFlight = new Map<string, Promise<TeamMemberRecord>>()
 
   constructor(options: MemberRuntimeOptions) {
     this.#persistence = options.persistence
@@ -163,7 +164,6 @@ export class MemberRuntime {
     this.#acpWake = options.acpWake
     this.#bootstrap = options.bootstrap ?? defaultMemberBootstrap
     this.#now = options.now ?? (() => new Date())
-    this.#log = options.log ?? console
   }
 
   /* ------------------------------- roster 存储 ------------------------------- */
@@ -227,9 +227,22 @@ export class MemberRuntime {
     return `${teamId}:${roleId}`
   }
 
-  /** 取或创建持久成员。已存在直接返回（幂等）；'dsh' 成员创建即 fork 首派。 */
-  async ensureMember(input: EnsureMemberInput): Promise<TeamMemberRecord> {
+  /** 取或创建持久成员。已存在直接返回（幂等）；'dsh' 成员创建即 fork 首派。
+   *  按 memberKey 串行：两个并发触发（双 DAG 泵 / 队长 spawn 竞泵）都通过
+   *  先读后 fork 时会各自 startContinuable 出一个持久子代理（孤儿、耗 token），
+   *  这里以 in-flight promise 保证同成员只 fork 一次。 */
+  ensureMember(input: EnsureMemberInput): Promise<TeamMemberRecord> {
     const memberId = this.memberIdOf(input.teamId, input.roleId)
+    const inFlight = this.#ensureInFlight.get(memberId)
+    if (inFlight) return inFlight
+    const promise = this.#ensureMemberInner(input, memberId).finally(() => {
+      if (this.#ensureInFlight.get(memberId) === promise) this.#ensureInFlight.delete(memberId)
+    })
+    this.#ensureInFlight.set(memberId, promise)
+    return promise
+  }
+
+  async #ensureMemberInner(input: EnsureMemberInput, memberId: string): Promise<TeamMemberRecord> {
     const existing = await this.#read(memberId)
     if (existing) return await this.#refreshState(existing)
 

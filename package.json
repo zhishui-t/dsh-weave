@@ -39,7 +39,7 @@
     "typecheck": "tsc --noEmit",
     "vendor:prism": "node scripts/vendor-prism.mjs",
     "test:client-ui": "pnpm build && pnpm vitest run test/unit/plugins/weave/client-bundle.ui.test.tsx",
-    "test:ui": "pnpm vitest run test/unit/plugins/weave/dashboard.test.tsx test/unit/plugins/weave/dag-panel.test.tsx test/unit/plugins/weave/import-ui.test.tsx test/unit/plugins/weave/client-bundle.ui.test.tsx",
+    "test:ui": "pnpm vitest run test/unit/plugins/weave/dashboard.test.tsx test/unit/plugins/weave/dag-panel.test.tsx test/unit/plugins/weave/client-bundle.ui.test.tsx",
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test test/e2e/live",
     "test:e2e:harness": "playwright test test/e2e/harness",
@@ -87,8 +87,5 @@
       ],
       "platform": "web"
     }
-  },
-  "bin": {
-    "dsh-mcp-knowledge": "./dist/plugins/weave/mcp/knowledge-mcp.js"
   }
 }

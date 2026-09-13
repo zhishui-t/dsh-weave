@@ -1030,18 +1030,28 @@ export class WeaveScheduler {
   }
 
   /** 成员认领（pull）：WAITING→RUNNING，attempt 签发，CAS 可选。 */
-  async claimTask(input: { taskId: string; memberKey: string; expectedRevision?: number }): Promise<
+  async claimTask(input: { taskId: string; memberKey: string; memberTeamId?: string; expectedRevision?: number }): Promise<
     | { ok: true; task: TaskRecord; attempt: AttemptGuard }
     | { ok: false; code: string; message: string }
   > {
-    const task = await this.#loadTaskRow(input.taskId)
-    if (!task) return { ok: false, code: 'task_not_found', message: `任务不存在: ${input.taskId}` }
-    if (task.assigned_agent === null || !input.memberKey.endsWith(`:${task.assigned_agent}`)) {
-      return { ok: false, code: 'not_assignee', message: `任务 ${input.taskId} 的 assignee 是 ${task.assigned_agent ?? '（空）'}，不是你的名下任务` }
+    // 唤醒守卫复位helper：认领被拒 = 本次唤醒没有转化为认领，必须清守卫，
+    // 否则下次重泵被 #pullWoken 拦截，任务永久饥饿（P0：同角色多任务 role_busy 楔死）。
+    const reject = (code: string, message: string): { ok: false; code: string; message: string } => {
+      this.#clearPullWoken(input.taskId)
+      return { ok: false, code, message }
     }
-    if (task.status === 'BLOCKED') return { ok: false, code: 'task_not_ready', message: `任务 ${input.taskId} 尚未就绪（上游未完成）` }
+    const task = await this.#loadTaskRow(input.taskId)
+    if (!task) return reject('task_not_found', `任务不存在: ${input.taskId}`)
+    if (task.assigned_agent === null || !input.memberKey.endsWith(`:${task.assigned_agent}`)) {
+      return reject('not_assignee', `任务 ${input.taskId} 的 assignee 是 ${task.assigned_agent ?? '（空）'}，不是你的名下任务`)
+    }
+    // 团队级授权：memberKey 后缀只证角色名，跨队同名角色必须再比对 team_id。
+    if (input.memberTeamId !== undefined && input.memberTeamId !== task.team_id) {
+      return reject('not_assignee', `任务 ${input.taskId} 属于团队 ${task.team_id}，不是你所在团队（${input.memberTeamId}）的任务`)
+    }
+    if (task.status === 'BLOCKED') return reject('task_not_ready', `任务 ${input.taskId} 尚未就绪（上游未完成）`)
     if (task.status !== 'WAITING') {
-      return { ok: false, code: 'invalid_status_transition', message: `任务 ${input.taskId} 状态 ${task.status} 不可认领（可能已被认领或完成）` }
+      return reject('invalid_status_transition', `任务 ${input.taskId} 状态 ${task.status} 不可认领（可能已被认领或完成）`)
     }
     // 依赖就绪复查（认领瞬间判定，防任务板过期视图）
     const dag = await this.loadDag(task.dag_id)
@@ -1051,7 +1061,7 @@ export class WeaveScheduler {
       return status === undefined || !SUCCESS_TERMINALS.has(status)
     })
     if (notReady.length > 0) {
-      return { ok: false, code: 'task_not_ready', message: `任务 ${input.taskId} 上游未完成: ${notReady.join(', ')}` }
+      return reject('task_not_ready', `任务 ${input.taskId} 上游未完成: ${notReady.join(', ')}`)
     }
     // 角色并发额度：同团队同角色已有 RUNNING → 拒绝
     const busy = await this.#persistence.tasks.run((db) => {
@@ -1061,7 +1071,7 @@ export class WeaveScheduler {
       return Number(row?.n ?? 0) > 0
     })
     if (busy) {
-      return { ok: false, code: 'role_busy', message: `角色 ${task.assigned_agent} 已有执行中任务（一个角色同一时刻只执行一个任务）` }
+      return reject('role_busy', `角色 ${task.assigned_agent} 已有执行中任务（一个角色同一时刻只执行一个任务）`)
     }
     try {
       const attempt = await this.#claimTask(task.id, input.expectedRevision)
@@ -1081,16 +1091,16 @@ export class WeaveScheduler {
       return { ok: true, task: fresh ?? { ...task, status: 'RUNNING' }, attempt }
     } catch (error) {
       const code = error instanceof WeaveError && error.code === TASK_STALE_REVISION ? TASK_STALE_REVISION : 'invalid_status_transition'
-      return { ok: false, code, message: error instanceof Error ? error.message : String(error) }
+      return reject(code, error instanceof Error ? error.message : String(error))
     }
   }
 
   /**
    * 成员回报完成（pull）：RUNNING→COMPLETED + result 落库，走完整结算链
-   * （终态反思钩子 / 下游就绪晋升 / DAG 收敛汇总）。attempt CAS：调用方带
-   * claim 返回的 token+revision；缺省时按 revision 匹配的宽容校验。
+   * （终态反思钩子 / 下游就绪晋升 / DAG 收敛汇总）。attempt 句柄必须携带
+   * （claim 返回的 token+revision 双验证）——迟到/过期回写按 task_stale_revision 拒绝。
    */
-  async completeTask(input: { taskId: string; memberKey: string; result: string; attempt?: AttemptGuard }): Promise<
+  async completeTask(input: { taskId: string; memberKey: string; memberTeamId?: string; result: string; attempt: AttemptGuard }): Promise<
     | { ok: true; task: TaskRecord }
     | { ok: false; code: string; message: string }
   > {
@@ -1098,28 +1108,29 @@ export class WeaveScheduler {
   }
 
   /** 成员回报失败（pull）：RUNNING→FAILED（error_type=member_failed）+ 失败传播。 */
-  async failTask(input: { taskId: string; memberKey: string; message: string; attempt?: AttemptGuard }): Promise<
+  async failTask(input: { taskId: string; memberKey: string; memberTeamId?: string; message: string; attempt: AttemptGuard }): Promise<
     | { ok: true; task: TaskRecord }
     | { ok: false; code: string; message: string }
   > {
-    return await this.#settleMemberTask({ ...input, result: input.message }, 'FAILED', input.message)
+    return await this.#settleMemberTask({ ...input, result: input.message }, 'FAILED', undefined, 'member_failed')
   }
 
   /**
    * 成员释放（pull）：RUNNING→INTERRUPTED（error_type=member_released）。
    * RUNNING→WAITING 不可达（状态机），重开走队长 weave_task_retry（INTERRUPTED→WAITING）；
-   * 释放后不自动重唤醒（唤醒守卫保留），避免"卡住→重唤醒"死循环。
+   * 结算清唤醒守卫后重泵可再次唤醒——但任务此时是 INTERRUPTED 终态，pump 只唤醒
+   * WAITING，不会形成"卡住→重唤醒"死循环；retry 后（回 WAITING）按需重新唤醒。
    */
-  async releaseTask(input: { taskId: string; memberKey: string; reason?: string; attempt?: AttemptGuard }): Promise<
+  async releaseTask(input: { taskId: string; memberKey: string; memberTeamId?: string; reason?: string; attempt: AttemptGuard }): Promise<
     | { ok: true; task: TaskRecord }
     | { ok: false; code: string; message: string }
   > {
-    return await this.#settleMemberTask({ ...input, result: input.reason ?? '（成员释放，未附原因）' }, 'INTERRUPTED', input.reason, 'member_released')
+    return await this.#settleMemberTask({ ...input, result: input.reason ?? '（成员释放，未附原因）' }, 'INTERRUPTED', undefined, 'member_released')
   }
 
   /** pull 结算公共链：状态写入（CAS）→ 通知 → 反思钩子 → 下游传播/晋升/收敛。 */
   async #settleMemberTask(
-    input: { taskId: string; memberKey: string; result: string; attempt?: AttemptGuard },
+    input: { taskId: string; memberKey: string; memberTeamId?: string; result: string; attempt: AttemptGuard },
     to: Extract<TaskStatus, 'COMPLETED' | 'FAILED' | 'INTERRUPTED'>,
     errorType?: string,
     errorTypeDefault?: string,
@@ -1132,11 +1143,20 @@ export class WeaveScheduler {
     if (task.assigned_agent === null || !input.memberKey.endsWith(`:${task.assigned_agent}`)) {
       return { ok: false, code: 'not_assignee', message: `任务 ${input.taskId} 不在你的名下` }
     }
+    if (input.memberTeamId !== undefined && input.memberTeamId !== task.team_id) {
+      return { ok: false, code: 'not_assignee', message: `任务 ${input.taskId} 属于团队 ${task.team_id}，不是你所在团队的任务` }
+    }
     if (task.status !== 'RUNNING') {
       return { ok: false, code: 'invalid_status_transition', message: `任务 ${input.taskId} 状态 ${task.status} 不可回报 ${to}（先 claim）` }
     }
     if (!TaskStateMachine.canTransition('RUNNING', to)) {
       return { ok: false, code: 'invalid_status_transition', message: `状态机不允许 RUNNING → ${to}` }
+    }
+    // attempt 句柄强制：无守卫的裸写会让迟到回报覆写新 generation（取消/重派后
+    // COMPLETED 盖 CANCELLED、下游错晋升）。claim 已返回 {token, expectedRevision}，
+    // 成员必须原样回传；缺失按协议错误拒绝，不做宽容回退。
+    if (input.attempt === undefined) {
+      return { ok: false, code: 'attempt_required', message: `回报任务 ${input.taskId} 必须携带 claim 返回的 attempt_token 与 expected_revision` }
     }
     const attempt = input.attempt
     const run = this.#runs.get(task.dag_id) ?? {
@@ -1164,12 +1184,42 @@ export class WeaveScheduler {
     }
     this.#clearPullWoken(input.taskId)
     const settled = { ...task, status: to }
+    // 台账镜像 + 审计：pull 结算此前绕过 statusNotifier/audit，prism 台账对
+    // pull DAG 永不更新、审计只见 claim 不见结算。changeOnly 只发状态变更
+    // 旁路（台账），不复读格式化通知——聊天侧已有下方 changedText。
+    try {
+      await this.#opts.audit?.record({
+        type: 'task.status_changed',
+        task_id: task.id,
+        from: task.status,
+        to,
+        by: `member:${input.memberKey}`,
+      })
+    } catch {
+      // 审计失败不阻断结算。
+    }
+    this.#opts.statusNotifier?.changeOnly({
+      taskId: task.id,
+      dagId: task.dag_id,
+      sessionId: task.session_id,
+      subject: subjectLabel(task),
+      from: task.status,
+      to,
+      actor: 'scheduler',
+      source: 'member_settle',
+    })
     const changedText = `[weave] 任务「${subjectLabel(task)}」${to === 'COMPLETED' ? '完成 ✓' : to === 'FAILED' ? '失败 ✗（成员回报）' : '已释放（成员回报）'}：${excerptOf(input.result, 600)}`
     this.#notifySafe(run, changedText)
     if (to !== 'INTERRUPTED') {
       await this.#runSettledTextHook(run, settled, role ?? { id: task.assigned_agent ?? '', name: task.assigned_agent ?? '', bias: '', executor: task.executor ?? '', stages: [], max_concurrent_tasks: 1, personality: '' }, input.result, to as 'COMPLETED' | 'FAILED')
     }
     await this.#afterTaskSettled(run, settled, to)
+    // 角色释放是跨 DAG 事件（与 push 派发 finally 同语义）：本角色并发额度
+    // 释放后，其他 DAG 中因该角色占位而滞留的就绪任务必须获得重泵机会，
+    // 否则只有本 DAG 的任务被唤醒，他组任务永久饿死。
+    for (const activeDagId of this.#runs.keys()) {
+      this.#enqueue(activeDagId)
+    }
     return { ok: true, task: settled }
   }
 

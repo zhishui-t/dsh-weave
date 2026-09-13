@@ -5,8 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { AuditLog, DEFAULT_AUDIT_DIR } from '../audit/audit-log.js'
 import { WeaveCli, WeaveMcp, type CliMcpDeps } from './cli-mcp.js'
 import type { GetStatusInput } from './cli-mcp.js'
-import { PrismClient } from '../prism/prism-client.js'
-import { PrismSupervisor } from '../prism/prism-supervisor.js'
+import { PrismClient, DEFAULT_PRISM_BASE_URL } from '../prism/prism-client.js'
+import { PrismSupervisor, DEFAULT_PRISM_PORT } from '../prism/prism-supervisor.js'
 import { PrismGateway } from '../prism/gateway.js'
 import { PrismTeamSource } from '../prism/team-source.js'
 import type { PlanTasksOutput, ToolExecLike } from '../scheduling/planner.js'
@@ -353,7 +353,7 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       name: `${prefix}task_claim`,
       description:
         '认领名下就绪任务（pull 模型）：任务须 assignee 为你且状态 WAITING、上游全部完成。' +
-        '认领成功任务进入 RUNNING 并返回 attempt 句柄（回报时回传 expected_revision）。',
+        '认领成功任务进入 RUNNING 并返回 attempt 句柄（attempt_token + expected_revision，回报时必须原样回传）。',
       parameters: {
         task_id: { type: 'string', required: true },
         expected_revision: { type: 'number', description: '任务板列表返回的 revision（CAS 防并发认领）' },
@@ -368,12 +368,13 @@ export function buildWeaveToolDefinitions(mcp: WeaveMcp, options: WeaveHostOptio
       name: `${prefix}task_update`,
       description:
         '回报名下任务（pull 模型）：action=complete（交付摘要填 result，供下游/队长引用）|' +
-        'release（暂时无法推进，附 reason，任务回 INTERRUPTED 等队长重开）|fail（执行失败，附 message）。',
+        'release（暂时无法推进，附 reason，任务回 INTERRUPTED 等队长重开）|fail（执行失败，附 message）。' +
+        '必须携带 claim 返回的 attempt_token 与 expected_revision（缺一拒绝）。',
       parameters: {
         task_id: { type: 'string', required: true },
         action: { type: 'string', required: true, description: 'complete | release | fail' },
-        expected_revision: { type: 'number' },
-        attempt_token: { type: 'string', description: 'claim 返回的 attempt 句柄' },
+        expected_revision: { type: 'number', required: true, description: 'claim 返回的 expected_revision' },
+        attempt_token: { type: 'string', required: true, description: 'claim 返回的 attempt 句柄' },
         result: { type: 'string', description: 'complete：交付摘要（结论+关键产物路径）' },
         reason: { type: 'string', description: 'release：原因' },
         message: { type: 'string', description: 'fail：失败信息' },
@@ -815,9 +816,20 @@ export function createDefaultCliDeps(ctx: Context, options: DefaultCliDepsOption
   })
   const teamsDir = options.teamsDir ?? join(homedir(), '.dsh', 'teams')
   // Prism 控制面：知识库/图谱/文档转换的唯一后端（子项目承接）。
-  const prismClient = new PrismClient(options.prismBaseUrl !== undefined ? { baseUrl: options.prismBaseUrl } : {})
+  // base URL 是唯一事实源：client 与 supervisor 的端口都从它派生，杜绝
+  // "client 打 8888、supervisor 起 7777" 的配置脱钩（健康等待超时 + 孤儿进程）。
+  const prismBaseUrl = options.prismBaseUrl ?? DEFAULT_PRISM_BASE_URL
+  const prismClient = new PrismClient({ baseUrl: prismBaseUrl })
+  let prismPort = DEFAULT_PRISM_PORT
+  try {
+    const parsed = new URL(prismBaseUrl)
+    if (parsed.port !== '') prismPort = Number(parsed.port)
+  } catch {
+    // 非法 URL 在 settings 写入时已被拦截；此处保守回落默认端口。
+  }
   const prismSupervisor = new PrismSupervisor({
     client: prismClient,
+    port: prismPort,
     ...(options.prismHome !== undefined ? { prismHome: options.prismHome } : {}),
     autoStart: options.prismAutoStart ?? true,
   })

@@ -3338,7 +3338,18 @@ interface SessionStatusData {
       () => rpc('settings/describe') as Promise<SettingsInfo & { prism_console?: string }>,
       [],
     )
-    const consoleUrl = String(settings.data?.prism_console ?? 'http://127.0.0.1:7777/studio')
+    // 协议白名单：settings 值未经验证，javascript:/data: 等 scheme 在 href/iframe
+    // 上是注入面；非法值回落默认地址。
+    const DEFAULT_CONSOLE = 'http://127.0.0.1:7777/studio'
+    let consoleUrl = DEFAULT_CONSOLE
+    const rawConsole = settings.data?.prism_console
+    if (typeof rawConsole === 'string' && /^https?:\/\//i.test(rawConsole.trim())) {
+      try {
+        consoleUrl = new URL(rawConsole.trim()).href
+      } catch {
+        consoleUrl = DEFAULT_CONSOLE
+      }
+    }
     return React.createElement(
       'section',
       { className: 'weave-page', 'data-testid': 'page-knowledge-prism' },
@@ -3368,6 +3379,7 @@ interface SessionStatusData {
         src: consoleUrl,
         title: 'Prism 控制台',
         'data-testid': 'prism-console-frame',
+        sandbox: 'allow-scripts allow-same-origin allow-forms',
         style: {
           width: '100%',
           minHeight: 'max(calc(100vh - 300px), 420px)',

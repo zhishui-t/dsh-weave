@@ -73,6 +73,19 @@ export class TaskStatusNotifier {
   }
 
   /**
+   * 只发状态变更旁路（onChange → prism 台账镜像），不走格式化会话通知。
+   * 用于已有自定义通知文案的路径（如 pull 成员结算）：镜像必须收到变更，
+   * 但聊天侧不需要再来一条模板文案造成重复。
+   */
+  changeOnly(change: TaskStatusChange): void {
+    try {
+      this.#onChange?.(change)
+    } catch {
+      // 镜像回调异常按吞掉处理（与 notify 同哲学）。
+    }
+  }
+
+  /**
    * 批量状态变更通知（SKIPPED 传播 / closeExpired 等）：先过滤回声，再按 DAG
    * 分组合并为一条汇总；单组超过 10 行折叠计数。异常吞掉。
    */

@@ -52,6 +52,25 @@ export async function saveWeaveSettingsOverrides(
   if (invalid.length > 0) {
     throw new WeaveError('invalid_argument', `未知设置字段: ${invalid.join(', ')}`, { fields: invalid })
   }
+  // prism_base_url 校验（SSRF 防线）：weave 会把反思沉淀全文/任务 payload/检索
+  // query POST 到该地址——只允许 http(s) 且 host 为 loopback（127.0.0.1/localhost/[::1]）。
+  const rawUrl = patch['prism_base_url']
+  if (typeof rawUrl === 'string' && rawUrl !== '') {
+    let parsed: URL
+    try {
+      parsed = new URL(rawUrl)
+    } catch {
+      throw new WeaveError('invalid_argument', `prism_base_url 不是合法 URL: ${rawUrl}`, { field: 'prism_base_url' })
+    }
+    const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(parsed.hostname)
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !loopback) {
+      throw new WeaveError(
+        'invalid_argument',
+        `prism_base_url 只允许 http(s) 且指向本机（127.0.0.1/localhost），收到: ${rawUrl}`,
+        { field: 'prism_base_url', hostname: parsed.hostname },
+      )
+    }
+  }
   const current = await loadWeaveSettingsOverrides(file)
   for (const key of KNOWN) {
     const incoming = patch[key]

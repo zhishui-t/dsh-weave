@@ -194,26 +194,18 @@ test.describe.serial('live: Weave 控制台真实 Web 验收', () => {
     }
   })
 
-  test('knowledge: 列表查询与审核入口只读验收（不改动真实知识状态）', async () => {
+  test('knowledge: Prism 控制台内嵌页验收（占位卡 + iframe）', async () => {
     try {
       await page.getByTestId('nav-knowledge').click()
-      await page.getByTestId('knowledge-status-filter').waitFor({ state: 'visible', timeout: 10_000 })
+      await page.getByTestId('page-knowledge-prism').waitFor({ state: 'visible', timeout: 10_000 })
       await page.waitForTimeout(800)
       await expectNoPageError(page, 'knowledge')
-      const items = page.locator('[data-testid^="knowledge-item-"]')
-      const count = await items.count()
-      if (count === 0) {
-        await expect(page.getByTestId('page-empty').first()).toBeVisible()
-        console.log('  知识库为空（空态明确呈现）')
-      } else {
-        const id = (await items.first().getAttribute('data-testid'))!.replace('knowledge-item-', '')
-        const hasApprove = await page.getByTestId(`knowledge-approve-${id}`).isVisible().catch(() => false)
-        console.log(`  首条 ${id} 可见；approve 入口: ${hasApprove}（live 层只读，不执行审核）`)
-      }
+      const linkVisible = await page.getByTestId('prism-console-link').isVisible().catch(() => false)
+      console.log(`  Prism 控制台链接可见: ${linkVisible}（iframe 内容取决于 prism serve 是否在跑）`)
       await shot(page, 'live-14-knowledge')
-      step('知识库只读验收')()
+      step('知识页（Prism 内嵌）')()
     } catch (err) {
-      step('知识库只读验收')(String(err))
+      step('知识页（Prism 内嵌）')(String(err))
       throw err
     }
   })

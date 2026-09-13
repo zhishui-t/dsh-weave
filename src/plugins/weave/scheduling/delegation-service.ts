@@ -931,7 +931,7 @@ export class DelegationService {
       lines.push('')
     }
     lines.push('## 可用命令（执行中可调用）')
-    lines.push('- 如需补充知识，可调用 `weave_knowledge_search`（DSH 子代理工具，经 Prism 知识库检索）或 ACP MCP `prism_kb_search` 按需检索知识。')
+    lines.push('- 如需补充知识，可调用 ACP MCP `prism_kb_search`（经 Prism 知识库检索）按需检索知识。')
     lines.push('')
     lines.push('## 知识沉淀要求')
     lines.push('结束时必须输出至少一个 WEAVE_KNOWLEDGE 块（type ∈ pitfall/pattern/skill/doc；无新经验则写一条 type=doc 的任务小结）。可复制示例：')
