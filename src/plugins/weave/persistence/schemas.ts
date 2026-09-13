@@ -10,7 +10,7 @@ import type { DatabaseSchema, DatabaseSchemaStatement } from './weave-database.j
 export const DEFAULT_SCHEMA_VERSION = 1
 
 /** core.db 结构版本：v2 起统一注册 team_bindings；v3 起 executor_children（continuable 子代理持久映射）。 */
-export const CORE_SCHEMA_VERSION = 3
+export const CORE_SCHEMA_VERSION = 4
 
 /** tasks.db 结构版本：v3 起任务携带 write_scopes（写域提醒）+ revision/attempt_token（乐观并发）。 */
 export const TASKS_SCHEMA_VERSION = 3
@@ -166,6 +166,22 @@ export const EXECUTOR_CHILDREN_TABLE_DDL = `CREATE TABLE IF NOT EXISTS executor_
     updated_at TEXT NOT NULL
 )`
 
+/** 持久成员表 DDL（pull 模型 roster：每角色一个驻留队友）。 */
+export const TEAM_MEMBERS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS team_members (
+    member_id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    executor TEXT NOT NULL,
+    child_id TEXT,
+    session_key TEXT,
+    label TEXT,
+    state TEXT NOT NULL DEFAULT 'inactive',
+    spawned_at TEXT NOT NULL,
+    last_active_at TEXT,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);`
+
 /** 全部核心表 DDL 索引：表名 → 建表语句（TDD 2.x）。 */
 export const CORE_TABLE_DDL: Record<string, string> = {
   tasks: TASKS_TABLE_DDL,
@@ -177,6 +193,7 @@ export const CORE_TABLE_DDL: Record<string, string> = {
   failure_counters: FAILURE_COUNTERS_TABLE_DDL,
   team_bindings: TEAM_BINDINGS_TABLE_DDL,
   executor_children: EXECUTOR_CHILDREN_TABLE_DDL,
+  team_members: TEAM_MEMBERS_TABLE_DDL,
 }
 
 /**
@@ -206,6 +223,7 @@ export const DEFAULT_SCHEMAS: Record<
       FAILURE_COUNTERS_TABLE_DDL,
       TEAM_BINDINGS_TABLE_DDL,
       EXECUTOR_CHILDREN_TABLE_DDL,
+      TEAM_MEMBERS_TABLE_DDL,
     ],
   },
   feedback: { version: DEFAULT_SCHEMA_VERSION, statements: [FEEDBACK_ROUTES_TABLE_DDL] },
