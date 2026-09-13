@@ -114,3 +114,104 @@ describe('DshSubagentExecutorProvider continuable 会话复用', () => {
     expect(subagents.start).not.toHaveBeenCalled()
   })
 })
+
+describe("DshSubagentExecutorProvider 'dsh' 统一执行器与自愈", () => {
+  function makeChild(id: string, events: Array<{ type: string; data: Record<string, unknown> }>) {
+    return {
+      id,
+      whenIdle: vi.fn(async () => {
+        events.push(...turnEvents(`done-${id}-${events.length}`))
+      }),
+      session: { events },
+      ctx: { on: () => () => undefined },
+      options: { provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' },
+    }
+  }
+
+  it("'dsh' 别名：首派以 fork provider 创建 continuable，后续 followup 复用", async () => {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = []
+    const child = makeChild('child-dsh', events)
+    const startContinuable = vi.fn(async (spec: { provider: string }) => {
+      expect(spec.provider).toBe('fork') // 'dsh' → fork：首派 seed 队长前缀
+      return { childId: 'child-dsh' }
+    })
+    const followup = vi.fn(async () => 'message-2')
+    const subagents = {
+      list: () => ['spawn'], // 宿主列表里没有 'dsh'——别名由 provider 自身支持
+      start: vi.fn(),
+      startContinuable,
+      followup,
+      agents: { get: () => child },
+    }
+    const provider = new DshSubagentExecutorProvider(subagents as never)
+    const request = {
+      executor: 'dsh',
+      sessionKey: 'team:coder:proj:v1',
+      prompt: [{ type: 'text' as const, text: 'task one' }],
+      signal: new AbortController().signal,
+    }
+    const run1 = await provider.start(request)
+    expect(run1.sessionId).toBe('child-dsh')
+    await run1.result
+    await provider.start({ ...request, prompt: [{ type: 'text' as const, text: 'task two' }] })
+    expect(startContinuable).toHaveBeenCalledTimes(1)
+    expect(followup).toHaveBeenCalledTimes(1)
+  })
+
+  it('自愈：child 失联（宿主重启后未物化）→ 丢弃旧映射重建新 child，不再 throw', async () => {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = []
+    const rebuilt = makeChild('child-2', events)
+    const childrenById = new Map<string, unknown>([['child-1', undefined]]) // 旧 child 失联
+    const startContinuable = vi.fn(async () => {
+      childrenById.set('child-2', rebuilt) // 重建后的 child 物化进 live 表
+      return { childId: 'child-2' }
+    })
+    const followup = vi.fn(async () => 'message-2')
+    const subagents = {
+      list: () => ['fork'],
+      start: vi.fn(),
+      startContinuable,
+      followup,
+      agents: { get: (id: string) => childrenById.get(id) },
+    }
+    const provider = new DshSubagentExecutorProvider(subagents as never)
+    const request = {
+      executor: 'fork',
+      sessionKey: 'team:coder:proj:v1',
+      prompt: [{ type: 'text' as const, text: 'task after restart' }],
+      signal: new AbortController().signal,
+    }
+    childrenById.set('child-1', undefined)
+    // 内存表 seed 了旧 childId（hydrateChildren 场景）：stale → 自愈重建
+    ;(provider as unknown as { hydrateChildren: () => Promise<void> }).hydrateChildren = async () => undefined
+    const childrenStore = {
+      load: async () => [{ sessionKey: 'team:coder:proj:v1', executor: 'fork', childId: 'child-1' }],
+      record: async () => undefined,
+    }
+    const provider2 = new DshSubagentExecutorProvider(subagents as never, { childrenStore: childrenStore as never })
+    await provider2.hydrateChildren()
+    const run = await provider2.start(request)
+    expect(run.sessionId).toBe('child-2')
+    expect(startContinuable).toHaveBeenCalledTimes(1)
+    await run.result
+    expect(rebuilt.whenIdle).toHaveBeenCalled()
+  })
+
+  it('fork 复用彻底失败（重建也失败）→ 上抛而非静默 one-shot', async () => {
+    const subagents = {
+      list: () => ['fork'],
+      start: vi.fn(),
+      startContinuable: vi.fn(async () => { throw new Error('materialization failed') }),
+      followup: vi.fn(),
+      agents: { get: () => undefined },
+    }
+    const provider = new DshSubagentExecutorProvider(subagents as never)
+    await expect(provider.start({
+      executor: 'fork',
+      sessionKey: 'team:coder:proj:v1',
+      prompt: [{ type: 'text' as const, text: 'x' }],
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/materialization failed/)
+    expect(subagents.start).not.toHaveBeenCalled()
+  })
+})

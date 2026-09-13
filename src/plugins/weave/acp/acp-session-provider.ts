@@ -315,7 +315,28 @@ async function writeSessionIndexFile(file: string | undefined, sessionKey: strin
       await writeFile(temp, `${JSON.stringify(base, null, 2)}\n`, 'utf8')
       await rename(temp, file)
     } catch {
-      // 索引写失败不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
+      // 索引写失败重试一次（瞬时 FS 竞态会丢重启恢复线索）；仍失败则放弃——
+      // 索引只是加速器，不影响运行时隔离（内存 map 已按 sessionKey 隔离）。
+      try {
+        const raw2 = JSON.parse(await readFile(file, 'utf8')) as Partial<SessionKeyIndexFile>
+        const base2: SessionKeyIndexFile = raw2 && typeof raw2 === 'object' && raw2.keys && typeof raw2.keys === 'object'
+          ? { version: 1, keys: raw2.keys as Record<string, SessionKeyIndexRecord> }
+          : { version: 1, keys: {} }
+        const prior2 = base2.keys[sessionKey]
+        const carried2 = prior2?.acpSid === acpSid ? prior2 : undefined
+        base2.version = 1
+        base2.keys[sessionKey] = {
+          acpSid,
+          updatedAt: Date.now(),
+          ...((carried2?.cwd ?? cwd) !== undefined ? { cwd: carried2?.cwd ?? cwd } : {}),
+          ...(carried2?.zcodeSid !== undefined ? { zcodeSid: carried2.zcodeSid } : {}),
+        }
+        const temp2 = `${file}.tmp`
+        await writeFile(temp2, `${JSON.stringify(base2, null, 2)}\n`, 'utf8')
+        await rename(temp2, file)
+      } catch {
+        // 重试仍失败：放弃（内存隔离不受影响）。
+      }
     }
   })
 }
@@ -413,6 +434,8 @@ export class AcpSessionProvider {
   #sessionCatalog?: AcpSessionNewResponse
 
   readonly #hooks: AcpProviderRuntimeHooks
+  /** sessionKey 级互斥：同键并发 start 串行解析/创建会话（竞态会产出孤儿会话并互相覆盖索引）。 */
+  readonly #sessionLocks = new Map<string, Promise<unknown>>()
   readonly #declaredExtensions: readonly string[]
   readonly #sessionIndexFile?: string
 
@@ -739,6 +762,23 @@ export class AcpSessionProvider {
     }
   }
 
+  /**
+   * sessionKey 级互斥（pull 模型成员唤醒可能并发触发同键 start）：
+   * 同键操作串行执行，建会话竞态消除；单次失败不毒化后续排队者。
+   */
+  async #withSessionLock<T>(sessionKey: string | undefined, fn: () => Promise<T>): Promise<T> {
+    if (!sessionKey) return await fn()
+    const previous = this.#sessionLocks.get(sessionKey) ?? Promise.resolve()
+    const current = previous.then(fn)
+    const chained = current.catch(() => undefined)
+    this.#sessionLocks.set(sessionKey, chained)
+    try {
+      return await current
+    } finally {
+      if (this.#sessionLocks.get(sessionKey) === chained) this.#sessionLocks.delete(sessionKey)
+    }
+  }
+
   async #acquireConnection(cwd: string): Promise<AcpSessionConnection> {
     const key = `${this.#command}:${this.#args.join(' ')}:${cwd}`
     const existing = this.#connections.get(key)
@@ -815,6 +855,9 @@ export class AcpSessionProvider {
     connection.conn = conn
     this.#connections.set(key, connection)
     conn.signal.addEventListener('abort', () => { connection.dead = true }, { once: true })
+    // 进程退出（无论优雅与否）立即标记 dead：#acquireConnection 复用前会跳过，
+    // 半死/已退出连接不再被复用到挂起（idle 超时误杀的根因之一）。
+    void child.done.catch(() => undefined).then(() => { connection.dead = true })
 
     connection.initializeResponse = await conn.initialize({
       protocolVersion: PROTOCOL_VERSION,

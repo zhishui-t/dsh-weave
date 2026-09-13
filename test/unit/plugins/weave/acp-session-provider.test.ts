@@ -560,3 +560,22 @@ describe('P1-H：session/update 协议形态（顶层 {sessionId, update}）与�
   })
 
 })
+
+describe('AcpSessionProvider 建会话互斥（pull 模型并发唤醒）', () => {
+  it('同 sessionKey 并发 start：newSession 只调用一次', async () => {
+    const { provider, connections } = makeFixtures()
+    const request = {
+      parent: { session: { header: { cwd: '/tmp/p' } } },
+      signal: new AbortController().signal,
+      sessionKey: 'team:coder:p:v1',
+      prompt: [{ type: 'text' as const, text: 'wake' }],
+    }
+    const [r1, r2] = await Promise.all([
+      provider.start(request as never),
+      provider.start(request as never),
+    ])
+    expect(r1.sessionId).toBe(r2.sessionId)
+    const count = (connections[0]!.newSession as unknown as { mock: { calls: unknown[] } }).mock.calls.length
+    expect(count).toBe(1)
+  })
+})

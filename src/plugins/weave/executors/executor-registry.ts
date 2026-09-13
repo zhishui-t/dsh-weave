@@ -36,6 +36,7 @@ export interface ExecutorInfo {
 export const EXECUTOR_KIND_RULES: Readonly<Record<string, ExecutorKind>> = {
   spawn: 'dsh_subagent',
   fork: 'dsh_subagent',
+  dsh: 'dsh_subagent',
   codex: 'codex',
   'claude-code': 'claude_code',
 }
