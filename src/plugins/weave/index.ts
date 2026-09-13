@@ -205,7 +205,7 @@ export function apply(ctx: Context): void {
       try {
         registerWeaveRpc(runtime, {
           ...deps,
-          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler }),
+          queryService: createWeaveQueryServiceFromCliDeps(deps, { scheduler, memberRoster: teamRuntime.memberRuntime }),
           executorRuns: delegation,
           executorProviders: service.executorProviders,
           providerStore: new ProviderStore({ file: effectiveProvidersFile }),

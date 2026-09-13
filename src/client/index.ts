@@ -3690,8 +3690,11 @@ interface SessionStatusData {
 
   /** 成员状态徽标色（与节点边框色系一致）。 */
   const memberToneOf = (status: string): string => {
-    if (status === 'running') return 'run'
-    if (status === 'interrupted' || status === 'idle_timeout') return 'bad'
+    const lower = String(status ?? '').toLowerCase()
+    if (lower === 'running') return 'run'
+    if (lower === 'failed') return 'bad'
+    if (lower === 'interrupted' || lower === 'idle_timeout') return 'bad'
+    if (lower === 'inactive') return 'muted'
     return 'idle'
   }
 
@@ -3700,6 +3703,8 @@ interface SessionStatusData {
     if (lower === 'running') return '执行中'
     if (lower === 'queued') return '排队中'
     if (lower === 'interrupted' || lower === 'idle_timeout') return '中断'
+    if (lower === 'inactive') return '待唤醒' // pull 模型持久成员：宿主重启后未物化，消息即冷恢复
+    if (lower === 'failed') return '异常'
     return '空闲'
   }
 

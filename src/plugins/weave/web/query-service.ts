@@ -115,6 +115,10 @@ export interface QueryServiceDeps {
   teamManager?: TeamManager
   /** 队长调度器：session/status 的成员实时占用数据源。 */
   scheduler?: WeaveScheduler
+  /** pull 模型成员域（roster）：持久成员 5 态叠加（running/idle/inactive/failed）。 */
+  memberRoster?: {
+    list(teamId: string): Promise<Array<{ role_id: string; state: string; member_id: string }>>
+  }
 }
 
 const TASK_ACTIONS = ['revise', 'accept', 'retry', 'skip', 'cancel', 'reopen'] as const
@@ -127,6 +131,7 @@ export class WeaveQueryService {
   private readonly sessionTracker?: SessionTracker
   private readonly teamManager?: TeamManager
   private readonly scheduler?: WeaveScheduler
+  private readonly memberRoster?: QueryServiceDeps['memberRoster']
   private readonly dagRepository: DagRepository
 
   constructor(deps: QueryServiceDeps) {
@@ -136,6 +141,7 @@ export class WeaveQueryService {
     this.sessionTracker = deps.sessionTracker
     this.teamManager = deps.teamManager
     this.scheduler = deps.scheduler
+    this.memberRoster = deps.memberRoster
     this.dagRepository = new DagRepository(deps.persistence)
   }
 
@@ -445,6 +451,9 @@ export class WeaveQueryService {
 
     const runtime = this.scheduler?.memberRuntime(sessionId) ?? []
     const runtimeByRole = new Map(runtime.map((item) => [item.role_id, item]))
+    // pull 模型持久成员 5 态（roster）：无 push 占用时以成员域状态兜底呈现。
+    const roster = this.memberRoster ? await this.memberRoster.list(team.team_id) : []
+    const rosterByRole = new Map(roster.map((item) => [item.role_id, item.state]))
 
     const members = team.roles.map((role) => {
       const active = runtimeByRole.get(role.id)
@@ -452,6 +461,7 @@ export class WeaveQueryService {
       let status: string = 'idle'
       // 假并行修复：排队（已派发未拿到执行器槽）与真正执行分开呈现。
       if (active) status = active.phase === 'queued' ? 'queued' : 'running'
+      else if (rosterByRole.get(role.id) !== undefined && rosterByRole.get(role.id) !== 'idle') status = rosterByRole.get(role.id)!
       else if (last) status = statusLabel(last.status)
       const executorKind = classifyProvider(role.executor)
       return {
@@ -514,7 +524,7 @@ export class WeaveQueryService {
  */
 export function createWeaveQueryServiceFromCliDeps(
   deps: CliMcpDeps,
-  extras: { scheduler?: WeaveScheduler } = {},
+  extras: { scheduler?: WeaveScheduler; memberRoster?: QueryServiceDeps['memberRoster'] } = {},
 ): WeaveQueryService {
   return new WeaveQueryService({
     persistence: deps.persistence,
@@ -523,5 +533,6 @@ export function createWeaveQueryServiceFromCliDeps(
     sessionTracker: new SessionTracker(deps.persistence.feedback),
     teamManager: deps.teamManager,
     ...(extras.scheduler ? { scheduler: extras.scheduler } : {}),
+    ...(extras.memberRoster ? { memberRoster: extras.memberRoster } : {}),
   })
 }

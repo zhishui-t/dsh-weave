@@ -102,8 +102,8 @@ WEAVE_E2E_LIVE=1 pnpm test:e2e:live   # 真实 DSH Web E2E
 
 | 模块 | 职责 |
 | --- | --- |
-| `team/` | 团队 YAML、绑定、项目运行态、邮箱、迁移 |
-| `scheduling/` | DAG 调度、委托执行、会话事件回灌、状态通知 |
+| `team/` | 团队 YAML、绑定、项目运行态、邮箱、迁移、持久成员域（member-runtime） |
+| `scheduling/` | DAG 调度（push+pull 双模）、委托执行、会话事件回灌、状态通知 |
 | `prism/` | Prism 控制面接入：注入检索、暂存区审核、图谱/转换代理、serve 托管 |
 | `host/` | Cordis 宿主接线、`/weave` CLI、MCP 工具、RPC |
 | `executors/` | 执行器注册与 provider（zcode/spawn/fork/acp） |
